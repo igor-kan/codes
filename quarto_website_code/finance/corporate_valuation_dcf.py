@@ -59,7 +59,7 @@ def dcf_valuation(base_fcff: float, growth_rates: List[float], g_terminal: float
 if __name__ == "__main__":
     print("=== CORPORATE DCF VALUATION ===")
     wf = financial_waterfall(10000, 4000, 2500, 1000, 600, 150, 200, 0.21, 700, 150)
-    print(f"Revenue: ${wf["revenue"]}M | EBITDA: ${wf["ebitda"]}M | FCFF: ${wf["fcff"]}M")
+    print(f"Revenue: ${wf['revenue']}M | EBITDA: ${wf['ebitda']}M | FCFF: ${wf['fcff']}M")
     wacc = calculate_wacc(7500, 3000, 0.042, 1.15, 0.055, 0.055, 0.21)
     print(f"Calculated WACC: {wacc*100:.2f}%")
     p_int = dcf_valuation(wf["fcff"], [0.08, 0.07, 0.06, 0.05, 0.04], 0.025, wacc, 2000, 100)

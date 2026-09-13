@@ -74,7 +74,7 @@ public class Trie {
         trie.insert("quadratic");
         trie.insert("quasar");
 
-        System.out.println("Java Trie Autocomplete for prefix "qua": " + trie.autocomplete("qua"));
+        System.out.println("Java Trie Autocomplete for prefix 'qua': " + trie.autocomplete("qua"));
         assert trie.search("quantum");
         assert !trie.search("quiver");
         System.out.println("Trie verification completed successfully.");

@@ -43,11 +43,13 @@ uint32_t murmurhash3_32(const void *key, size_t len, uint32_t seed) {
 
     switch (len & 3) {
     case 3:
-        k1 ^= tail[2] << 16;
+        k1 ^= (uint32_t)tail[2] << 16;
+        /* fallthrough */
     case 2:
-        k1 ^= tail[1] << 8;
+        k1 ^= (uint32_t)tail[1] << 8;
+        /* fallthrough */
     case 1:
-        k1 ^= tail[0];
+        k1 ^= (uint32_t)tail[0];
         k1 *= c1;
         k1 = rotl32(k1, 15);
         k1 *= c2;
@@ -68,6 +70,6 @@ uint32_t murmurhash3_32(const void *key, size_t len, uint32_t seed) {
 int main(void) {
     const char *key = "quarto-writing-polyglot-vault";
     uint32_t hash = murmurhash3_32(key, 29, 42);
-    printf("MurmurHash3-32 of \"%s\" with seed 42 = 0x%08X\n", key, hash);
+    printf("MurmurHash3-32 of %s with seed 42 = 0x%08X\n", key, hash);
     return 0;
 }
