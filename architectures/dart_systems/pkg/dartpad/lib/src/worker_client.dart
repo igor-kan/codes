@@ -1,0 +1,625 @@
+// Copyright (c) 2026, the Dart project authors.  Please see the AUTHORS file
+// for details. All rights reserved. Use of this source code is governed by a
+// BSD-style license that can be found in the LICENSE file.
+
+/// @docImport '../dartpad.dart';
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:stream_channel/stream_channel.dart';
+
+import 'exceptions.dart' show rethrowAsDartPadException;
+import 'message_port/message_port.dart';
+import 'shared.dart';
+
+export 'exceptions.dart' hide rethrowAsDartPadException;
+
+/// Client for talking to `shared_worker.dart`.
+base class WorkerClient {
+  final rpc.Peer _peer;
+  final _languageServers = <int, LanguageServer>{};
+  final _sandboxes = <int, Sandbox>{};
+  final _watchers = <int, Sink<FileChangeEvent>>{};
+
+  /// Creates a client that communicates over [channel].
+  ///
+  /// The [channel] usually connects to a `Worker` instance (in tests) or a
+  /// `MessagePort` (in the browser).
+  WorkerClient(StreamChannel<Object?> channel)
+    : _peer = rpc.Peer.withoutJson(channel) {
+    _peer.registerMethod('workspace/languageServer/message', _handleLsMessage);
+    _peer.registerMethod('workspace/languageServer/exited', _handleLsExited);
+    _peer.registerMethod('workspace/watcher/events', _handleWatchEvent);
+    _peer.registerMethod('workspace/sandbox/console', _handleSandboxConsole);
+    _peer.registerMethod('workspace/sandbox/error', _handleSandboxError);
+    _peer.registerMethod(
+      'workspace/sandbox/unhandledRejection',
+      _handleSandboxUnhandledRejection,
+    );
+    _peer.registerMethod(
+      'workspace/sandbox/extensionEvent',
+      _handleSandboxExtensionEvent,
+    );
+    _peer.listen();
+  }
+
+  Future<void> get done => _peer.done;
+
+  /// Closes the connection to the worker.
+  Future<void> dispose() async {
+    await _peer.close();
+  }
+
+  /// Creates a workspace in the worker.
+  ///
+  /// A [Workspace] is allocated a unique folder [Workspace.workspaceFolder].
+  /// Disposing of a workspace using [Workspace.dispose] deletes the
+  /// _workspace folder_ and any [LanguageServer] and [Sandbox]
+  /// started within said workspace.
+  ///
+  /// Workspaces are not isolated, and file operations may interfere with other
+  /// _workspace folders_. This may change in the future.
+  Future<Workspace> createWorkspace() async {
+    final result = await _peer.request<Map>('createWorkspace', {});
+    return Workspace._(
+      this,
+      (result['workspaceId'] as num).toInt(),
+      Uri.parse(result['workspaceFolder'] as String),
+    );
+  }
+
+  void _handleSandboxConsole(rpc.Parameters params) {
+    final id = (params['sandboxId'].value as num).toInt();
+    final message = params['message'].asString;
+    _sandboxes[id]?._consoleController.add(message);
+  }
+
+  void _handleSandboxError(rpc.Parameters params) {
+    final id = (params['sandboxId'].value as num).toInt();
+    final message = params['message'].asString;
+    _sandboxes[id]?._errorController.add(message);
+  }
+
+  void _handleSandboxUnhandledRejection(rpc.Parameters params) {
+    final id = (params['sandboxId'].value as num).toInt();
+    final message = params['message'].asString;
+    _sandboxes[id]?._unhandledRejectionController.add(message);
+  }
+
+  void _handleSandboxExtensionEvent(rpc.Parameters params) {
+    final id = (params['sandboxId'].value as num).toInt();
+    final kind = params['kind'].asString;
+    final data = params['data'].asMap.cast<String, Object?>();
+    _sandboxes[id]?._extensionEventController.add((kind: kind, data: data));
+  }
+
+  void _handleLsMessage(rpc.Parameters params) {
+    final id = (params['languageServerId'].value as num).toInt();
+    final message = params['message'].asMap;
+    _languageServers[id]?._incomingMessages.add(message);
+  }
+
+  void _handleLsExited(rpc.Parameters params) {
+    final id = (params['languageServerId'].value as num).toInt();
+    _languageServers[id]?._handleExited();
+  }
+
+  void _handleWatchEvent(rpc.Parameters params) {
+    final watcherId = (params['watcherId'].value as num).toInt();
+    final events = params['events'].asList;
+    final controller = _watchers[watcherId];
+    if (controller != null) {
+      for (final e in events) {
+        final map = e as Map;
+        final type = map['type'] as String;
+        final uri = Uri.parse(map['uri'] as String);
+        controller.add(switch (type) {
+          'add' => FileAddedEvent(uri),
+          'modify' => FileModifiedEvent(uri),
+          'remove' => FileRemovedEvent(uri),
+          _ => FileModifiedEvent(uri),
+        });
+      }
+    }
+  }
+}
+
+/// Representation of a _workspace_ inside the worker with methods wrapping
+/// the RPC interface.
+///
+/// All URIs and paths passed to methods will be resolved relative to the the
+/// [workspaceFolder].
+final class Workspace {
+  final WorkerClient _client;
+  final int id;
+
+  /// Folder owned by this workspace.
+  ///
+  /// All relative paths given to methods on this class will be resolved
+  /// relative to [workspaceFolder].
+  final Uri workspaceFolder;
+
+  Workspace._(this._client, this.id, this.workspaceFolder);
+
+  /// Helper to attach the workspaceId to every request.
+  Future<T> _request<T>(String method, [Map<String, Object?>? params]) async {
+    return await _client._peer.request<T>(method, {
+      ...?params,
+      'workspaceId': id,
+    });
+  }
+
+  /// Write [text] to file at [uri] in this workspace.
+  Future<void> writeFileFromText(String uri, String text) =>
+      _request('workspace/writeFileFromText', {'uri': uri, 'text': text});
+
+  /// Write [bytes] to file at [uri] in this workspace.
+  Future<void> writeFileFromBytes(String uri, Uint8List bytes) =>
+      _request('workspace/writeFileFromBytes', {'uri': uri, 'bytes': bytes});
+
+  /// Read file at [uri] in this workspace as UTF-8 string.
+  Future<String> readFileAsText(String uri) async {
+    final result = await _request<Map>('workspace/readFileAsText', {
+      'uri': uri,
+    });
+    return result['text'] as String;
+  }
+
+  /// Read file at [uri] in this workspace as bytes.
+  Future<Uint8List> readFileAsBytes(String uri) async {
+    final result = await _request<Map>('workspace/readFileAsBytes', {
+      'uri': uri,
+    });
+    return result['bytes'] as Uint8List;
+  }
+
+  /// Extract [tarArchive] into folder at [uri] in this workspace.
+  Future<void> importTarArchive(String uri, Uint8List tarArchive) =>
+      _request('workspace/importTarArchive', {'uri': uri, 'bytes': tarArchive});
+
+  /// Export files from [uri] in this workspace to a tar-archive.
+  Future<Uint8List> exportTarArchive(String uri) async {
+    final result = await _request<Map>('workspace/exportTarArchive', {
+      'uri': uri,
+    });
+    return result['bytes'] as Uint8List;
+  }
+
+  /// Delete file or folder at [uri] in this workspace.
+  Future<void> deleteFileSystemEntity(String uri) =>
+      _request('workspace/deleteFileSystemEntity', {'uri': uri});
+
+  /// Get information about a file or folder in this workspace.
+  Future<({String type, int? size})> stat(String uri) async {
+    final result = await _request<Map>('workspace/stat', {'uri': uri});
+    return (
+      type: result['type'] as String,
+      size: (result['size'] as num?)?.toInt(),
+    );
+  }
+
+  /// Returns true if a file exists at [uri] in this workspace.
+  Future<bool> fileExist(String uri) async {
+    try {
+      final s = await stat(uri);
+      return s.type == 'file';
+    } on FileNotFoundException {
+      return false;
+    }
+  }
+
+  /// Returns true if a folder exists at [uri] in this workspace.
+  Future<bool> folderExist(String uri) async {
+    try {
+      final s = await stat(uri);
+      return s.type == 'folder';
+    } on FileNotFoundException {
+      return false;
+    }
+  }
+
+  /// Create a folder at [uri] in this workspace.
+  Future<void> createFolder(String uri) =>
+      _request('workspace/createFolder', {'uri': uri});
+
+  /// List folder at [uri] in this workspace.
+  ///
+  /// Returns a list of entries on the form:
+  ///  * `path`, `path/to/file` relative to [uri] given.
+  ///  * `type`, `'file'` or `'folder'`.
+  Future<List<({String path, String type})>> listDirectory({
+    required String uri,
+    bool recursive = false,
+    bool ignoreHidden = false,
+  }) async {
+    final result = await _request<Map>('workspace/listDirectory', {
+      'uri': uri,
+      'recursive': recursive,
+      'ignoreHidden': ignoreHidden,
+    });
+    return (result['entries'] as List).map((e) {
+      final map = e as Map;
+      return (path: map['path'] as String, type: map['type'] as String);
+    }).toList();
+  }
+
+  /// Watch a file or directory for changes.
+  WorkspaceWatcher watch(String uri) =>
+      WorkspaceWatcher._(this, Uri.parse(uri));
+
+  /// Invoke a `dart pub` [command] with [args].
+  ///
+  /// The following commands are supported:
+  ///  * `get`,
+  ///  * `add`,
+  ///  * `downgrade`,
+  ///  * `outdated`,
+  ///  * `upgrade`,
+  ///  * `remove`, and,
+  ///  * `unpack`.
+  ///
+  /// Throws [PubCommandFailedException], if the command exited non-zero.
+  ///
+  /// Returns a `log` containing lines from stdout.
+  Future<({String log})> pub({
+    String uri = '',
+    required String command,
+    List<String> args = const <String>[],
+  }) async {
+    final result = await _request<Map>('workspace/pub', {
+      'uri': uri,
+      'command': command,
+      'args': args,
+    });
+    return (log: result['log'] as String);
+  }
+
+  /// Start a language server talking the [LSP] protocol.
+  ///
+  /// [LSP]: https://microsoft.github.io/language-server-protocol/
+  Future<LanguageServer> startLanguageServer() async {
+    final result = await _request<Map>('workspace/startLanguageServer');
+    final lsId = (result['languageServerId'] as num).toInt();
+
+    final ls = LanguageServer._(_client, this, lsId);
+    _client._languageServers[lsId] = ls;
+    return ls;
+  }
+
+  /// Connect to a [SandboxedIframe] using a [MessagePort].
+  ///
+  /// A [SandboxedIframe] can only be connected to one [Workspace].
+  ///
+  /// Once connected, you get a [Sandbox] object for controlling compilation
+  /// and execution within the sandboxed iframe.
+  ///
+  /// You may pass [SandboxedIframe.port] directly, or use
+  /// [MessagePort.asBinaryChannel] / [MessagePort.fromBinaryChannel] to proxy
+  /// the message port over a different transport layer.
+  Future<Sandbox> connectSandboxedIframe(MessagePort port) async {
+    final result = await _request<Map>('workspace/connectSandbox', {
+      'port': port,
+    });
+    final id = result['sandboxId'] as int;
+    final modes = (result['modes'] as List).cast<String>();
+    return _client._sandboxes[id] = Sandbox._(this, id, modes);
+  }
+
+  /// Destroy this workspace and all resources held by it.
+  ///
+  /// While sandboxes are controlled through the worker, the [SandboxedIframe]
+  /// will have to be removed using [SandboxedIframe.close].
+  Future<void> dispose() async {
+    try {
+      await _client._peer.request<void>('workspace/dispose', {
+        'workspaceId': id,
+      });
+    } finally {
+      final sandboxes = _client._sandboxes.values
+          .where((s) => s._workspace == this)
+          .toList();
+      for (final s in sandboxes) {
+        try {
+          s._cleanup();
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+  }
+}
+
+/// A client for the language server running within a workspace.
+final class LanguageServer {
+  final WorkerClient _client;
+  final Workspace workspace;
+  final int id;
+
+  final _incomingMessages = StreamController<Object?>();
+  final _outgoingMessages = StreamController<Object?>();
+  late final StreamChannel<Object?> _channel;
+
+  LanguageServer._(this._client, this.workspace, this.id) {
+    _channel = StreamChannel(_incomingMessages.stream, _outgoingMessages.sink);
+
+    // Forward outgoing LSP messages to the worker tunnel
+    _outgoingMessages.stream.listen((message) {
+      _client._peer.sendNotification('workspace/languageServer/message', {
+        'workspaceId': workspace.id,
+        'languageServerId': id,
+        'message': message,
+      });
+    });
+  }
+
+  /// Communication channel over which standard LSP JSON-RPC 2.0 messages
+  /// travel.
+  ///
+  /// These are not encoded as JSON Strings, but instead travels as the kind of
+  /// JSON values returned by [json] codec from `dart:convert`.
+  StreamChannel<Object?> get languageServerChannel => _channel;
+
+  /// Stops the language server.
+  Future<void> stop() async {
+    try {
+      await _client._peer.request<void>('workspace/languageServer/stop', {
+        'workspaceId': workspace.id,
+        'languageServerId': id,
+      });
+    } catch (_) {
+      // Ignore if already closed
+    } finally {
+      _cleanup();
+    }
+  }
+
+  void _handleExited() {
+    _cleanup();
+  }
+
+  void _cleanup() {
+    _client._languageServers.remove(id);
+    _incomingMessages.close();
+    _outgoingMessages.close();
+  }
+}
+
+/// A client object for watching for file changes inside a [Workspace].
+///
+/// A [WorkspaceWatcher] object does not listen for events until someone
+/// subscribes to [changes] for events. Events are not garenteed until [ready]
+/// is resolved, and [ready] will not resolve until someone subscribes to
+/// [changes].
+final class WorkspaceWatcher {
+  final Workspace workspace;
+
+  /// Folder or file to be watched.
+  final Uri uri;
+
+  var _watcherId = Completer<int>();
+  late final StreamController<FileChangeEvent> _controller;
+
+  WorkspaceWatcher._(this.workspace, this.uri) {
+    _controller = StreamController<FileChangeEvent>.broadcast(
+      onListen: _onListen,
+      onCancel: _onCancel,
+    );
+  }
+
+  /// Broadcast stream with [FileChangeEvent] for [uri].
+  ///
+  /// File changes will only be reported while this stream subscribers.
+  /// When a subscription is made, events prior to [ready] being resolved may
+  /// not be reported.
+  ///
+  /// Generally, you should subscribe to the [changes] stream, and wait for
+  /// [ready] before assuming that events for file changes will arrive.
+  Stream<FileChangeEvent> get changes => _controller.stream;
+
+  /// A [Future] that completes when the watcher is initialized and reporting
+  /// events in [changes].
+  ///
+  /// This future will not complete until a subscription to [changes] has been
+  /// made. This future will change when all subscriptions to [changes] are
+  /// cancelled.
+  Future<void> get ready => _watcherId.future;
+
+  /// True, if watcher is initialized and reporting events in [changes].
+  bool get isReady => _watcherId.isCompleted;
+
+  void _onListen() {
+    assert(!_watcherId.isCompleted);
+    _watcherId.complete(
+      Future(() async {
+        final result = await workspace._request<Map>('workspace/startWatcher', {
+          'uri': uri.toString(),
+        });
+        final watcherId = (result['watcherId'] as num).toInt();
+        workspace._client._watchers[watcherId] = _controller;
+        return watcherId;
+      }),
+    );
+  }
+
+  void _onCancel() {
+    _watcherId.future.then((watcherId) async {
+      try {
+        await workspace._request<Map>('workspace/watcher/stop', {
+          'watcherId': watcherId,
+        });
+      } finally {
+        workspace._client._watchers.remove(watcherId);
+      }
+    }).ignore();
+    _watcherId = Completer();
+  }
+}
+
+/// Represents a change to a file or directory in the workspace.
+sealed class FileChangeEvent {
+  /// Absolute URI of the file or folder.
+  final Uri uri;
+  const FileChangeEvent(this.uri);
+}
+
+/// An event fired when a file or directory is added to the workspace.
+final class FileAddedEvent extends FileChangeEvent {
+  const FileAddedEvent(super.uri);
+}
+
+/// An event fired when a file or directory in the workspace is modified.
+final class FileModifiedEvent extends FileChangeEvent {
+  const FileModifiedEvent(super.uri);
+}
+
+/// An event fired when a file or directory is removed from the workspace.
+final class FileRemovedEvent extends FileChangeEvent {
+  const FileRemovedEvent(super.uri);
+}
+
+extension on rpc.Peer {
+  /// Wrap [sendRequest] with casting the return to [T]
+  Future<T> request<T>(String method, [Object? parameters]) async {
+    try {
+      return await sendRequest(method, parameters) as T;
+    } on rpc.RpcException catch (e) {
+      rethrowAsDartPadException(e);
+    }
+  }
+}
+
+/// A client for running Dart code from a [Workspace] inside a
+/// [SandboxedIframe].
+///
+/// The [Sandbox] client object controls what is going on inside the `<iframe>`,
+/// communication is proxied by the [Workspace] it is connected to, and methods
+/// like [run] resolve paths given relative to the
+/// connected [Workspace].
+final class Sandbox {
+  final Workspace _workspace;
+  final int _id;
+
+  /// The available _run modes_ for this sandbox.
+  ///
+  /// {@template run_modes}
+  /// A [DartPadSdk] defines one or more _modes_ that code a run using.
+  ///
+  /// The [DartPadSdk] for **Dart** defines _run modes_:
+  ///  * `mode: 'console'` for running `main()` as a console app.
+  ///
+  /// The [DartPadSdk] for **Flutter** defines _run modes_:
+  ///  * `mode: 'console'` for running `main()` as a console app.
+  ///  * `mode: 'flutter'` for wrapping a `main()` that calls `runApp()` in a
+  ///    manner that configures the flutter engine.
+  /// {@endtemplate}
+  final List<String> modes;
+
+  Sandbox._(this._workspace, this._id, this.modes);
+
+  final _consoleController = StreamController<String>.broadcast();
+  final _errorController = StreamController<String>.broadcast();
+  final _unhandledRejectionController = StreamController<String>.broadcast();
+  final _extensionEventController =
+      StreamController<({String kind, Map<String, Object?> data})>.broadcast();
+
+  /// A stream of console messages produced by the running application.
+  Stream<String> get console => _consoleController.stream;
+
+  /// A stream of messages from `window.onerror`.
+  // TODO(jonasfj): Consider folding errors and unhandledRejections into console
+  //                output, and then instead wrap dart entrypoint in a Zone
+  //                that catches errors, pretty prints them and communicates
+  //                them out in a completely different unhandleException stream.
+  //                window.onerror doesn't get pretty messages.
+  Stream<String> get errors => _errorController.stream;
+
+  /// A stream of unhandled JS promise rejections from the running application.
+  Stream<String> get unhandledRejections =>
+      _unhandledRejectionController.stream;
+
+  /// A stream of developer extension events fired by the running application.
+  Stream<({String kind, Map<String, Object?> data})> get extensionEvents =>
+      _extensionEventController.stream;
+
+  /// Compiles and runs a Dart entrypoint in the sandbox.
+  ///
+  /// The [path] should be relative to the workspace folder (e.g.,
+  /// `'bin/main.dart'` or `'lib/main.dart'`).
+  ///
+  /// The [mode] must be one of the supported [modes].
+  ///
+  /// {@macro run_modes}
+  Future<({String log})> run(String path, {required String mode}) async {
+    final result = await _workspace._request<Map>('workspace/sandbox/run', {
+      'sandboxId': _id,
+      'path': path,
+      'mode': mode,
+    });
+    return (log: result['log'] as String);
+  }
+
+  /// Hot restarts the currently running application in the sandbox.
+  ///
+  /// This recompiles the entrypoint and fully reloads the application state.
+  Future<({String log})> hotRestart() async {
+    final result = await _workspace._request<Map>(
+      'workspace/sandbox/hotRestart',
+      {'sandboxId': _id},
+    );
+    return (log: result['log'] as String);
+  }
+
+  /// Hot reloads the currently running application in the sandbox.
+  ///
+  /// This recompiles the application incrementally, preserving its state.
+  Future<({String log})> hotReload() async {
+    final result = await _workspace._request<Map>(
+      'workspace/sandbox/hotReload',
+      {'sandboxId': _id},
+    );
+    return (log: result['log'] as String);
+  }
+
+  /// Invokes a Dart developer extension method in the sandbox.
+  ///
+  /// [method] is the name of the extension method (e.g.,
+  /// `'ext.flutter.reassemble'`).
+  /// [args] are passed as parameters to the extension method.
+  Future<String> invokeExtension(
+    String method,
+    Map<String, String> args,
+  ) async {
+    final result = await _workspace._request<Map>(
+      'workspace/sandbox/invokeExtension',
+      {'sandboxId': _id, 'method': method, 'args': args},
+    );
+    return result['result'] as String;
+  }
+
+  /// Release resources associated with this [Sandbox].
+  ///
+  /// This does not remove the `<iframe>`.
+  Future<void> close() async {
+    try {
+      await _workspace._request<Map>('workspace/sandbox/close', {
+        'sandboxId': _id,
+      });
+    } catch (_) {
+      // Ignore if already closed
+    } finally {
+      _cleanup();
+    }
+  }
+
+  void _cleanup() {
+    _consoleController.close().ignore();
+    _errorController.close().ignore();
+    _unhandledRejectionController.close().ignore();
+    _extensionEventController.close().ignore();
+    _workspace._client._sandboxes.remove(_id);
+  }
+}
