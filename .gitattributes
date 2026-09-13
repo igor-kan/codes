@@ -1,0 +1,16 @@
+# GitHub Linguist Overrides
+# Ensure all multi-language algorithms, architectures, patterns, and scripts are indexed
+
+languages/** linguist-vendored=false
+languages/** linguist-documentation=false
+architectures/** linguist-vendored=false
+architectures/** linguist-documentation=false
+algorithms/** linguist-vendored=false
+algorithms/** linguist-documentation=false
+scripts/** linguist-vendored=false
+scripts/** linguist-documentation=false
+
+# Keep documentation files marked as documentation so they do not pollute code metrics
+*.md linguist-documentation=true
+*.txt linguist-documentation=true
+LICENSE linguist-documentation=true
