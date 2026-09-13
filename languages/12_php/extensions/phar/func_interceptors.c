@@ -1,0 +1,989 @@
+/*
+  +----------------------------------------------------------------------+
+  | phar php single-file executable PHP extension                        |
+  +----------------------------------------------------------------------+
+  | Copyright © The PHP Group and Contributors.                          |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the Modified BSD License that is      |
+  | bundled with this package in the file LICENSE, and is available      |
+  | through the World Wide Web at <https://www.php.net/license/>.        |
+  |                                                                      |
+  | SPDX-License-Identifier: BSD-3-Clause                                |
+  +----------------------------------------------------------------------+
+  | Authors: Gregory Beaver <cellog@php.net>                             |
+  +----------------------------------------------------------------------+
+*/
+
+#include "phar_internal.h"
+#include "ext/standard/php_filestat.h"
+#include "ext/standard/file.h" /* For php_le_stream_context() */
+
+PHP_FUNCTION(phar_opendir) /* {{{ */
+{
+	char *filename;
+	size_t filename_len;
+	zval *zcontext = NULL;
+
+	if (!PHAR_G(intercepted)) {
+		goto skip_phar;
+	}
+
+	if ((HT_IS_INITIALIZED(&PHAR_G(phar_fname_map)) && !zend_hash_num_elements(&(PHAR_G(phar_fname_map))))
+		&& !HT_IS_INITIALIZED(&cached_phars)) {
+		goto skip_phar;
+	}
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "p|r!", &filename, &filename_len, &zcontext) == FAILURE) {
+		RETURN_THROWS();
+	}
+
+	if (!IS_ABSOLUTE_PATH(filename, filename_len) && !strstr(filename, "://")) {
+		zend_string *fname = zend_get_executed_filename_ex();
+
+		/* we are checking for existence of a file within the relative path.  Chances are good that this is
+		   retrieving something from within the phar archive */
+		if (!fname || !zend_string_starts_with_literal_ci(fname, "phar://")) {
+			goto skip_phar;
+		}
+
+		zend_string *arch = phar_split_fname(ZSTR_VAL(fname), ZSTR_LEN(fname), NULL, 2, 0);
+		if (arch) {
+			php_stream_context *context = NULL;
+			php_stream *stream;
+			char *name;
+
+			/* fopen within phar, if :// is not in the url, then prepend phar://<archive>/ */
+			/* retrieving a file within the current directory, so use this if possible */
+			zend_string *entry = phar_fix_filepath(filename, filename_len, true);
+
+			if (ZSTR_VAL(entry)[0] == '/') {
+				spprintf(&name, 4096, "phar://%s%s", ZSTR_VAL(arch), ZSTR_VAL(entry));
+			} else {
+				spprintf(&name, 4096, "phar://%s/%s", ZSTR_VAL(arch), ZSTR_VAL(entry));
+			}
+			zend_string_release_ex(entry, false);
+			zend_string_release_ex(arch, false);
+			if (zcontext) {
+				context = php_stream_context_from_zval(zcontext, 0);
+			}
+			stream = php_stream_opendir(name, REPORT_ERRORS, context);
+			efree(name);
+			if (!stream) {
+				RETURN_FALSE;
+			}
+			php_stream_to_zval(stream, return_value);
+			return;
+		}
+	}
+skip_phar:
+	PHAR_G(orig_opendir)(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+}
+/* }}} */
+
+static zend_string* phar_get_name_for_relative_paths(zend_string *filename, bool using_include_path)
+{
+	zend_string *fname = zend_get_executed_filename_ex();
+
+	/* we are checking for existence of a file within the relative path.  Chances are good that this is
+	   retrieving something from within the phar archive */
+	if (!fname || !zend_string_starts_with_literal_ci(fname, "phar://")) {
+		return NULL;
+	}
+
+	zend_string *arch = phar_split_fname(ZSTR_VAL(fname), ZSTR_LEN(fname), NULL, 2, 0);
+	if (!arch) {
+		return NULL;
+	}
+
+	/* fopen within phar, if :// is not in the url, then prepend phar://<archive>/ */
+	/* retrieving a file defaults to within the current directory, so use this if possible */
+	phar_archive_data *phar = phar_get_archive(ZSTR_VAL(arch), ZSTR_LEN(arch), NULL, 0, NULL);
+	if (!phar) {
+		zend_string_release_ex(arch, false);
+		return NULL;
+	}
+
+	zend_string *name = NULL;
+	if (using_include_path) {
+		name = phar_find_in_include_path(filename);
+		if (!name) {
+			/* this file is not in the phar, use the original path */
+			zend_string_release_ex(arch, false);
+			return NULL;
+		}
+	} else {
+		zend_string *entry = phar_fix_filepath(ZSTR_VAL(filename), ZSTR_LEN(filename), true);
+		bool is_in_phar;
+		if (ZSTR_VAL(entry)[0] == '/') {
+			is_in_phar = zend_hash_str_exists(&(phar->manifest), ZSTR_VAL(entry) + 1, ZSTR_LEN(entry) - 1);
+		} else {
+			is_in_phar = zend_hash_exists(&(phar->manifest), entry);
+		}
+		/* this file is not in the phar, use the original path */
+		if (!is_in_phar) {
+			zend_string_release_ex(entry, false);
+			zend_string_release_ex(arch, false);
+			return NULL;
+		}
+		/* auto-convert to phar:// */
+		if (ZSTR_VAL(entry)[0] == '/') {
+			ZEND_ASSERT(strlen("phar://") + ZSTR_LEN(arch) + ZSTR_LEN(entry) < 4096);
+			name = zend_string_concat3(
+				"phar://", strlen("phar://"),
+				ZSTR_VAL(arch), ZSTR_LEN(arch),
+				ZSTR_VAL(entry), ZSTR_LEN(entry)
+			);
+		} else {
+			name = strpprintf(4096, "phar://%s/%s", ZSTR_VAL(arch), ZSTR_VAL(entry));
+		}
+		zend_string_release_ex(entry, false);
+	}
+
+	zend_string_release_ex(arch, false);
+	return name;
+}
+
+PHP_FUNCTION(phar_file_get_contents) /* {{{ */
+{
+	zend_string *filename;
+	zend_string *contents;
+	bool use_include_path = false;
+	zend_long offset = -1;
+	zend_long maxlen;
+	bool maxlen_is_null = true;
+	zval *zcontext = NULL;
+
+	if (!PHAR_G(intercepted)) {
+		goto skip_phar;
+	}
+
+	if ((HT_IS_INITIALIZED(&PHAR_G(phar_fname_map)) && !zend_hash_num_elements(&(PHAR_G(phar_fname_map))))
+		&& !HT_IS_INITIALIZED(&cached_phars)) {
+		goto skip_phar;
+	}
+
+	/* Parse arguments */
+	if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "P|br!ll!", &filename, &use_include_path, &zcontext, &offset, &maxlen, &maxlen_is_null) == FAILURE) {
+		goto skip_phar;
+	}
+
+	if (maxlen_is_null) {
+		maxlen = (ssize_t) PHP_STREAM_COPY_ALL;
+	} else if (maxlen < 0) {
+		zend_argument_value_error(5, "must be greater than or equal to 0");
+		RETURN_THROWS();
+	}
+
+	if (use_include_path || (!IS_ABSOLUTE_PATH(ZSTR_VAL(filename), ZSTR_LEN(filename)) && !strstr(ZSTR_VAL(filename), "://"))) {
+		zend_string *name = phar_get_name_for_relative_paths(filename, use_include_path);
+		if (!name) {
+			goto skip_phar;
+		}
+
+		php_stream_context *context = NULL;
+		php_stream *stream;
+
+		if (zcontext) {
+			context = php_stream_context_from_zval(zcontext, 0);
+		}
+		stream = php_stream_open_wrapper_ex(ZSTR_VAL(name), "rb", 0 | REPORT_ERRORS, NULL, context);
+
+		zend_string_release_ex(name, false);
+
+		if (!stream) {
+			RETURN_FALSE;
+		}
+
+		if (offset > 0 && php_stream_seek(stream, offset, SEEK_SET) < 0) {
+			php_error_docref(NULL, E_WARNING, "Failed to seek to position " ZEND_LONG_FMT " in the stream", offset);
+			php_stream_close(stream);
+			RETURN_FALSE;
+		}
+
+		/* uses mmap if possible */
+		contents = php_stream_copy_to_mem(stream, maxlen, 0);
+		if (contents && ZSTR_LEN(contents) > 0) {
+			RETVAL_STR(contents);
+		} else if (contents) {
+			zend_string_release_ex(contents, 0);
+			RETVAL_EMPTY_STRING();
+		} else {
+			RETVAL_FALSE;
+		}
+
+		php_stream_close(stream);
+		return;
+	}
+skip_phar:
+	PHAR_G(orig_file_get_contents)(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+}
+/* }}} */
+
+PHP_FUNCTION(phar_readfile) /* {{{ */
+{
+	zend_string *filename;
+	bool use_include_path = false;
+	zval *zcontext = NULL;
+
+	if (!PHAR_G(intercepted)) {
+		goto skip_phar;
+	}
+
+	if ((HT_IS_INITIALIZED(&PHAR_G(phar_fname_map)) && !zend_hash_num_elements(&(PHAR_G(phar_fname_map))))
+		&& !HT_IS_INITIALIZED(&cached_phars)) {
+		goto skip_phar;
+	}
+	if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "P|br!", &filename, &use_include_path, &zcontext) == FAILURE) {
+		goto skip_phar;
+	}
+	if (use_include_path || (!IS_ABSOLUTE_PATH(ZSTR_VAL(filename), ZSTR_LEN(filename)) && !strstr(ZSTR_VAL(filename), "://"))) {
+		zend_string *name = phar_get_name_for_relative_paths(filename, use_include_path);
+		if (!name) {
+			goto skip_phar;
+		}
+
+		php_stream *stream;
+		php_stream_context *context = php_stream_context_from_zval(zcontext, 0);
+
+		stream = php_stream_open_wrapper_ex(ZSTR_VAL(name), "rb", 0 | REPORT_ERRORS, NULL, context);
+
+		zend_string_release_ex(name, false);
+		if (stream == NULL) {
+			RETURN_FALSE;
+		}
+		ssize_t size = php_stream_passthru(stream);
+		php_stream_close(stream);
+		RETURN_LONG(size);
+	}
+
+skip_phar:
+	PHAR_G(orig_readfile)(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+
+}
+/* }}} */
+
+PHP_FUNCTION(phar_fopen) /* {{{ */
+{
+	zend_string *filename;
+	char *mode;
+	size_t mode_len;
+	bool use_include_path = false;
+	zval *zcontext = NULL;
+
+	if (!PHAR_G(intercepted)) {
+		goto skip_phar;
+	}
+
+	if ((HT_IS_INITIALIZED(&PHAR_G(phar_fname_map)) && !zend_hash_num_elements(&(PHAR_G(phar_fname_map))))
+		&& !HT_IS_INITIALIZED(&cached_phars)) {
+		/* no need to check, include_path not even specified in fopen/ no active phars */
+		goto skip_phar;
+	}
+	if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "Ps|br!", &filename, &mode, &mode_len, &use_include_path, &zcontext) == FAILURE) {
+		goto skip_phar;
+	}
+	if (use_include_path || (!IS_ABSOLUTE_PATH(ZSTR_VAL(filename), ZSTR_LEN(filename)) && !strstr(ZSTR_VAL(filename), "://"))) {
+		zend_string *name = phar_get_name_for_relative_paths(filename, use_include_path);
+		if (!name) {
+			goto skip_phar;
+		}
+
+		php_stream *stream;
+		php_stream_context *context = php_stream_context_from_zval(zcontext, 0);
+
+		stream = php_stream_open_wrapper_ex(ZSTR_VAL(name), mode, 0 | REPORT_ERRORS, NULL, context);
+
+		zend_string_release_ex(name, false);
+		if (stream == NULL) {
+			RETURN_FALSE;
+		}
+		php_stream_to_zval(stream, return_value);
+		if (zcontext) {
+			Z_ADDREF_P(zcontext);
+		}
+		return;
+	}
+skip_phar:
+	PHAR_G(orig_fopen)(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+}
+/* }}} */
+
+#define IS_LINK_OPERATION(__t) ((__t) == FS_TYPE || (__t) == FS_IS_LINK || (__t) == FS_LSTAT)
+#define IS_EXISTS_CHECK(__t) ((__t) == FS_EXISTS  || (__t) == FS_IS_W || (__t) == FS_IS_R || (__t) == FS_IS_X || (__t) == FS_IS_FILE || (__t) == FS_IS_DIR || (__t) == FS_IS_LINK)
+#define IS_ABLE_CHECK(__t) ((__t) == FS_IS_R || (__t) == FS_IS_W || (__t) == FS_IS_X)
+#define IS_ACCESS_CHECK(__t) (IS_ABLE_CHECK(type) || (__t) == FS_EXISTS)
+
+/* {{{ php_stat */
+static void phar_fancy_stat(zend_stat_t *stat_sb, int type, zval *return_value)
+{
+	zval stat_dev, stat_ino, stat_mode, stat_nlink, stat_uid, stat_gid, stat_rdev,
+		 stat_size, stat_atime, stat_mtime, stat_ctime, stat_blksize, stat_blocks;
+	int rmask=S_IROTH, wmask=S_IWOTH, xmask=S_IXOTH; /* access rights defaults to other */
+
+	if (type >= FS_IS_W && type <= FS_IS_X) {
+		if(stat_sb->st_uid==getuid()) {
+			rmask=S_IRUSR;
+			wmask=S_IWUSR;
+			xmask=S_IXUSR;
+		} else if(stat_sb->st_gid==getgid()) {
+			rmask=S_IRGRP;
+			wmask=S_IWGRP;
+			xmask=S_IXGRP;
+		} else {
+			int groups = getgroups(0, NULL);
+			if (groups > 0) {
+				gid_t *gids = safe_emalloc(groups, sizeof(gid_t), 0);
+				int n = getgroups(groups, gids);
+				for(int i = 0; i < n; ++i){
+					if (stat_sb->st_gid==gids[i]) {
+						rmask=S_IRGRP;
+						wmask=S_IWGRP;
+						xmask=S_IXGRP;
+						break;
+					}
+				}
+				efree(gids);
+			}
+		}
+	}
+
+	switch (type) {
+	case FS_PERMS:
+		RETURN_LONG((zend_long)stat_sb->st_mode);
+	case FS_INODE:
+		RETURN_LONG((zend_long)stat_sb->st_ino);
+	case FS_SIZE:
+		RETURN_LONG((zend_long)stat_sb->st_size);
+	case FS_OWNER:
+		RETURN_LONG((zend_long)stat_sb->st_uid);
+	case FS_GROUP:
+		RETURN_LONG((zend_long)stat_sb->st_gid);
+	case FS_ATIME:
+		RETURN_LONG((zend_long)stat_sb->st_atime);
+	case FS_MTIME:
+		RETURN_LONG((zend_long)stat_sb->st_mtime);
+	case FS_CTIME:
+		RETURN_LONG((zend_long)stat_sb->st_ctime);
+	case FS_TYPE:
+		if (S_ISLNK(stat_sb->st_mode)) {
+			RETURN_STRING("link");
+		}
+		switch(stat_sb->st_mode & S_IFMT) {
+		case S_IFDIR: RETURN_STRING("dir");
+		case S_IFREG: RETURN_STRING("file");
+		}
+		php_error_docref(NULL, E_NOTICE, "Unknown file type (%u)", stat_sb->st_mode & S_IFMT);
+		RETURN_STRING("unknown");
+	case FS_IS_W:
+		RETURN_BOOL((stat_sb->st_mode & wmask) != 0);
+	case FS_IS_R:
+		RETURN_BOOL((stat_sb->st_mode&rmask)!=0);
+	case FS_IS_X:
+		RETURN_BOOL((stat_sb->st_mode&xmask)!=0 && !S_ISDIR(stat_sb->st_mode));
+	case FS_IS_FILE:
+		RETURN_BOOL(S_ISREG(stat_sb->st_mode));
+	case FS_IS_DIR:
+		RETURN_BOOL(S_ISDIR(stat_sb->st_mode));
+	case FS_IS_LINK:
+		RETURN_BOOL(S_ISLNK(stat_sb->st_mode));
+	case FS_EXISTS:
+		RETURN_TRUE; /* the false case was done earlier */
+	case FS_LSTAT:
+		/* FALLTHROUGH */
+	case FS_STAT:
+		array_init(return_value);
+
+		ZVAL_LONG(&stat_dev, stat_sb->st_dev);
+		ZVAL_LONG(&stat_ino, stat_sb->st_ino);
+		ZVAL_LONG(&stat_mode, stat_sb->st_mode);
+		ZVAL_LONG(&stat_nlink, stat_sb->st_nlink);
+		ZVAL_LONG(&stat_uid, stat_sb->st_uid);
+		ZVAL_LONG(&stat_gid, stat_sb->st_gid);
+#ifdef HAVE_STRUCT_STAT_ST_RDEV
+		ZVAL_LONG(&stat_rdev, stat_sb->st_rdev);
+#else
+		ZVAL_LONG(&stat_rdev, -1);
+#endif
+		ZVAL_LONG(&stat_size, stat_sb->st_size);
+		ZVAL_LONG(&stat_atime, stat_sb->st_atime);
+		ZVAL_LONG(&stat_mtime, stat_sb->st_mtime);
+		ZVAL_LONG(&stat_ctime, stat_sb->st_ctime);
+#ifdef HAVE_STRUCT_STAT_ST_BLKSIZE
+		ZVAL_LONG(&stat_blksize, stat_sb->st_blksize);
+#else
+		ZVAL_LONG(&stat_blksize,-1);
+#endif
+#ifdef HAVE_STRUCT_STAT_ST_BLOCKS
+		ZVAL_LONG(&stat_blocks, stat_sb->st_blocks);
+#else
+		ZVAL_LONG(&stat_blocks,-1);
+#endif
+		/* Store numeric indexes in proper order */
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_dev);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_ino);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_mode);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_nlink);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_uid);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_gid);
+
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_rdev);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_size);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_atime);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_mtime);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_ctime);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_blksize);
+		zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &stat_blocks);
+
+		/* Store string indexes referencing the same zval*/
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("dev"), &stat_dev);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("ino"), &stat_ino);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("mode"), &stat_mode);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("nlink"), &stat_nlink);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("uid"), &stat_uid);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("gid"), &stat_gid);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("rdev"), &stat_rdev);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("size"), &stat_size);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("atime"), &stat_atime);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("mtime"), &stat_mtime);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("ctime"), &stat_ctime);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("blksize"), &stat_blksize);
+		zend_hash_str_update(Z_ARRVAL_P(return_value), ZEND_STRL("blocks"), &stat_blocks);
+
+		return;
+	}
+	php_error_docref(NULL, E_WARNING, "Didn't understand stat call");
+	RETURN_FALSE;
+}
+/* }}} */
+
+static void phar_file_stat(const char *filename, size_t filename_length, int type, zif_handler orig_stat_func, INTERNAL_FUNCTION_PARAMETERS) /* {{{ */
+{
+	if (!filename_length) {
+		RETURN_FALSE;
+	}
+
+	if (!IS_ABSOLUTE_PATH(filename, filename_length) && !strstr(filename, "://")) {
+		zend_string *fname;
+		zend_stat_t sb = {0};
+		phar_archive_data *phar;
+
+		fname = zend_get_executed_filename_ex();
+
+		/* we are checking for existence of a file within the relative path.  Chances are good that this is
+		   retrieving something from within the phar archive */
+		if (!fname || !zend_string_starts_with_literal_ci(fname, "phar://")) {
+			goto skip_phar;
+		}
+
+		if (PHAR_G(last_phar) && ZSTR_LEN(fname) - 7 >= ZSTR_LEN(PHAR_G(last_phar_name)) && !memcmp(ZSTR_VAL(fname) + 7, ZSTR_VAL(PHAR_G(last_phar_name)), ZSTR_LEN(PHAR_G(last_phar_name)))) {
+			/* fopen within phar, if :// is not in the url, then prepend phar://<archive>/ */
+			phar = PHAR_G(last_phar);
+			goto splitted;
+		}
+
+		zend_string *arch = phar_split_fname(ZSTR_VAL(fname), ZSTR_LEN(fname), NULL, 2, 0);
+		if (arch) {
+			/* fopen within phar, if :// is not in the url, then prepend phar://<archive>/ */
+			phar = phar_get_archive(ZSTR_VAL(arch), ZSTR_LEN(arch), NULL, 0, NULL);
+			zend_string_release_ex(arch, false);
+			if (!phar) {
+				goto skip_phar;
+			}
+splitted:;
+			zend_string *entry = phar_fix_filepath(filename, filename_length, true);
+			const phar_entry_info *data = NULL;
+			if (ZSTR_VAL(entry)[0] == '/') {
+				data = zend_hash_str_find_ptr(&(phar->manifest), ZSTR_VAL(entry) + 1, ZSTR_LEN(entry) - 1);
+				if (data) {
+					zend_string_release_ex(entry, false);
+					goto stat_entry;
+				}
+				goto notfound;
+			}
+			data = zend_hash_find_ptr(&(phar->manifest), entry);
+			if (data) {
+				zend_string_release_ex(entry, false);
+				goto stat_entry;
+			}
+			if (zend_hash_exists(&(phar->virtual_dirs), entry)) {
+				zend_string_release_ex(entry, false);
+				if (IS_EXISTS_CHECK(type)) {
+					RETURN_TRUE;
+				}
+				sb.st_size = 0;
+				sb.st_mode = 0777;
+				sb.st_mode |= S_IFDIR; /* regular directory */
+				sb.st_mtime = phar->max_timestamp;
+				sb.st_atime = phar->max_timestamp;
+				sb.st_ctime = phar->max_timestamp;
+				goto statme_baby;
+			} else {
+				char *save;
+				size_t save_len;
+
+notfound:
+				zend_string_release_ex(entry, false);
+				save = PHAR_G(cwd);
+				save_len = PHAR_G(cwd_len);
+				/* this file is not in the current directory, use the original path */
+				PHAR_G(cwd) = "/";
+				PHAR_G(cwd_len) = 0;
+				/* clean path without cwd */
+				entry = phar_fix_filepath(filename, filename_length, true);
+				data = zend_hash_str_find_ptr(&(phar->manifest), ZSTR_VAL(entry) + 1, ZSTR_LEN(entry) - 1);
+				if (data) {
+					PHAR_G(cwd) = save;
+					PHAR_G(cwd_len) = save_len;
+					zend_string_release_ex(entry, false);
+					if (IS_EXISTS_CHECK(type)) {
+						RETURN_TRUE;
+					}
+					goto stat_entry;
+				}
+				if (zend_hash_str_exists(&(phar->virtual_dirs), ZSTR_VAL(entry) + 1, ZSTR_LEN(entry) - 1)) {
+					PHAR_G(cwd) = save;
+					PHAR_G(cwd_len) = save_len;
+					zend_string_release_ex(entry, false);
+					if (IS_EXISTS_CHECK(type)) {
+						RETURN_TRUE;
+					}
+					sb.st_size = 0;
+					sb.st_mode = 0777;
+					sb.st_mode |= S_IFDIR; /* regular directory */
+					sb.st_mtime = phar->max_timestamp;
+					sb.st_atime = phar->max_timestamp;
+					sb.st_ctime = phar->max_timestamp;
+					goto statme_baby;
+				}
+				PHAR_G(cwd) = save;
+				PHAR_G(cwd_len) = save_len;
+				zend_string_release_ex(entry, false);
+				/* Error Occurred */
+				if (!IS_EXISTS_CHECK(type)) {
+					php_error_docref(NULL, E_WARNING, "%sstat failed for %s", IS_LINK_OPERATION(type) ? "L" : "", filename);
+				}
+				RETURN_FALSE;
+			}
+stat_entry:
+			if (!data->is_dir) {
+				sb.st_size = data->uncompressed_filesize;
+				sb.st_mode = data->flags & PHAR_ENT_PERM_MASK;
+				if (data->symlink) {
+					sb.st_mode |= S_IFREG|S_IFLNK; /* regular file */
+				} else {
+					sb.st_mode |= S_IFREG; /* regular file */
+				}
+				/* timestamp is just the timestamp when this was added to the phar */
+				sb.st_mtime = data->timestamp;
+				sb.st_atime = data->timestamp;
+				sb.st_ctime = data->timestamp;
+			} else {
+				sb.st_size = 0;
+				sb.st_mode = data->flags & PHAR_ENT_PERM_MASK;
+				sb.st_mode |= S_IFDIR; /* regular directory */
+				if (data->symlink) {
+					sb.st_mode |= S_IFLNK;
+				}
+				/* timestamp is just the timestamp when this was added to the phar */
+				sb.st_mtime = data->timestamp;
+				sb.st_atime = data->timestamp;
+				sb.st_ctime = data->timestamp;
+			}
+
+statme_baby:
+			if (!phar->is_writeable) {
+				sb.st_mode = (sb.st_mode & 0555) | (sb.st_mode & ~0777);
+			}
+
+			sb.st_nlink = 1;
+			sb.st_rdev = -1;
+			/* this is only for APC, so use /dev/null device - no chance of conflict there! */
+			sb.st_dev = 0xc;
+			/* generate unique inode number for alias/filename, so no phars will conflict */
+			if (data) {
+				sb.st_ino = data->inode;
+			}
+#ifdef HAVE_STRUCT_STAT_ST_BLKSIZE
+			sb.st_blksize = -1;
+#endif
+#ifdef HAVE_STRUCT_STAT_ST_BLOCKS
+			sb.st_blocks = -1;
+#endif
+			phar_fancy_stat(&sb, type, return_value);
+			return;
+		}
+	}
+skip_phar:
+	orig_stat_func(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+}
+/* }}} */
+
+#define PharFileFunction(fname, funcnum, orig) \
+PHP_FUNCTION(fname) { \
+	if (!PHAR_G(intercepted)) { \
+		PHAR_G(orig)(INTERNAL_FUNCTION_PARAM_PASSTHRU); \
+	} else { \
+		char *filename; \
+		size_t filename_len; \
+		\
+		if (zend_parse_parameters(ZEND_NUM_ARGS(), "p", &filename, &filename_len) == FAILURE) { \
+			RETURN_THROWS(); \
+		} \
+		\
+		phar_file_stat(filename, filename_len, funcnum, PHAR_G(orig), INTERNAL_FUNCTION_PARAM_PASSTHRU); \
+	} \
+}
+/* }}} */
+
+/* {{{ Get file permissions */
+PharFileFunction(phar_fileperms, FS_PERMS, orig_fileperms)
+/* }}} */
+
+/* {{{ Get file inode */
+PharFileFunction(phar_fileinode, FS_INODE, orig_fileinode)
+/* }}} */
+
+/* {{{ Get file size */
+PharFileFunction(phar_filesize, FS_SIZE, orig_filesize)
+/* }}} */
+
+/* {{{ Get file owner */
+PharFileFunction(phar_fileowner, FS_OWNER, orig_fileowner)
+/* }}} */
+
+/* {{{ Get file group */
+PharFileFunction(phar_filegroup, FS_GROUP, orig_filegroup)
+/* }}} */
+
+/* {{{ Get last access time of file */
+PharFileFunction(phar_fileatime, FS_ATIME, orig_fileatime)
+/* }}} */
+
+/* {{{ Get last modification time of file */
+PharFileFunction(phar_filemtime, FS_MTIME, orig_filemtime)
+/* }}} */
+
+/* {{{ Get inode modification time of file */
+PharFileFunction(phar_filectime, FS_CTIME, orig_filectime)
+/* }}} */
+
+/* {{{ Get file type */
+PharFileFunction(phar_filetype, FS_TYPE, orig_filetype)
+/* }}} */
+
+/* {{{ Returns true if file can be written */
+PharFileFunction(phar_is_writable, FS_IS_W, orig_is_writable)
+/* }}} */
+
+/* {{{ Returns true if file can be read */
+PharFileFunction(phar_is_readable, FS_IS_R, orig_is_readable)
+/* }}} */
+
+/* {{{ Returns true if file is executable */
+PharFileFunction(phar_is_executable, FS_IS_X, orig_is_executable)
+/* }}} */
+
+/* {{{ Returns true if filename exists */
+PharFileFunction(phar_file_exists, FS_EXISTS, orig_file_exists)
+/* }}} */
+
+/* {{{ Returns true if file is directory */
+PharFileFunction(phar_is_dir, FS_IS_DIR, orig_is_dir)
+/* }}} */
+
+PHP_FUNCTION(phar_is_file) /* {{{ */
+{
+	char *filename;
+	size_t filename_len;
+
+	if (!PHAR_G(intercepted)) {
+		goto skip_phar;
+	}
+
+	if ((HT_IS_INITIALIZED(&PHAR_G(phar_fname_map)) && !zend_hash_num_elements(&(PHAR_G(phar_fname_map))))
+		&& !HT_IS_INITIALIZED(&cached_phars)) {
+		goto skip_phar;
+	}
+	if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "p", &filename, &filename_len) == FAILURE) {
+		goto skip_phar;
+	}
+	if (!IS_ABSOLUTE_PATH(filename, filename_len) && !strstr(filename, "://")) {
+		zend_string *fname = zend_get_executed_filename_ex();
+
+		/* we are checking for existence of a file within the relative path.  Chances are good that this is
+		   retrieving something from within the phar archive */
+		if (!fname || !zend_string_starts_with_literal_ci(fname, "phar://")) {
+			goto skip_phar;
+		}
+
+		zend_string *arch = phar_split_fname(ZSTR_VAL(fname), ZSTR_LEN(fname), NULL, 2, 0);
+		if (arch) {
+			;
+
+			/* fopen within phar, if :// is not in the url, then prepend phar://<archive>/ */
+			/* retrieving a file within the current directory, so use this if possible */
+			phar_archive_data *phar = phar_get_archive(ZSTR_VAL(arch), ZSTR_LEN(arch), NULL, 0, NULL);
+			zend_string_release_ex(arch, false);
+			if (phar) {
+				phar_entry_info *etemp;
+
+				zend_string *entry = phar_fix_filepath(filename, filename_len, true);
+				if (ZSTR_VAL(entry)[0] == '/') {
+					etemp = zend_hash_str_find_ptr(&(phar->manifest), ZSTR_VAL(entry) + 1, ZSTR_LEN(entry) - 1);
+				} else {
+					etemp = zend_hash_find_ptr(&(phar->manifest), entry);
+				}
+				zend_string_release_ex(entry, false);
+				if (etemp) {
+					RETURN_BOOL(!etemp->is_dir);
+				}
+				/* this file is not in the current directory, use the original path */
+			}
+			RETURN_FALSE;
+		}
+	}
+skip_phar:
+	PHAR_G(orig_is_file)(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+}
+/* }}} */
+
+PHP_FUNCTION(phar_is_link) /* {{{ */
+{
+	char *filename;
+	size_t filename_len;
+
+	if (!PHAR_G(intercepted)) {
+		goto skip_phar;
+	}
+
+	if ((HT_IS_INITIALIZED(&PHAR_G(phar_fname_map)) && !zend_hash_num_elements(&(PHAR_G(phar_fname_map))))
+		&& !HT_IS_INITIALIZED(&cached_phars)) {
+		goto skip_phar;
+	}
+	if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "p", &filename, &filename_len) == FAILURE) {
+		goto skip_phar;
+	}
+	if (!IS_ABSOLUTE_PATH(filename, filename_len) && !strstr(filename, "://")) {
+		zend_string *fname = zend_get_executed_filename_ex();
+
+		/* we are checking for existence of a file within the relative path.  Chances are good that this is
+		   retrieving something from within the phar archive */
+		if (!fname || !zend_string_starts_with_literal_ci(fname, "phar://")) {
+			goto skip_phar;
+		}
+
+		zend_string *arch = phar_split_fname(ZSTR_VAL(fname), ZSTR_LEN(fname), NULL, 2, 0);
+		if (arch) {
+			/* fopen within phar, if :// is not in the url, then prepend phar://<archive>/ */
+			/* retrieving a file within the current directory, so use this if possible */
+			phar_archive_data *phar = phar_get_archive(ZSTR_VAL(arch), ZSTR_LEN(arch), NULL, 0, NULL);
+			zend_string_release_ex(arch, false);
+			if (phar) {
+				phar_entry_info *etemp;
+
+				zend_string *entry = phar_fix_filepath(filename, filename_len, true);
+				if (ZSTR_VAL(entry)[0] == '/') {
+					etemp = zend_hash_str_find_ptr(&(phar->manifest), ZSTR_VAL(entry) + 1, ZSTR_LEN(entry) - 1);
+				} else {
+					etemp = zend_hash_find_ptr(&(phar->manifest), entry);
+				}
+				zend_string_release_ex(entry, false);
+				if (etemp) {
+					RETURN_BOOL(etemp->symlink);
+				}
+			}
+			RETURN_FALSE;
+		}
+	}
+skip_phar:
+	PHAR_G(orig_is_link)(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	return;
+}
+/* }}} */
+
+/* {{{ Give information about a file or symbolic link */
+PharFileFunction(phar_lstat, FS_LSTAT, orig_lstat)
+/* }}} */
+
+/* {{{ Give information about a file */
+PharFileFunction(phar_stat, FS_STAT, orig_stat)
+/* }}} */
+
+/* {{{ void phar_intercept_functions(void) */
+void phar_intercept_functions(void)
+{
+	if (!PHAR_G(request_init)) {
+		PHAR_G(cwd) = NULL;
+		PHAR_G(cwd_len) = 0;
+	}
+	PHAR_G(intercepted) = 1;
+}
+/* }}} */
+
+/* {{{ void phar_release_functions(void) */
+void phar_release_functions(void)
+{
+	PHAR_G(intercepted) = 0;
+}
+/* }}} */
+
+/* {{{ void phar_intercept_functions_init(void) */
+#define PHAR_INTERCEPT(func) \
+	PHAR_G(orig_##func) = NULL; \
+	orig = zend_hash_str_find_ptr(CG(function_table), #func, sizeof(#func)-1); \
+	if (orig) { \
+		PHAR_G(orig_##func) = orig->internal_function.handler; \
+		orig->internal_function.handler = PHP_FN(phar_##func); \
+	}
+
+void phar_intercept_functions_init(void)
+{
+	zend_function *orig;
+
+	PHAR_INTERCEPT(fopen);
+	PHAR_INTERCEPT(file_get_contents);
+	PHAR_INTERCEPT(is_file);
+	PHAR_INTERCEPT(is_link);
+	PHAR_INTERCEPT(is_dir);
+	PHAR_INTERCEPT(opendir);
+	PHAR_INTERCEPT(file_exists);
+	PHAR_INTERCEPT(fileperms);
+	PHAR_INTERCEPT(fileinode);
+	PHAR_INTERCEPT(filesize);
+	PHAR_INTERCEPT(fileowner);
+	PHAR_INTERCEPT(filegroup);
+	PHAR_INTERCEPT(fileatime);
+	PHAR_INTERCEPT(filemtime);
+	PHAR_INTERCEPT(filectime);
+	PHAR_INTERCEPT(filetype);
+	PHAR_INTERCEPT(is_writable);
+	PHAR_INTERCEPT(is_readable);
+	PHAR_INTERCEPT(is_executable);
+	PHAR_INTERCEPT(lstat);
+	PHAR_INTERCEPT(stat);
+	PHAR_INTERCEPT(readfile);
+	PHAR_G(intercepted) = 0;
+}
+/* }}} */
+
+/* {{{ void phar_intercept_functions_shutdown(void) */
+#define PHAR_RELEASE(func) \
+	if (PHAR_G(orig_##func) && NULL != (orig = zend_hash_str_find_ptr(CG(function_table), #func, sizeof(#func)-1))) { \
+		orig->internal_function.handler = PHAR_G(orig_##func); \
+	} \
+	PHAR_G(orig_##func) = NULL;
+
+void phar_intercept_functions_shutdown(void)
+{
+	zend_function *orig;
+
+	PHAR_RELEASE(fopen);
+	PHAR_RELEASE(file_get_contents);
+	PHAR_RELEASE(is_file);
+	PHAR_RELEASE(is_link);
+	PHAR_RELEASE(is_dir);
+	PHAR_RELEASE(opendir);
+	PHAR_RELEASE(file_exists);
+	PHAR_RELEASE(fileperms);
+	PHAR_RELEASE(fileinode);
+	PHAR_RELEASE(filesize);
+	PHAR_RELEASE(fileowner);
+	PHAR_RELEASE(filegroup);
+	PHAR_RELEASE(fileatime);
+	PHAR_RELEASE(filemtime);
+	PHAR_RELEASE(filectime);
+	PHAR_RELEASE(filetype);
+	PHAR_RELEASE(is_writable);
+	PHAR_RELEASE(is_readable);
+	PHAR_RELEASE(is_executable);
+	PHAR_RELEASE(lstat);
+	PHAR_RELEASE(stat);
+	PHAR_RELEASE(readfile);
+	PHAR_G(intercepted) = 0;
+}
+/* }}} */
+
+static struct _phar_orig_functions {
+	zif_handler orig_fopen;
+	zif_handler orig_file_get_contents;
+	zif_handler orig_is_file;
+	zif_handler orig_is_link;
+	zif_handler orig_is_dir;
+	zif_handler orig_opendir;
+	zif_handler orig_file_exists;
+	zif_handler orig_fileperms;
+	zif_handler orig_fileinode;
+	zif_handler orig_filesize;
+	zif_handler orig_fileowner;
+	zif_handler orig_filegroup;
+	zif_handler orig_fileatime;
+	zif_handler orig_filemtime;
+	zif_handler orig_filectime;
+	zif_handler orig_filetype;
+	zif_handler orig_is_writable;
+	zif_handler orig_is_readable;
+	zif_handler orig_is_executable;
+	zif_handler orig_lstat;
+	zif_handler orig_readfile;
+	zif_handler orig_stat;
+} phar_orig_functions = {0};
+
+void phar_save_orig_functions(void) /* {{{ */
+{
+	phar_orig_functions.orig_fopen             = PHAR_G(orig_fopen);
+	phar_orig_functions.orig_file_get_contents = PHAR_G(orig_file_get_contents);
+	phar_orig_functions.orig_is_file           = PHAR_G(orig_is_file);
+	phar_orig_functions.orig_is_link           = PHAR_G(orig_is_link);
+	phar_orig_functions.orig_is_dir            = PHAR_G(orig_is_dir);
+	phar_orig_functions.orig_opendir           = PHAR_G(orig_opendir);
+	phar_orig_functions.orig_file_exists       = PHAR_G(orig_file_exists);
+	phar_orig_functions.orig_fileperms         = PHAR_G(orig_fileperms);
+	phar_orig_functions.orig_fileinode         = PHAR_G(orig_fileinode);
+	phar_orig_functions.orig_filesize          = PHAR_G(orig_filesize);
+	phar_orig_functions.orig_fileowner         = PHAR_G(orig_fileowner);
+	phar_orig_functions.orig_filegroup         = PHAR_G(orig_filegroup);
+	phar_orig_functions.orig_fileatime         = PHAR_G(orig_fileatime);
+	phar_orig_functions.orig_filemtime         = PHAR_G(orig_filemtime);
+	phar_orig_functions.orig_filectime         = PHAR_G(orig_filectime);
+	phar_orig_functions.orig_filetype          = PHAR_G(orig_filetype);
+	phar_orig_functions.orig_is_writable       = PHAR_G(orig_is_writable);
+	phar_orig_functions.orig_is_readable       = PHAR_G(orig_is_readable);
+	phar_orig_functions.orig_is_executable     = PHAR_G(orig_is_executable);
+	phar_orig_functions.orig_lstat             = PHAR_G(orig_lstat);
+	phar_orig_functions.orig_readfile          = PHAR_G(orig_readfile);
+	phar_orig_functions.orig_stat              = PHAR_G(orig_stat);
+}
+/* }}} */
+
+void phar_restore_orig_functions(void) /* {{{ */
+{
+	PHAR_G(orig_fopen)             = phar_orig_functions.orig_fopen;
+	PHAR_G(orig_file_get_contents) = phar_orig_functions.orig_file_get_contents;
+	PHAR_G(orig_is_file)           = phar_orig_functions.orig_is_file;
+	PHAR_G(orig_is_link)           = phar_orig_functions.orig_is_link;
+	PHAR_G(orig_is_dir)            = phar_orig_functions.orig_is_dir;
+	PHAR_G(orig_opendir)           = phar_orig_functions.orig_opendir;
+	PHAR_G(orig_file_exists)       = phar_orig_functions.orig_file_exists;
+	PHAR_G(orig_fileperms)         = phar_orig_functions.orig_fileperms;
+	PHAR_G(orig_fileinode)         = phar_orig_functions.orig_fileinode;
+	PHAR_G(orig_filesize)          = phar_orig_functions.orig_filesize;
+	PHAR_G(orig_fileowner)         = phar_orig_functions.orig_fileowner;
+	PHAR_G(orig_filegroup)         = phar_orig_functions.orig_filegroup;
+	PHAR_G(orig_fileatime)         = phar_orig_functions.orig_fileatime;
+	PHAR_G(orig_filemtime)         = phar_orig_functions.orig_filemtime;
+	PHAR_G(orig_filectime)         = phar_orig_functions.orig_filectime;
+	PHAR_G(orig_filetype)          = phar_orig_functions.orig_filetype;
+	PHAR_G(orig_is_writable)       = phar_orig_functions.orig_is_writable;
+	PHAR_G(orig_is_readable)       = phar_orig_functions.orig_is_readable;
+	PHAR_G(orig_is_executable)     = phar_orig_functions.orig_is_executable;
+	PHAR_G(orig_lstat)             = phar_orig_functions.orig_lstat;
+	PHAR_G(orig_readfile)          = phar_orig_functions.orig_readfile;
+	PHAR_G(orig_stat)              = phar_orig_functions.orig_stat;
+}
+/* }}} */

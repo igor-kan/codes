@@ -1,0 +1,42 @@
+/*
+   +----------------------------------------------------------------------+
+   | Copyright © The PHP Group and Contributors.                          |
+   +----------------------------------------------------------------------+
+   | This source file is subject to the Modified BSD License that is      |
+   | bundled with this package in the file LICENSE, and is available      |
+   | through the World Wide Web at <https://www.php.net/license/>.        |
+   |                                                                      |
+   | SPDX-License-Identifier: BSD-3-Clause                                |
+   +----------------------------------------------------------------------+
+   | Author: Stanislav Malyshev <stas@php.net>                            |
+   +----------------------------------------------------------------------+
+ */
+
+#ifndef PHP_GMP_H
+#define PHP_GMP_H
+
+#include <gmp.h>
+
+extern zend_module_entry gmp_module_entry;
+#define phpext_gmp_ptr &gmp_module_entry
+
+#include "php_version.h"
+#define PHP_GMP_VERSION PHP_VERSION
+
+ZEND_MODULE_STARTUP_D(gmp);
+ZEND_MODULE_DEACTIVATE_D(gmp);
+ZEND_MODULE_INFO_D(gmp);
+
+ZEND_BEGIN_MODULE_GLOBALS(gmp)
+	bool rand_initialized;
+	gmp_randstate_t rand_state;
+	mpz_t zpp_arg[3];
+ZEND_END_MODULE_GLOBALS(gmp)
+
+#define GMPG(v) ZEND_MODULE_GLOBALS_ACCESSOR(gmp, v)
+
+#if defined(ZTS) && defined(COMPILE_DL_GMP)
+ZEND_TSRMLS_CACHE_EXTERN()
+#endif
+
+#endif	/* PHP_GMP_H */

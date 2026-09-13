@@ -1,0 +1,44 @@
+--TEST--
+imagecreatefromwbmp with invalid wbmp
+--EXTENSIONS--
+gd
+--FILE--
+<?php
+$filename = __DIR__ . '/_tmp_createfromwbmp2_extern.wbmp';
+$fp = fopen($filename,"wb");
+if (!$fp) {
+    exit("Failed to create <$filename>");
+}
+
+//write header
+$c = 0;
+fputs($fp, chr($c), 1);
+fputs($fp, $c, 1);
+
+//write width = 2^32 / 4 + 1
+$c = 0x84;
+fputs($fp, chr($c), 1);
+$c = 0x80;
+fputs($fp, chr($c), 1);
+fputs($fp, chr($c), 1);
+fputs($fp, chr($c), 1);
+$c = 0x01;
+fputs($fp, chr($c), 1);
+
+/*write height = 4*/
+$c = 0x04;
+fputs($fp, chr($c), 1);
+
+/*write some data to cause overflow*/
+for ($i=0; $i<10000; $i++) {
+    fwrite($fp, chr($c), 1);
+}
+
+fclose($fp);
+$im = imagecreatefromwbmp($filename);
+unlink($filename);
+?>
+--EXPECTF--
+Warning: imagecreatefromwbmp(): %croduct of memory allocation multiplication would exceed INT_MAX, failing operation gracefully%win %s on line %d
+
+Warning: imagecreatefromwbmp(): "%s_tmp_createfromwbmp2_extern.wbmp" is not a valid WBMP file in %s on line %d

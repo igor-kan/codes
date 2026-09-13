@@ -1,0 +1,17 @@
+--TEST--
+DOMDocument::loadHTML() should fail if empty string provided as input
+--CREDITS--
+Knut Urdalen <knut@php.net>
+--EXTENSIONS--
+dom
+--FILE--
+<?php
+$doc = new DOMDocument();
+try {
+    $doc->loadHTML('');
+} catch (Throwable $e) {
+    echo $e::class, ': ', $e->getMessage(), "\n";
+}
+?>
+--EXPECT--
+ValueError: DOMDocument::loadHTML(): Argument #1 ($source) must not be empty

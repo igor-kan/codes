@@ -1,0 +1,21 @@
+--TEST--
+Bug #37076 (SimpleXML ignores .=) (appending to unnamed attribute)
+--EXTENSIONS--
+simplexml
+--FILE--
+<?php
+
+$xml = simplexml_load_string("<root><foo /></root>");
+
+try {
+    $xml->{""} .= "bar";
+} catch (Throwable $exception) {
+    echo $exception::class, ': ', $exception->getMessage(), "\n";
+}
+
+print $xml->asXML();
+?>
+--EXPECT--
+ValueError: Cannot create element with an empty name
+<?xml version="1.0"?>
+<root><foo/></root>

@@ -1,0 +1,18 @@
+--TEST--
+DOMDocumentType::name with invalid state.
+--CREDITS--
+Eric Lee Stewart <ericleestewart@gmail.com>
+# TestFest Atlanta 2009-05-25
+--EXTENSIONS--
+dom
+--FILE--
+<?php
+$doctype = new DOMDocumentType();
+try {
+    $doctype->name;
+} catch (Throwable $exception) {
+    echo $exception::class, ': ', $exception->getMessage(), "\n";
+}
+?>
+--EXPECT--
+DOMException: Invalid State Error

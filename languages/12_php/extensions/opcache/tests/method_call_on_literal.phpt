@@ -1,0 +1,16 @@
+--TEST--
+Literal compaction should take method calls on literals into account
+--EXTENSIONS--
+opcache
+--FILE--
+<?php
+
+try {
+    (42)->foo();
+} catch (Throwable $e) {
+    echo $e::class, ': ', $e->getMessage(), "\n";
+}
+
+?>
+--EXPECT--
+Error: Call to a member function foo() on int
