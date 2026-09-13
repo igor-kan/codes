@@ -86,7 +86,51 @@ test-scripts:
 	$(PYTHON) scripts/finance/corporate_valuation_dcf.py
 	$(PYTHON) scripts/computer_science/k4_planar_graph.py
 
-test: test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-scripts
+test-fft: $(BUILD_DIR)
+	@echo ">>> Testing Fast Fourier Transform implementations..."
+	$(PYTHON) algorithms/fast_fourier_transform/fft.py
+	$(CXX) -O3 algorithms/fast_fourier_transform/fft.cpp -o $(BUILD_DIR)/fft_cpp_test
+	./$(BUILD_DIR)/fft_cpp_test
+	$(RUSTC) -O algorithms/fast_fourier_transform/fft.rs -o $(BUILD_DIR)/fft_rust_test
+	./$(BUILD_DIR)/fft_rust_test
+
+test-dijkstra: $(BUILD_DIR)
+	@echo ">>> Testing Dijkstra shortest path implementations..."
+	$(PYTHON) algorithms/dijkstra_shortest_path/dijkstra.py
+	$(CXX) -O3 algorithms/dijkstra_shortest_path/dijkstra.cpp -o $(BUILD_DIR)/dijkstra_cpp_test
+	./$(BUILD_DIR)/dijkstra_cpp_test
+	$(GO) run algorithms/dijkstra_shortest_path/dijkstra.go
+	$(RUSTC) -O algorithms/dijkstra_shortest_path/dijkstra.rs -o $(BUILD_DIR)/dijkstra_rust_test
+	./$(BUILD_DIR)/dijkstra_rust_test
+	javac -d $(BUILD_DIR) algorithms/dijkstra_shortest_path/Dijkstra.java
+	java -cp $(BUILD_DIR) Dijkstra
+
+test-primality: $(BUILD_DIR)
+	@echo ">>> Testing Primality and Factorization implementations..."
+	$(PYTHON) algorithms/primality_factorization/miller_rabin.py
+	$(CC) -O3 algorithms/primality_factorization/miller_rabin.c -o $(BUILD_DIR)/mr_c_test
+	./$(BUILD_DIR)/mr_c_test
+	$(RUSTC) -O algorithms/primality_factorization/miller_rabin.rs -o $(BUILD_DIR)/mr_rust_test
+	./$(BUILD_DIR)/mr_rust_test
+
+test-matrix: $(BUILD_DIR)
+	@echo ">>> Testing Matrix multiplication implementations..."
+	$(PYTHON) algorithms/matrix_multiplication/strassen.py
+	$(CC) -O3 algorithms/matrix_multiplication/matmul_tiled.c -o $(BUILD_DIR)/matmul_c_test
+	./$(BUILD_DIR)/matmul_c_test
+	$(FC) -O3 algorithms/matrix_multiplication/matmul_blocked.f90 -o $(BUILD_DIR)/matmul_f90_test
+	./$(BUILD_DIR)/matmul_f90_test
+
+test-scc: $(BUILD_DIR)
+	@echo ">>> Testing Strongly Connected Components implementations..."
+	$(PYTHON) algorithms/strongly_connected_components/kosaraju.py
+	$(CXX) -O3 algorithms/strongly_connected_components/kosaraju.cpp -o $(BUILD_DIR)/scc_cpp_test
+	./$(BUILD_DIR)/scc_cpp_test
+	$(GO) run algorithms/strongly_connected_components/kosaraju.go
+
+test-algorithms: test-fft test-dijkstra test-primality test-matrix test-scc
+
+test: test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-scripts test-algorithms
 	@echo ""
 	@echo "================================================================="
 	@echo "ALL REPOSITORY TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
