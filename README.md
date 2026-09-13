@@ -9,18 +9,26 @@ Directory navigation index.
 ```
 .
 ├── algorithms/
+│   ├── a_star_pathfinding/
+│   ├── convex_hull/
 │   ├── dijkstra_shortest_path/
 │   ├── dynamic_programming/
 │   ├── fast_fourier_transform/
 │   ├── formal_verification/
+│   ├── huffman_coding/
+│   ├── knuth_morris_pratt/
 │   ├── matrix_multiplication/
 │   ├── primality_factorization/
-│   └── strongly_connected_components/
+│   ├── strongly_connected_components/
+│   └── topological_sort/
 ├── architectures/
+│   ├── concurrency_patterns/
 │   ├── cpp_patterns/
 │   ├── go_patterns/
+│   ├── java_patterns/
 │   ├── python_patterns/
-│   └── rust_patterns/
+│   ├── rust_patterns/
+│   └── typescript_patterns/
 ├── languages/
 │   ├── 01_python/
 │   ├── 02_c/
@@ -49,8 +57,11 @@ Directory navigation index.
 │   └── 25_lean4/
 ├── scripts/
 │   ├── computer_science/
+│   ├── distributed_systems/
 │   ├── finance/
+│   ├── machine_learning/
 │   ├── mathematics/
+│   ├── numerical_analysis/
 │   ├── physics/
 │   └── shell_automation/
 ├── Makefile
@@ -67,22 +78,30 @@ Directory navigation index.
 
 | Directory | Primary Formats | Index |
 |:---|:---|:---|
-| `algorithms/dijkstra_shortest_path/` | `.java`, `.cpp`, `.go`, `.py`, `.rs` | Graph shortest path routines |
-| `algorithms/dynamic_programming/` | `.cs`, `.ts`, `.scala`, `.hs` | Dynamic programming routines |
-| `algorithms/fast_fourier_transform/` | `.cpp`, `.jl`, `.py`, `.rs` | Discrete transform routines |
+| `algorithms/a_star_pathfinding/` | `.cpp`, `.go`, `.java`, `.py`, `.rs` | Heuristic grid navigation routines |
+| `algorithms/convex_hull/` | `.cpp`, `.go`, `.py`, `.rs` | 2D computational geometry routines |
+| `algorithms/dijkstra_shortest_path/` | `.cpp`, `.go`, `.java`, `.py`, `.rs` | Weighted graph shortest path routines |
+| `algorithms/dynamic_programming/` | `.cs`, `.hs`, `.scala`, `.ts` | Sequence alignment and knapsack routines |
+| `algorithms/fast_fourier_transform/` | `.cpp`, `.jl`, `.py`, `.rs` | Cooley-Tukey discrete transform routines |
 | `algorithms/formal_verification/` | `.lean` | Interactive theorem prover specifications |
-| `algorithms/matrix_multiplication/` | `.f90`, `.c`, `.py` | Numerical linear algebra routines |
-| `algorithms/primality_factorization/` | `.c`, `.py`, `.rs` | Number theoretic routines |
-| `algorithms/strongly_connected_components/` | `.cpp`, `.go`, `.py` | Directed graph decomposition routines |
+| `algorithms/huffman_coding/` | `.cpp`, `.java`, `.py`, `.rs` | Prefix code tree compression routines |
+| `algorithms/knuth_morris_pratt/` | `.c`, `.cpp`, `.go`, `.java`, `.py`, `.rs` | Linear time string matching routines |
+| `algorithms/matrix_multiplication/` | `.c`, `.f90`, `.py` | Blocked and Strassen matrix routines |
+| `algorithms/primality_factorization/` | `.c`, `.py`, `.rs` | Miller-Rabin and Pollard's rho routines |
+| `algorithms/strongly_connected_components/` | `.cpp`, `.go`, `.py` | Kosaraju directed graph decomposition routines |
+| `algorithms/topological_sort/` | `.cpp`, `.go`, `.py`, `.rs` | DAG Kahn's in-degree sorting routines |
 
 ### 2. Software Architectures & Patterns (`architectures/`)
 
 | Directory | Primary Formats | Index |
 |:---|:---|:---|
-| `architectures/cpp_patterns/` | `.cpp`, `.hpp` | Creational, structural, and behavioral patterns |
-| `architectures/go_patterns/` | `.go` | Idiomatic Go concurrency and design patterns |
-| `architectures/python_patterns/` | `.py` | Python design patterns and architectural idioms |
-| `architectures/rust_patterns/` | `.rs` | Rust idioms, behavioral patterns, and design patterns |
+| `architectures/concurrency_patterns/` | `.go`, `.rs` | Actor mailboxes and thread pool workers |
+| `architectures/cpp_patterns/` | `.cpp`, `.hpp` | Gang of Four creational, structural, and behavioral patterns |
+| `architectures/go_patterns/` | `.go` | Idiomatic Go concurrency and architectural patterns |
+| `architectures/java_patterns/` | `.java` | Thread-safe Java creational and behavioral patterns |
+| `architectures/python_patterns/` | `.py` | Python architectural patterns and idioms |
+| `architectures/rust_patterns/` | `.rs` | Rust idioms and design patterns |
+| `architectures/typescript_patterns/` | `.ts` | Middleware pipelines and repository patterns |
 
 ### 3. Language Collections (`languages/`)
 
@@ -119,8 +138,11 @@ Directory navigation index.
 | Directory | Primary Formats | Index |
 |:---|:---|:---|
 | `scripts/computer_science/` | `.py` | Graph embeddings and cipher routines |
-| `scripts/finance/` | `.py` | Valuation and financial modeling routines |
+| `scripts/distributed_systems/` | `.py` | Consistent hashing and partitioning routines |
+| `scripts/finance/` | `.py` | Valuation and DCF financial models |
+| `scripts/machine_learning/` | `.py` | Clustering and gradient descent models |
 | `scripts/mathematics/` | `.py` | Number theory, algebra, and geometry scripts |
+| `scripts/numerical_analysis/` | `.py` | Root finding and iterative solvers |
 | `scripts/physics/` | `.py` | Tensors and mechanics scripts |
 | `scripts/shell_automation/` | `.sh`, `.bash` | Portable shell and bash scripting references |
 
@@ -129,11 +151,26 @@ Directory navigation index.
 ## Commands
 
 ```bash
-# Execute local verification suite
+# Execute full local verification suite
 make test
 
-# Target specific modules
+# Target algorithm benchmark suites
 make test-algorithms
+make test-astar
+make test-kmp
+make test-convexhull
+make test-huffman
+make test-toposort
+make test-dijkstra
+make test-fft
+make test-primality
+make test-matrix
+make test-scc
+
+# Target architecture suites
+make test-architectures
+
+# Target scripts and language modules
 make test-scripts
 make test-python
 make test-c
