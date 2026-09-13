@@ -118,6 +118,29 @@ computational-polyglot-algorithms/
 
 ---
 
+## Verification & Testing Suite
+
+The repository includes a comprehensive master `Makefile` executing smoke tests, builds, and invariant verifications across the polyglot stack:
+
+```bash
+# Run all locally available polyglot test suites:
+make test
+
+# Or run language-specific verification targets:
+make test-python    # Verifies Adaptive RK45 ODE Integrator and Disjoint Set Union
+make test-c         # Compiles & executes non-cryptographic MurmurHash3
+make test-cpp       # Compiles & executes thread-safe template LRU Cache
+make test-java      # Compiles & runs Trie prefix autocomplete
+make test-rust      # Compiles & tests SPSC Atomic Ring Buffer
+make test-fortran   # Compiles & executes Fortran 2008 Conjugate Gradient solver
+make test-js        # Executes concurrency-bounded async pipeline
+make test-go        # Runs concurrent worker pool with channel synchronization
+make test-lua       # Executes cooperative coroutine green-thread scheduler
+make test-quarto    # Runs full suite of mathematics, physics, finance & CS algorithms
+```
+
+---
+
 ## License & Attribution
 
 Authored by **Igor Kan** (© 2026). Released under the [MIT License](LICENSE).
