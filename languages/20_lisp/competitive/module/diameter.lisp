@@ -1,0 +1,37 @@
+(defpackage :cp/diameter
+  (:use :cl)
+  (:export #:find-diameter))
+(in-package :cp/diameter)
+
+(declaim (inline find-diameter))
+(defun find-diameter (graph)
+  "Finds a diameter of an undirected tree. Returns the path as a list of
+vertices."
+  (declare (vector graph))
+  (assert (> (length graph) 0))
+  (let ((end 0)
+        (max-depth 0))
+    (declare ((mod #.array-dimension-limit) end max-depth))
+    (labels ((dfs (v parent depth)
+               (declare ((integer 0 #.array-dimension-limit) v parent depth))
+               (when (>= depth max-depth)
+                 (setq max-depth depth
+                       end v))
+               (dolist (child (aref graph v))
+                 (declare ((mod #.array-dimension-limit) child))
+                 (unless (eql child parent)
+                   (dfs child v (+ depth 1))))))
+      (dfs 0 array-dimension-limit 0))
+    (let ((max-depth 0)
+          result)
+      (labels ((dfs (v parent depth path)
+                 (declare ((integer 0 #.array-dimension-limit) v parent depth))
+                 (when (>= depth max-depth)
+                   (setq max-depth depth
+                         result path))
+                 (dolist (child (aref graph v))
+                   (declare ((mod #.array-dimension-limit) child))
+                   (unless (eql child parent)
+                     (dfs child v (+ depth 1) (cons child path))))))
+        (dfs end array-dimension-limit 0 (list end)))
+      result)))

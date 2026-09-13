@@ -1,0 +1,23 @@
+(defpackage :cp/test/tree-hash
+  (:use :cl :fiveam :cp/tree-hash)
+  (:import-from :cp/test/base #:base-suite))
+(in-package :cp/test/tree-hash)
+(in-suite base-suite)
+
+(test tree-hash
+  (let* ((graph1 #((1 2 3) (0) (0 5) (0 4) (3) (2 6 7) (5) (5)))
+         (graph2 #((4) (6) (3) (2 7 4) (3 0) (6) (7 5 1) (3 6)))
+         (hashes1 (tree-all-hashes graph1))
+         (hashes2 (tree-all-hashes graph2)))
+    (is (equalp (sort (copy-seq hashes1) #'<)
+                (sort (copy-seq hashes2) #'<)))
+    (dotimes (r1 8)
+      (dotimes (r2 8)
+        (if (member (cons r1 r2)
+                    '((0 . 3) (1 . 2) (2 . 7) (3 . 4) (4 . 0) (5 . 6) (7 . 5) (6 . 1)
+                      (7 . 1) (6 . 5))
+                    :test #'equal)
+            (is (= (tree-root-hash graph1 r1) (tree-root-hash graph2 r2)))
+            (is (/= (tree-root-hash graph1 r1) (tree-root-hash graph2 r2))))
+        (is (= (aref hashes1 r1) (tree-root-hash graph1 r1)))
+        (is (= (aref hashes2 r2) (tree-root-hash graph2 r2)))))))

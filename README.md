@@ -16,6 +16,11 @@ Directory navigation index.
 │   ├── matrix_multiplication/
 │   ├── primality_factorization/
 │   └── strongly_connected_components/
+├── architectures/
+│   ├── cpp_patterns/
+│   ├── go_patterns/
+│   ├── python_patterns/
+│   └── rust_patterns/
 ├── languages/
 │   ├── 01_python/
 │   ├── 02_c/
@@ -40,104 +45,91 @@ Directory navigation index.
 │   ├── 21_scala/
 │   ├── 22_haskell/
 │   ├── 23_elixir/
-│   └── 24_fortran/
+│   ├── 24_fortran/
+│   └── 25_lean4/
 ├── scripts/
 │   ├── computer_science/
 │   ├── finance/
 │   ├── mathematics/
-│   └── physics/
+│   ├── physics/
+│   └── shell_automation/
 ├── Makefile
+├── SOURCES.md
 ├── LICENSE
 └── README.md
 ```
 
 ---
 
-## File Navigation
+## Section Index
 
-### `algorithms/`
+### 1. Algorithms (`algorithms/`)
 
-| Path | File | Format |
+| Directory | Primary Formats | Index |
 |:---|:---|:---|
-| `algorithms/dijkstra_shortest_path/` | `Dijkstra.java` | Java source (`.java`) |
-| `algorithms/dijkstra_shortest_path/` | `dijkstra.cpp` | C++ source (`.cpp`) |
-| `algorithms/dijkstra_shortest_path/` | `dijkstra.go` | Go source (`.go`) |
-| `algorithms/dijkstra_shortest_path/` | `dijkstra.py` | Python script (`.py`) |
-| `algorithms/dijkstra_shortest_path/` | `dijkstra.rs` | Rust source (`.rs`) |
-| `algorithms/dynamic_programming/` | `knapsack.cs` | C# source (`.cs`) |
-| `algorithms/dynamic_programming/` | `levenshtein.ts` | TypeScript source (`.ts`) |
-| `algorithms/dynamic_programming/` | `LCS.scala` | Scala source (`.scala`) |
-| `algorithms/dynamic_programming/` | `LCS.hs` | Haskell source (`.hs`) |
-| `algorithms/fast_fourier_transform/` | `fft.cpp` | C++ source (`.cpp`) |
-| `algorithms/fast_fourier_transform/` | `fft.jl` | Julia script (`.jl`) |
-| `algorithms/fast_fourier_transform/` | `fft.py` | Python script (`.py`) |
-| `algorithms/fast_fourier_transform/` | `fft.rs` | Rust source (`.rs`) |
-| `algorithms/formal_verification/` | `EuclidGCD.lean` | Lean 4 source (`.lean`) |
-| `algorithms/matrix_multiplication/` | `matmul_blocked.f90` | Fortran source (`.f90`) |
-| `algorithms/matrix_multiplication/` | `matmul_tiled.c` | C source (`.c`) |
-| `algorithms/matrix_multiplication/` | `strassen.py` | Python script (`.py`) |
-| `algorithms/primality_factorization/` | `miller_rabin.c` | C source (`.c`) |
-| `algorithms/primality_factorization/` | `miller_rabin.py` | Python script (`.py`) |
-| `algorithms/primality_factorization/` | `miller_rabin.rs` | Rust source (`.rs`) |
-| `algorithms/strongly_connected_components/` | `kosaraju.cpp` | C++ source (`.cpp`) |
-| `algorithms/strongly_connected_components/` | `kosaraju.go` | Go source (`.go`) |
-| `algorithms/strongly_connected_components/` | `kosaraju.py` | Python script (`.py`) |
+| `algorithms/dijkstra_shortest_path/` | `.java`, `.cpp`, `.go`, `.py`, `.rs` | Graph shortest path routines |
+| `algorithms/dynamic_programming/` | `.cs`, `.ts`, `.scala`, `.hs` | Dynamic programming routines |
+| `algorithms/fast_fourier_transform/` | `.cpp`, `.jl`, `.py`, `.rs` | Discrete transform routines |
+| `algorithms/formal_verification/` | `.lean` | Interactive theorem prover specifications |
+| `algorithms/matrix_multiplication/` | `.f90`, `.c`, `.py` | Numerical linear algebra routines |
+| `algorithms/primality_factorization/` | `.c`, `.py`, `.rs` | Number theoretic routines |
+| `algorithms/strongly_connected_components/` | `.cpp`, `.go`, `.py` | Directed graph decomposition routines |
 
-### `languages/`
+### 2. Software Architectures & Patterns (`architectures/`)
 
-| Path | File | Format |
+| Directory | Primary Formats | Index |
 |:---|:---|:---|
-| `languages/01_python/` | `rk45_adaptive.py` | Python script (`.py`) |
-| `languages/01_python/` | `disjoint_set.py` | Python script (`.py`) |
-| `languages/02_c/` | `murmurhash3.c` | C source (`.c`) |
-| `languages/03_cpp/` | `lru_cache.hpp` | C++ header (`.hpp`) |
-| `languages/04_java/` | `Trie.java` | Java source (`.java`) |
-| `languages/05_csharp/` | `PriorityQueue.cs` | C# source (`.cs`) |
-| `languages/06_javascript/` | `async_pipeline.js` | JavaScript source (`.js`) |
-| `languages/07_typescript/` | `bloom_filter.ts` | TypeScript source (`.ts`) |
-| `languages/08_r/` | `pca_decomposition.R` | R script (`.R`) |
-| `languages/09_rust/` | `ring_buffer.rs` | Rust source (`.rs`) |
-| `languages/10_sql/` | `sliding_window_volatility.sql` | SQL query (`.sql`) |
-| `languages/11_golang/` | `worker_pool.go` | Go source (`.go`) |
-| `languages/12_php/` | `EventDispatcher.php` | PHP source (`.php`) |
-| `languages/13_swift/` | `BinarySearchTree.swift` | Swift source (`.swift`) |
-| `languages/14_julia/` | `velocity_verlet.jl` | Julia script (`.jl`) |
-| `languages/15_ruby/` | `rate_limiter.rb` | Ruby script (`.rb`) |
-| `languages/16_kotlin/` | `FlowPipeline.kt` | Kotlin source (`.kt`) |
-| `languages/17_matlab/` | `kalman_filter.m` | MATLAB script (`.m`) |
-| `languages/18_ocaml/` | `red_black_tree.ml` | OCaml source (`.ml`) |
-| `languages/19_lua/` | `coroutine_scheduler.lua` | Lua script (`.lua`) |
-| `languages/20_lisp/` | `a_star_pathfinding.lisp` | Common Lisp source (`.lisp`) |
-| `languages/21_scala/` | `ReactivePipeline.scala` | Scala source (`.scala`) |
-| `languages/22_haskell/` | `MonadicParser.hs` | Haskell source (`.hs`) |
-| `languages/23_elixir/` | `priority_queue_server.ex` | Elixir source (`.ex`) |
-| `languages/24_fortran/` | `conjugate_gradient.f90` | Fortran source (`.f90`) |
+| `architectures/cpp_patterns/` | `.cpp`, `.hpp` | Creational, structural, and behavioral patterns |
+| `architectures/go_patterns/` | `.go` | Idiomatic Go concurrency and design patterns |
+| `architectures/python_patterns/` | `.py` | Python design patterns and architectural idioms |
+| `architectures/rust_patterns/` | `.rs` | Rust idioms, behavioral patterns, and design patterns |
 
-### `scripts/`
+### 3. Language Collections (`languages/`)
 
-| Path | File | Format |
+| Directory | Primary Extensions | Subdirectories |
 |:---|:---|:---|
-| `scripts/computer_science/` | `k4_planar_graph.py` | Python script (`.py`) |
-| `scripts/computer_science/` | `major_system_cipher.py` | Python script (`.py`) |
-| `scripts/finance/` | `corporate_valuation_dcf.py` | Python script (`.py`) |
-| `scripts/finance/` | `dividend_gordon_growth.py` | Python script (`.py`) |
-| `scripts/mathematics/` | `euclidean_algorithms.py` | Python script (`.py`) |
-| `scripts/mathematics/` | `finite_geometry_fano.py` | Python script (`.py`) |
-| `scripts/mathematics/` | `multilinear_algebra.py` | Python script (`.py`) |
-| `scripts/mathematics/` | `perfect_numbers_factorization.py` | Python script (`.py`) |
-| `scripts/mathematics/` | `test_euclid_algorithms.py` | Python script (`.py`) |
-| `scripts/mathematics/` | `test_multilinear_algebra.py` | Python script (`.py`) |
-| `scripts/physics/` | `curvilinear_tensors.py` | Python script (`.py`) |
-| `scripts/physics/` | `rigid_body_inertia.py` | Python script (`.py`) |
-| `scripts/physics/` | `symbolic_euler_lagrange.py` | Python script (`.py`) |
-| `scripts/physics/` | `test_tensor_identities.py` | Python script (`.py`) |
+| `languages/01_python/` | `.py` | `algorithms/` |
+| `languages/02_c/` | `.c`, `.h` | `algorithms/` |
+| `languages/03_cpp/` | `.cpp`, `.hpp` | `algorithms/` |
+| `languages/04_java/` | `.java` | `algorithms/` |
+| `languages/05_csharp/` | `.cs` | `algorithms/` |
+| `languages/06_javascript/` | `.js`, `.mjs` | `algorithms/` |
+| `languages/07_typescript/` | `.ts` | `algorithms/` |
+| `languages/08_r/` | `.R`, `.r` | `algorithms/` |
+| `languages/09_rust/` | `.rs` | `algorithms/` |
+| `languages/10_sql/` | `.sql` | `schemas/`, `models/` |
+| `languages/11_golang/` | `.go` | `algorithms/` |
+| `languages/12_php/` | `.php` | `algorithms/` |
+| `languages/13_swift/` | `.swift` | `algorithms/`, `club/` |
+| `languages/14_julia/` | `.jl` | `algorithms/` |
+| `languages/15_ruby/` | `.rb` | `algorithms/` |
+| `languages/16_kotlin/` | `.kt` | `algorithms/`, `club/` |
+| `languages/17_matlab/` | `.m` | `algorithms/` |
+| `languages/18_ocaml/` | `.ml` | `algorithms/` |
+| `languages/19_lua/` | `.lua` | `algorithms/` |
+| `languages/20_lisp/` | `.lisp`, `.cl` | `algorithms/`, `competitive/`, `rutils/` |
+| `languages/21_scala/` | `.scala` | `algorithms/`, `scalacaster/` |
+| `languages/22_haskell/` | `.hs` | `algorithms/` |
+| `languages/23_elixir/` | `.ex`, `.exs` | `algorithms/` |
+| `languages/24_fortran/` | `.f90`, `.f95` | `algorithms/` |
+| `languages/25_lean4/` | `.lean` | `samples/` |
+
+### 4. Scripts & Utilities (`scripts/`)
+
+| Directory | Primary Formats | Index |
+|:---|:---|:---|
+| `scripts/computer_science/` | `.py` | Graph embeddings and cipher routines |
+| `scripts/finance/` | `.py` | Valuation and financial modeling routines |
+| `scripts/mathematics/` | `.py` | Number theory, algebra, and geometry scripts |
+| `scripts/physics/` | `.py` | Tensors and mechanics scripts |
+| `scripts/shell_automation/` | `.sh`, `.bash` | Portable shell and bash scripting references |
 
 ---
 
 ## Commands
 
 ```bash
-# Execute full test suite
+# Execute local verification suite
 make test
 
 # Target specific modules
@@ -156,6 +148,12 @@ make test-go
 # Clean build artifacts
 make clean
 ```
+
+---
+
+## Sources and Attribution
+
+See [SOURCES.md](SOURCES.md) for upstream repository URLs, author credits, and license details.
 
 ---
 
