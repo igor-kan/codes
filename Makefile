@@ -1,5 +1,5 @@
 # ==============================================================================
-# Computational Polyglot Algorithms: Master Build & Verification Harness
+# Code & Scripts Repository: Master Build & Verification Harness
 # ==============================================================================
 
 CC ?= gcc
@@ -11,7 +11,7 @@ RUSTC ?= rustc
 GO ?= go
 BUILD_DIR = build
 
-.PHONY: all test test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-quarto clean help
+.PHONY: all test test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-scripts clean help
 
 all: test
 
@@ -19,16 +19,18 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 help:
-	@echo "Computational Polyglot Algorithms Build Matrix"
+	@echo "Repository Build & Execution Matrix"
 	@echo "Available test targets:"
-	@echo "  make test-python    Run Python RK45 and DSU suites"
-	@echo "  make test-c         Compile and execute C MurmurHash3"
-	@echo "  make test-cpp       Compile and execute C++ LRU Cache"
-	@echo "  make test-rust      Compile and execute Rust SPSC RingBuffer"
-	@echo "  make test-fortran   Compile and execute Fortran Conjugate Gradient"
-	@echo "  make test-js        Execute JavaScript concurrency pipeline"
-	@echo "  make test-go        Execute Golang worker pool"
-	@echo "  make test-quarto    Execute all Quarto website extracted algorithms"
+	@echo "  make test-python    Run Python scripts"
+	@echo "  make test-c         Compile and execute C routines"
+	@echo "  make test-cpp       Compile and execute C++ routines"
+	@echo "  make test-java      Compile and execute Java routines"
+	@echo "  make test-lua       Execute Lua coroutine scripts"
+	@echo "  make test-rust      Compile and execute Rust routines"
+	@echo "  make test-fortran   Compile and execute Fortran routines"
+	@echo "  make test-js        Execute JavaScript routines"
+	@echo "  make test-go        Execute Golang routines"
+	@echo "  make test-scripts   Execute computational Python scripts"
 	@echo "  make test           Run all available local tests"
 
 test-python:
@@ -73,21 +75,21 @@ test-go:
 	@echo ">>> Executing Golang Worker Pool..."
 	$(GO) run languages/11_golang/worker_pool.go
 
-test-quarto:
-	@echo ">>> Testing Quarto Website Mathematical & Physical Algorithms..."
-	$(PYTHON) quarto_website_code/mathematics/euclidean_algorithms.py
-	$(PYTHON) quarto_website_code/mathematics/finite_geometry_fano.py
-	$(PYTHON) quarto_website_code/mathematics/multilinear_algebra.py
-	$(PYTHON) quarto_website_code/mathematics/perfect_numbers_factorization.py
-	$(PYTHON) quarto_website_code/physics/curvilinear_tensors.py
-	$(PYTHON) quarto_website_code/physics/rigid_body_inertia.py
-	$(PYTHON) quarto_website_code/finance/corporate_valuation_dcf.py
-	$(PYTHON) quarto_website_code/computer_science/k4_planar_graph.py
+test-scripts:
+	@echo ">>> Executing Computational Scripts..."
+	$(PYTHON) scripts/mathematics/euclidean_algorithms.py
+	$(PYTHON) scripts/mathematics/finite_geometry_fano.py
+	$(PYTHON) scripts/mathematics/multilinear_algebra.py
+	$(PYTHON) scripts/mathematics/perfect_numbers_factorization.py
+	$(PYTHON) scripts/physics/curvilinear_tensors.py
+	$(PYTHON) scripts/physics/rigid_body_inertia.py
+	$(PYTHON) scripts/finance/corporate_valuation_dcf.py
+	$(PYTHON) scripts/computer_science/k4_planar_graph.py
 
-test: test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-quarto
+test: test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-scripts
 	@echo ""
 	@echo "================================================================="
-	@echo "ALL POLYGLOT TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
+	@echo "ALL REPOSITORY TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
 	@echo "================================================================="
 
 clean:
