@@ -1,0 +1,552 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE MagicHash #-}
+{-# OPTIONS_HADDOCK not-home #-}
+
+-- |
+-- Module      :  GHC.Base
+-- Copyright   :  (c) The University of Glasgow, 1992-2002
+-- License     :  see libraries/base/LICENSE
+--
+-- Maintainer  :  ghc-devs@haskell.org
+-- Stability   :  internal
+-- Portability :  non-portable (GHC extensions)
+--
+-- Basic data types and classes.
+--
+
+-- N.B. This is a legacy module which we would at some point like to
+-- deprecate and drop from `base`. In short, everything found here is
+-- better imported from elsewhere. Until we have done so we prefer to
+-- keep the export list as specific as possible (e.g. avoiding module
+-- exports) to avoid changes in `ghc-internal` inadvertently
+-- compromising the stability of this interface.
+
+module GHC.Base
+    ( module GHC.Types
+    , module GHC.Prim
+    , module GHC.Prim.Ext
+    , module GHC.Prim.PtrEq
+    , module GHC.Internal.Err
+    , module GHC.Internal.Maybe
+
+      -- * Equality and ordering
+    , IP(..)
+    , Eq(..)
+    , Ord(..)
+      -- ** Monomorphic equality operators
+    , eqInt, neInt
+    , eqWord, neWord
+    , eqChar, neChar
+    , eqFloat, eqDouble
+    , gtInt, geInt, leInt, ltInt, compareInt, compareInt#
+    , gtWord, geWord, leWord, ltWord, compareWord, compareWord#
+
+      -- * C Strings
+    , CS.unpackCString#, CS.unpackAppendCString#, CS.unpackFoldrCString#
+    , CS.cstringLength#
+    , CS.unpackCStringUtf8#, CS.unpackAppendCStringUtf8#, CS.unpackFoldrCStringUtf8#
+    , CS.unpackNBytes#
+
+      -- * Magic combinators
+    , inline, noinline, lazy, oneShot, runRW#, seq#, DataToTag(..)
+    , WithDict(withDict)
+
+      -- * Functions over 'Bool'
+    , (&&), (||), not
+
+      -- Void
+    , Void
+    , absurd
+    , vacuous
+
+      -- * Semigroup/Monoid
+    , Semigroup(..)
+    , Monoid(..)
+
+      -- * Functors
+    , Functor(..)
+    , Applicative(..)
+    , (<**>)
+    , liftA
+    , liftA3
+    , join
+    , Monad(..)
+    , (=<<)
+    , when
+    , sequence
+    , mapM
+    , liftM
+    , liftM2
+    , liftM3
+    , liftM4
+    , liftM5
+    , ap
+    , Alternative(..)
+    , MonadPlus(..)
+
+      -- Lists
+    , NonEmpty(..)
+    , foldr
+    , build
+    , augment
+    , map
+    , mapFB
+    , (++)
+    , String
+    , unsafeChr
+    , ord
+    , eqString
+    , minInt, maxInt
+
+      -- * Miscellanea
+    , otherwise
+    , id
+    , assert
+    , breakpoint
+    , breakpointCond
+    , Opaque(..)
+    , const
+    , (.)
+    , flip
+    , ($)
+    , ($!)
+    , until
+    , asTypeOf
+
+      -- * IO
+    , returnIO
+    , bindIO
+    , thenIO
+    , failIO
+    , unIO
+
+      -- * Low-level integer utilities
+    , getTag
+    , quotInt
+    , remInt
+    , divInt
+    , modInt
+    , quotRemInt
+    , divModInt
+    , shift_mask
+    , shiftL#
+    , shiftRL#
+    , iShiftL#
+    , iShiftRA#
+    , iShiftRL#
+    , divInt#, divInt8#, divInt16#, divInt32#
+    , modInt#, modInt8#, modInt16#, modInt32#
+    , divModInt#, divModInt8#, divModInt16#, divModInt32#
+    ) where
+
+import GHC.Internal.Base hiding ( NonEmpty(..) )
+import GHC.Internal.Data.NonEmpty ( NonEmpty(..) )
+#if __GLASGOW_HASKELL__ >= 1000
+#if __GLASGOW_HASKELL__ < 1001
+import GHC.Internal.Classes
+import GHC.Internal.CString
+import GHC.Internal.Data.NonEmpty ( NonEmpty(..) )
+import GHC.Internal.Magic.Dict ( WithDict(..) )
+#endif
+#endif
+import GHC.Prim hiding
+  (
+  -- Hide dataToTag# ops because they are expected to break for
+  -- GHC-internal reasons in the near future, and shouldn't
+  -- be exposed from base
+    dataToTagSmall#, dataToTagLarge#
+  -- whereFrom# is similarly internal.
+  , whereFrom#
+  , isByteArrayWeaklyPinned#, isMutableByteArrayWeaklyPinned#
+  -- Don't re-export vector FMA instructions
+  , fmaddFloatX4#
+  , fmsubFloatX4#
+  , fnmaddFloatX4#
+  , fnmsubFloatX4#
+  , fmaddFloatX8#
+  , fmsubFloatX8#
+  , fnmaddFloatX8#
+  , fnmsubFloatX8#
+  , fmaddFloatX16#
+  , fmsubFloatX16#
+  , fnmaddFloatX16#
+  , fnmsubFloatX16#
+  , fmaddDoubleX2#
+  , fmsubDoubleX2#
+  , fnmaddDoubleX2#
+  , fnmsubDoubleX2#
+  , fmaddDoubleX4#
+  , fmsubDoubleX4#
+  , fnmaddDoubleX4#
+  , fnmsubDoubleX4#
+  , fmaddDoubleX8#
+  , fmsubDoubleX8#
+  , fnmaddDoubleX8#
+  , fnmsubDoubleX8#
+  -- Don't re-export SIMD shuffle primops
+  , shuffleDoubleX2#
+  , shuffleDoubleX4#
+  , shuffleDoubleX8#
+  , shuffleFloatX16#
+  , shuffleFloatX4#
+  , shuffleFloatX8#
+  , shuffleInt16X16#
+  , shuffleInt16X32#
+  , shuffleInt16X8#
+  , shuffleInt32X16#
+  , shuffleInt32X4#
+  , shuffleInt32X8#
+  , shuffleInt64X2#
+  , shuffleInt64X4#
+  , shuffleInt64X8#
+  , shuffleInt8X16#
+  , shuffleInt8X32#
+  , shuffleInt8X64#
+  , shuffleWord16X16#
+  , shuffleWord16X32#
+  , shuffleWord16X8#
+  , shuffleWord32X16#
+  , shuffleWord32X4#
+  , shuffleWord32X8#
+  , shuffleWord64X2#
+  , shuffleWord64X4#
+  , shuffleWord64X8#
+  , shuffleWord8X16#
+  , shuffleWord8X32#
+  , shuffleWord8X64#
+  -- Don't re-export min/max primops
+  , maxDouble#
+  , maxDoubleX2#
+  , maxDoubleX4#
+  , maxDoubleX8#
+  , maxFloat#
+  , maxFloatX16#
+  , maxFloatX4#
+  , maxFloatX8#
+  , maxInt16X16#
+  , maxInt16X32#
+  , maxInt16X8#
+  , maxInt32X16#
+  , maxInt32X4#
+  , maxInt32X8#
+  , maxInt64X2#
+  , maxInt64X4#
+  , maxInt64X8#
+  , maxInt8X16#
+  , maxInt8X32#
+  , maxInt8X64#
+  , maxWord16X16#
+  , maxWord16X32#
+  , maxWord16X8#
+  , maxWord32X16#
+  , maxWord32X4#
+  , maxWord32X8#
+  , maxWord64X2#
+  , maxWord64X4#
+  , maxWord64X8#
+  , maxWord8X16#
+  , maxWord8X32#
+  , maxWord8X64#
+  , minDouble#
+  , minDoubleX2#
+  , minDoubleX4#
+  , minDoubleX8#
+  , minFloat#
+  , minFloatX16#
+  , minFloatX4#
+  , minFloatX8#
+  , minInt16X16#
+  , minInt16X32#
+  , minInt16X8#
+  , minInt32X16#
+  , minInt32X4#
+  , minInt32X8#
+  , minInt64X2#
+  , minInt64X4#
+  , minInt64X8#
+  , minInt8X16#
+  , minInt8X32#
+  , minInt8X64#
+  , minWord16X16#
+  , minWord16X32#
+  , minWord16X8#
+  , minWord32X16#
+  , minWord32X4#
+  , minWord32X8#
+  , minWord64X2#
+  , minWord64X4#
+  , minWord64X8#
+  , minWord8X16#
+  , minWord8X32#
+  , minWord8X64#
+#if __GLASGOW_HASKELL__ >= 1000
+  -- Don't re-export vector logical primops
+  , andDoubleX2#
+  , andDoubleX4#
+  , andDoubleX8#
+  , andFloatX16#
+  , andFloatX4#
+  , andFloatX8#
+  , andInt16X16#
+  , andInt16X32#
+  , andInt16X8#
+  , andInt32X16#
+  , andInt32X4#
+  , andInt32X8#
+  , andInt64X2#
+  , andInt64X4#
+  , andInt64X8#
+  , andInt8X16#
+  , andInt8X32#
+  , andInt8X64#
+  , andWord16X16#
+  , andWord16X32#
+  , andWord16X8#
+  , andWord32X16#
+  , andWord32X4#
+  , andWord32X8#
+  , andWord64X2#
+  , andWord64X4#
+  , andWord64X8#
+  , andWord8X16#
+  , andWord8X32#
+  , andWord8X64#
+  , orDoubleX2#
+  , orDoubleX4#
+  , orDoubleX8#
+  , orFloatX16#
+  , orFloatX4#
+  , orFloatX8#
+  , orInt16X16#
+  , orInt16X32#
+  , orInt16X8#
+  , orInt32X16#
+  , orInt32X4#
+  , orInt32X8#
+  , orInt64X2#
+  , orInt64X4#
+  , orInt64X8#
+  , orInt8X16#
+  , orInt8X32#
+  , orInt8X64#
+  , orWord16X16#
+  , orWord16X32#
+  , orWord16X8#
+  , orWord32X16#
+  , orWord32X4#
+  , orWord32X8#
+  , orWord64X2#
+  , orWord64X4#
+  , orWord64X8#
+  , orWord8X16#
+  , orWord8X32#
+  , orWord8X64#
+  , xorDoubleX2#
+  , xorDoubleX4#
+  , xorDoubleX8#
+  , xorFloatX16#
+  , xorFloatX4#
+  , xorFloatX8#
+  , xorInt16X16#
+  , xorInt16X32#
+  , xorInt16X8#
+  , xorInt32X16#
+  , xorInt32X4#
+  , xorInt32X8#
+  , xorInt64X2#
+  , xorInt64X4#
+  , xorInt64X8#
+  , xorInt8X16#
+  , xorInt8X32#
+  , xorInt8X64#
+  , xorWord16X16#
+  , xorWord16X32#
+  , xorWord16X8#
+  , xorWord32X16#
+  , xorWord32X4#
+  , xorWord32X8#
+  , xorWord64X2#
+  , xorWord64X4#
+  , xorWord64X8#
+  , xorWord8X16#
+  , xorWord8X32#
+  , xorWord8X64#
+  -- Don't re-export vector square root and absolute value
+  , absInt8X16#
+  , absInt16X8#
+  , absInt32X4#
+  , absInt64X2#
+  , absInt8X32#
+  , absInt16X16#
+  , absInt32X8#
+  , absInt64X4#
+  , absInt8X64#
+  , absInt16X32#
+  , absInt32X16#
+  , absInt64X8#
+  , absFloatX4#
+  , absDoubleX2#
+  , absFloatX8#
+  , absDoubleX4#
+  , absFloatX16#
+  , absDoubleX8#
+  , sqrtFloatX4#
+  , sqrtDoubleX2#
+  , sqrtFloatX8#
+  , sqrtDoubleX4#
+  , sqrtFloatX16#
+  , sqrtDoubleX8#
+#endif
+  )
+
+import GHC.Prim.Ext
+import GHC.Prim.PtrEq
+import GHC.Internal.Err
+import GHC.Internal.IO (seq#)
+#if __GLASGOW_HASKELL__ >= 1000
+import GHC.Internal.Magic.Dict
+#endif
+import GHC.Internal.Maybe
+import qualified GHC.Types as CS (
+  unpackCString#, unpackAppendCString#, unpackFoldrCString#,
+  cstringLength#,
+  unpackCStringUtf8#, unpackAppendCStringUtf8#, unpackFoldrCStringUtf8#,
+  unpackNBytes#
+  )
+import GHC.Types hiding (
+  unpackCString#, unpackAppendCString#, unpackFoldrCString#,
+  cstringLength#,
+  unpackCStringUtf8#, unpackAppendCStringUtf8#, unpackFoldrCStringUtf8#,
+  unpackNBytes#,
+  Unit#,
+  Solo#(..),
+  Tuple0#,
+  Tuple1#,
+  Tuple2#,
+  Tuple3#,
+  Tuple4#,
+  Tuple5#,
+  Tuple6#,
+  Tuple7#,
+  Tuple8#,
+  Tuple9#,
+  Tuple10#,
+  Tuple11#,
+  Tuple12#,
+  Tuple13#,
+  Tuple14#,
+  Tuple15#,
+  Tuple16#,
+  Tuple17#,
+  Tuple18#,
+  Tuple19#,
+  Tuple20#,
+  Tuple21#,
+  Tuple22#,
+  Tuple23#,
+  Tuple24#,
+  Tuple25#,
+  Tuple26#,
+  Tuple27#,
+  Tuple28#,
+  Tuple29#,
+  Tuple30#,
+  Tuple31#,
+  Tuple32#,
+  Tuple33#,
+  Tuple34#,
+  Tuple35#,
+  Tuple36#,
+  Tuple37#,
+  Tuple38#,
+  Tuple39#,
+  Tuple40#,
+  Tuple41#,
+  Tuple42#,
+  Tuple43#,
+  Tuple44#,
+  Tuple45#,
+  Tuple46#,
+  Tuple47#,
+  Tuple48#,
+  Tuple49#,
+  Tuple50#,
+  Tuple51#,
+  Tuple52#,
+  Tuple53#,
+  Tuple54#,
+  Tuple55#,
+  Tuple56#,
+  Tuple57#,
+  Tuple58#,
+  Tuple59#,
+  Tuple60#,
+  Tuple61#,
+  Tuple62#,
+  Tuple63#,
+  Tuple64#,
+  Sum2#,
+  Sum3#,
+  Sum4#,
+  Sum5#,
+  Sum6#,
+  Sum7#,
+  Sum8#,
+  Sum9#,
+  Sum10#,
+  Sum11#,
+  Sum12#,
+  Sum13#,
+  Sum14#,
+  Sum15#,
+  Sum16#,
+  Sum17#,
+  Sum18#,
+  Sum19#,
+  Sum20#,
+  Sum21#,
+  Sum22#,
+  Sum23#,
+  Sum24#,
+  Sum25#,
+  Sum26#,
+  Sum27#,
+  Sum28#,
+  Sum29#,
+  Sum30#,
+  Sum31#,
+  Sum32#,
+  Sum33#,
+  Sum34#,
+  Sum35#,
+  Sum36#,
+  Sum37#,
+  Sum38#,
+  Sum39#,
+  Sum40#,
+  Sum41#,
+  Sum42#,
+  Sum43#,
+  Sum44#,
+  Sum45#,
+  Sum46#,
+  Sum47#,
+  Sum48#,
+  Sum49#,
+  Sum50#,
+  Sum51#,
+  Sum52#,
+  Sum53#,
+  Sum54#,
+  Sum55#,
+  Sum56#,
+  Sum57#,
+  Sum58#,
+  Sum59#,
+  Sum60#,
+  Sum61#,
+  Sum62#,
+  Sum63#,
+  Sum64#,
+  UnusedType,
+  )

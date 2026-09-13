@@ -1,0 +1,732 @@
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
+module GHC.CmmToAsm.AArch64.Ppr (pprNatCmmDecl, pprInstr, pprBasicBlock) where
+
+import GHC.Prelude hiding (EQ)
+
+import GHC.CmmToAsm.AArch64.Instr
+import GHC.CmmToAsm.AArch64.Regs
+import GHC.CmmToAsm.AArch64.Cond
+import GHC.CmmToAsm.Ppr
+import GHC.CmmToAsm.Format
+import GHC.Platform.Reg
+import GHC.CmmToAsm.Config
+import GHC.CmmToAsm.Types
+import GHC.CmmToAsm.Utils
+
+import GHC.Cmm hiding (topInfoTable)
+import GHC.Cmm.Dataflow.Label
+
+import GHC.Cmm.BlockId
+import GHC.Cmm.CLabel
+import GHC.Cmm.InitFini
+
+import GHC.Types.Literal.Floating
+import GHC.Types.Unique ( pprUniqueAlways, getUnique )
+import GHC.Platform
+import GHC.Utils.Outputable
+
+import GHC.Utils.Panic
+
+pprNatCmmDecl :: IsDoc doc => NCGConfig -> NatCmmDecl RawCmmStatics Instr -> doc
+pprNatCmmDecl config (CmmData section dats) =
+  pprSectionAlign config section $$ pprDatas config dats
+
+pprNatCmmDecl config proc@(CmmProc top_info lbl _ (ListGraph blocks)) =
+  let platform = ncgPlatform config
+      with_dwarf = ncgDwarfEnabled config
+  in
+  case topInfoTable proc of
+    Nothing ->
+        -- special case for code without info table:
+        pprSectionAlign config (Section Text lbl) $$
+        -- do not
+        -- pprProcAlignment config $$
+        (if lbl /= blockLbl (blockId (head blocks)) -- blocks can have clashed names
+          then pprLabel platform lbl -- blocks guaranteed not null, so label needed
+          else empty) $$
+        vcat (map (pprBasicBlock platform with_dwarf top_info) blocks) $$
+        (if ncgDwarfEnabled config
+         then line (pprAsmLabel platform (mkAsmTempEndLabel lbl) <> char ':') else empty) $$
+        pprSizeDecl platform lbl
+
+    Just (CmmStaticsRaw info_lbl _) ->
+      pprSectionAlign config (Section Text info_lbl) $$
+      -- pprProcAlignment config $$
+      (if platformHasSubsectionsViaSymbols platform
+          then line (pprAsmLabel platform (mkDeadStripPreventer info_lbl) <> char ':')
+          else empty) $$
+      vcat (map (pprBasicBlock platform with_dwarf top_info) blocks) $$
+      -- above: Even the first block gets a label, because with branch-chain
+      -- elimination, it might be the target of a goto.
+      (if platformHasSubsectionsViaSymbols platform
+       then -- See Note [Subsections Via Symbols]
+                line
+              $ text "\t.long "
+            <+> pprAsmLabel platform info_lbl
+            <+> char '-'
+            <+> pprAsmLabel platform (mkDeadStripPreventer info_lbl)
+       else empty) $$
+      pprSizeDecl platform info_lbl
+{-# SPECIALIZE pprNatCmmDecl :: NCGConfig -> NatCmmDecl RawCmmStatics Instr -> SDoc #-}
+{-# SPECIALIZE pprNatCmmDecl :: NCGConfig -> NatCmmDecl RawCmmStatics Instr -> HDoc #-} -- see Note [SPECIALIZE to HDoc] in GHC.Utils.Outputable
+
+pprLabel :: IsDoc doc => Platform -> CLabel -> doc
+pprLabel platform lbl =
+   pprGloblDecl platform lbl
+   $$ pprTypeDecl platform lbl
+   $$ line (pprAsmLabel platform lbl <> char ':')
+
+-- | Print appropriate alignment for the given section type.
+pprAlignForSection :: IsDoc doc => Platform -> SectionType -> doc
+pprAlignForSection _platform _seg
+    -- .balign is stable, whereas .align is platform dependent.
+    = line (text "\t.balign 8") --  always 8
+
+-- | Print section header and appropriate alignment for that section.
+--
+-- This one will emit the header:
+--
+--     .section .text
+--     .balign 8
+--
+pprSectionAlign :: IsDoc doc => NCGConfig -> Section -> doc
+pprSectionAlign config sec@(Section seg suffix) =
+    line (pprSectionHeader config sec)
+    $$ coffSplitSectionComdatKey
+    $$ pprAlignForSection (ncgPlatform config) seg
+  where
+    platform = ncgPlatform config
+    -- See Note [Split sections on COFF objects]
+    coffSplitSectionComdatKey
+      | OSMinGW32 <- platformOS platform
+      , ncgSplitSections config
+      , Nothing <- isInitOrFiniSection seg
+      = line (pprCOFFComdatKey platform suffix <> colon)
+      | otherwise
+      = empty
+
+-- | Output the ELF .size directive.
+pprSizeDecl :: IsDoc doc => Platform -> CLabel -> doc
+pprSizeDecl platform lbl
+ = if osElfTarget (platformOS platform)
+   then line (text "\t.size" <+> pprAsmLabel platform lbl <> text ", .-" <> pprAsmLabel platform lbl)
+   else empty
+
+pprBasicBlock :: IsDoc doc => Platform -> {- dwarf enabled -} Bool -> LabelMap RawCmmStatics -> NatBasicBlock Instr
+              -> doc
+pprBasicBlock platform with_dwarf info_env (BasicBlock blockid instrs)
+  = maybe_infotable $
+    pprLabel platform asmLbl $$
+    vcat (map (pprInstr platform) (id {-detectTrivialDeadlock-} optInstrs)) $$
+    (if  with_dwarf
+      then line (pprAsmLabel platform (mkAsmTempEndLabel asmLbl) <> char ':')
+      else empty
+    )
+  where
+    -- Filter out identity moves. E.g. mov x18, x18 will be dropped.
+    optInstrs = filter f instrs
+      where f (MOV o1 o2) | o1 == o2 = False
+            f _ = True
+
+    asmLbl = blockLbl blockid
+    maybe_infotable c = case mapLookup blockid info_env of
+       Nothing   -> c
+       Just (CmmStaticsRaw info_lbl info) ->
+          --  pprAlignForSection platform Text $$
+           infoTableLoc $$
+           vcat (map (pprData platform) info) $$
+           pprLabel platform info_lbl $$
+           c $$
+           (if with_dwarf
+             then line (pprAsmLabel platform (mkAsmTempEndLabel info_lbl) <> char ':')
+             else empty)
+    -- Make sure the info table has the right .loc for the block
+    -- coming right after it. See Note [Info Offset]
+    infoTableLoc = case instrs of
+      (l@LOCATION{} : _) -> pprInstr platform l
+      _other             -> empty
+
+pprDatas :: IsDoc doc => NCGConfig -> RawCmmStatics -> doc
+-- See Note [emit-time elimination of static indirections] in "GHC.Cmm.CLabel".
+pprDatas config (CmmStaticsRaw alias [CmmStaticLit (CmmLabel lbl), CmmStaticLit ind, _, _])
+  | lbl == mkIndStaticInfoLabel
+  , let labelInd (CmmLabelOff l _) = Just l
+        labelInd (CmmLabel l) = Just l
+        labelInd _ = Nothing
+  , Just ind' <- labelInd ind
+  , alias `mayRedirectTo` ind'
+  -- See Note [Split sections on COFF objects]
+  , not $ platformOS platform == OSMinGW32 && ncgSplitSections config
+  = pprGloblDecl platform alias
+    $$ line (text ".equiv" <+> pprAsmLabel platform alias <> comma <> pprAsmLabel platform ind')
+    where
+      platform = ncgPlatform config
+
+pprDatas config (CmmStaticsRaw lbl dats)
+  = vcat (pprLabel platform lbl : map (pprData platform) dats)
+    where
+      platform = ncgPlatform config
+
+pprData :: IsDoc doc => Platform -> CmmStatic -> doc
+pprData _platform (CmmString str) = line (pprString str)
+pprData _platform (CmmFileEmbed path _) = line (pprFileEmbed path)
+
+pprData platform (CmmUninitialised bytes)
+ = line $ if platformOS platform == OSDarwin
+                then text ".space " <> int bytes
+                else text ".skip "  <> int bytes
+
+pprData platform (CmmStaticLit lit) = pprDataItem platform lit
+
+pprGloblDecl :: IsDoc doc => Platform -> CLabel -> doc
+pprGloblDecl platform lbl
+  | not (externallyVisibleCLabel lbl) = empty
+  | otherwise = line (text "\t.globl " <> pprAsmLabel platform lbl)
+
+-- Note [Always use objects for info tables]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- See discussion in X86.Ppr for why this is necessary.  Essentially we need to
+-- ensure that we never pass function symbols when we might want to lookup the
+-- info table.  If we did, we could end up with procedure linking tables
+-- (PLT)s, and thus the lookup wouldn't point to the function, but into the
+-- jump table.
+--
+-- Fun fact: The LLVMMangler exists to patch this issue su on the LLVM side as
+-- well.
+pprLabelType' :: IsLine doc => Platform -> CLabel -> doc
+pprLabelType' platform lbl =
+  if isCFunctionLabel lbl || functionOkInfoTable then
+    text "@function"
+  else
+    text "@object"
+  where
+    functionOkInfoTable = platformTablesNextToCode platform &&
+      isInfoTableLabel lbl && not (isCmmInfoTableLabel lbl) && not (isConInfoTableLabel lbl)
+
+-- this is called pprTypeAndSizeDecl in PPC.Ppr
+pprTypeDecl :: IsDoc doc => Platform -> CLabel -> doc
+pprTypeDecl platform lbl
+    = if osElfTarget (platformOS platform) && externallyVisibleCLabel lbl
+      then line (text ".type " <> pprAsmLabel platform lbl <> text ", " <> pprLabelType' platform lbl)
+      else empty
+
+pprDataItem :: IsDoc doc => Platform -> CmmLit -> doc
+pprDataItem platform lit
+  = lines_ (ppr_align fmt ++ ppr_item fmt lit)
+    where
+        fmt = cmmTypeFormat $ cmmLitType platform lit
+
+        -- It's unlikely that we need to attach .p2align to every .short/.long/.quad
+        ppr_align II8 = []
+        ppr_align II16 = []
+        ppr_align II32 = []
+        ppr_align II64 = []
+        ppr_align FF32 = [text "\t.p2align 2"]
+        ppr_align FF64 = [text "\t.p2align 3"]
+        ppr_align (VecFormat {}) = [text "\t.p2align 4"]
+
+        ppr_item II8  lit' = [text "\t.byte\t"  <> pprImm platform (litToImm lit')]
+        ppr_item II16 lit' = [text "\t.short\t" <> pprImm platform (litToImm lit')]
+        ppr_item II32 lit' = [text "\t.long\t"  <> pprImm platform (litToImm lit')]
+        ppr_item II64 lit' = [text "\t.quad\t"  <> pprImm platform (litToImm lit')]
+
+        ppr_item FF32  (CmmFloat r _)
+           = let bs = floatToBytes (litFloatingToHostFloat r)
+             in  map (\b -> text "\t.byte\t" <> int (fromIntegral b)) bs
+
+        ppr_item FF64 (CmmFloat r _)
+           = let bs = doubleToBytes (litFloatingToHostDouble r)
+             in  map (\b -> text "\t.byte\t" <> int (fromIntegral b)) bs
+
+        ppr_item (VecFormat _ scalar) (CmmVec lits)
+           = concatMap (ppr_item $ scalarFormatFormat scalar) lits
+
+        ppr_item _ _ = pprPanic "pprDataItem:ppr_item" (text $ show lit)
+
+pprImm :: IsLine doc => Platform -> Imm -> doc
+pprImm _ (ImmInt i)     = int i
+pprImm _ (ImmInteger i) = integer i
+pprImm p (ImmCLbl l)    = pprAsmLabel p l
+pprImm p (ImmIndex l i) = pprAsmLabel p l <> char '+' <> int i
+pprImm _ (ImmLit s)     = ftext s
+
+-- TODO: See pprIm below for why this is a bad idea!
+pprImm _ (ImmFloat f)
+  | isPositiveZero f = text "wzr"
+  | otherwise = float f
+pprImm _ (ImmDouble d)
+  | isPositiveZero d = text "xzr"
+  | otherwise = double d
+
+pprImm p (ImmConstantSum a b) = pprImm p a <> char '+' <> pprImm p b
+pprImm p (ImmConstantDiff a b) = pprImm p a <> char '-'
+                   <> lparen <> pprImm p b <> rparen
+
+
+-- aarch64 GNU as uses // for comments.
+asmComment :: SDoc -> SDoc
+asmComment c = whenPprDebug $ text "#" <+> c
+
+asmDoubleslashComment :: SDoc -> SDoc
+asmDoubleslashComment c = whenPprDebug $ text "//" <+> c
+
+asmMultilineComment :: SDoc -> SDoc
+asmMultilineComment c = whenPprDebug $ text "/*" $+$ c $+$ text "*/"
+
+pprIm :: IsLine doc => Platform -> Imm -> doc
+pprIm platform im = case im of
+  ImmInt i     -> char '#' <> int i
+  ImmInteger i -> char '#' <> integer i
+
+  -- TODO: This will only work for
+  -- The floating point value must be expressible as ±n ÷ 16 × 2^r,
+  -- where n and r are integers such that 16 ≤ n ≤ 31 and -3 ≤ r ≤ 4.
+  -- and 0 needs to be encoded as wzr/xzr.
+  --
+  -- Except for 0, we might want to either split it up into enough
+  -- ADD operations into an Integer register and then just bit copy it into
+  -- the double register? See the toBytes + fromRational above for data items.
+  -- This is something the x86 backend does.
+  --
+  -- We could also just turn them into statics :-/ Which is what the
+  -- PowerPC backend does.
+  ImmFloat f | isPositiveZero f -> text "wzr"
+  ImmFloat f -> char '#' <> float f
+  ImmDouble d | isPositiveZero d -> text "xzr"
+  ImmDouble d -> char '#' <> double d
+  -- =<lbl> pseudo instruction!
+  ImmCLbl l    -> char '=' <> pprAsmLabel platform l
+  ImmIndex l o -> text "[=" <> pprAsmLabel platform l <> comma <+> char '#' <> int o <> char ']'
+  _            -> panic "AArch64.pprIm"
+
+pprExt :: IsLine doc => ExtMode -> doc
+pprExt EUXTB = text "uxtb"
+pprExt EUXTH = text "uxth"
+pprExt EUXTW = text "uxtw"
+pprExt EUXTX = text "uxtx"
+pprExt ESXTB = text "sxtb"
+pprExt ESXTH = text "sxth"
+pprExt ESXTW = text "sxtw"
+pprExt ESXTX = text "sxtx"
+
+pprShift :: IsLine doc => ShiftMode -> doc
+pprShift SLSL = text "lsl"
+pprShift SLSR = text "lsr"
+pprShift SASR = text "asr"
+pprShift SROR = text "ror"
+pprShift SMSL = text "msl"
+
+pprOp :: IsLine doc => Platform -> Operand -> doc
+pprOp plat op = case op of
+  OpReg w r           -> pprReg w r
+  OpRegExt w r x 0 -> pprReg w r <> comma <+> pprExt x
+  OpRegExt w r x i -> pprReg w r <> comma <+> pprExt x <> comma <+> char '#' <> int i
+  OpRegShift w r s i -> pprReg w r <> comma <+> pprShift s <+> char '#' <> int i
+  OpImm im          -> pprIm plat im
+  OpImmShift im s i -> pprIm plat im <> comma <+> pprShift s <+> char '#' <> int i
+  -- TODO: Address computation always use registers as 64bit -- is this correct?
+  OpAddr (AddrRegReg r1 r2) -> char '[' <+> pprReg W64 r1 <> comma <+> pprReg W64 r2 <+> char ']'
+  OpAddr (AddrRegImm r1 im) -> char '[' <+> pprReg W64 r1 <> comma <+> pprImm plat im <+> char ']'
+  OpAddr (AddrReg r1)       -> char '[' <+> pprReg W64 r1 <+> char ']'
+  OpVecLane w r index -> regName <> elementWidth <> int index <> char ']'
+    where
+      regName = case r of
+        RegReal (RealRegSingle i)
+          -- See Note [AArch64 Register assignments]
+          -- General Purpose Registers
+          | i <= 31 -> text "very naughty AArch64 register" <+> parens (text (show w) <+> int i) -- pprPanic "Invalid Reg" (ppr w <+> int i)
+          -- Floating Point Registers
+          | i <= 63 -> text "v" <> int (i-32)
+          | otherwise -> text "very naughty AArch64 register" <+> parens (text (show w) <+> int i)
+        RegVirtual (VirtualRegD u) -> text "%vD_" <> pprUniqueAlways u
+        RegVirtual (VirtualRegV128 u) -> text "%vV128_" <> pprUniqueAlways u
+        _ -> pprPanic "invalid register" (ppr r)
+      elementWidth = case w of
+        W8 -> text ".b["
+        W16 -> text ".h["
+        W32 -> text ".s["
+        W64 -> text ".d["
+        _ -> pprPanic "invalid element width" (ppr w)
+  OpScalarAsVec w r -> pprOp plat (OpVecLane w r 0)
+
+pprReg :: forall doc. IsLine doc => Width -> Reg -> doc
+pprReg w r = case r of
+  RegReal    (RealRegSingle i) -> ppr_reg_no w i
+  -- virtual regs should not show up, but this is helpful for debugging.
+  RegVirtual (VirtualRegI u)   -> text "%vI_" <> pprUniqueAlways u
+  RegVirtual (VirtualRegD u)   -> text "%vD_" <> pprUniqueAlways u
+  RegVirtual (VirtualRegV128 u) -> text "%vV128_" <> pprUniqueAlways u
+  _                            -> pprPanic "AArch64.pprReg" (text $ show r)
+
+  where
+    ppr_reg_no :: Width -> Int -> doc
+    ppr_reg_no w 31
+         | w == W64 = text "sp"
+         | w == W32 = text "wsp"
+
+    -- See Note [AArch64 Register assignments]
+    ppr_reg_no w i
+         | i < 0, w == W32 = text "wzr"
+         | i < 0, w == W64 = text "xzr"
+         | i < 0 = pprPanic "Invalid Zero Reg" (ppr w <+> int i)
+         -- General Purpose Registers
+         | i <= 31, w == W8  = text "w" <> int i      -- there are no byte or half
+         | i <= 31, w == W16 = text "w" <> int i      -- words... word will do.
+         | i <= 31, w == W32 = text "w" <> int i
+         | i <= 31, w == W64 = text "x" <> int i
+         | i <= 31 = pprPanic "Invalid Reg" (ppr w <+> int i)
+         -- Floating Point Registers
+         | i <= 63, w == W8  = text "b" <> int (i-32)
+         | i <= 63, w == W16 = text "h" <> int (i-32)
+         | i <= 63, w == W32 = text "s" <> int (i-32)
+         | i <= 63, w == W64 = text "d" <> int (i-32)
+         | i <= 63, w == W128= text "q" <> int (i-32)
+         | otherwise = text "very naughty AArch64 register" <+> parens (text (show w) <+> int i)
+
+pprFormatOp :: IsLine doc => Platform -> Format -> Operand -> doc
+pprFormatOp plat fmt op = case op of
+  OpReg w r -> pprFormatReg fmt w r
+  _         -> pprOp plat op
+
+pprFormatReg :: forall doc. IsLine doc => Format -> Width -> Reg -> doc
+pprFormatReg fmt w r = case r of
+  RegReal    (RealRegSingle i) -> ppr_reg_no w i
+  -- virtual regs should not show up, but this is helpful for debugging.
+  RegVirtual (VirtualRegI u)   -> text "%vI_" <> pprUniqueAlways u
+  RegVirtual (VirtualRegD u)   -> text "%vD_" <> pprUniqueAlways u
+  RegVirtual (VirtualRegV128 u) -> case fmt of
+    VecFormat 16 FmtInt8 -> text "%vV128_" <> pprUniqueAlways u <> text ".16b"
+    VecFormat 8 FmtInt16 -> text "%vV128_" <> pprUniqueAlways u <> text ".8h"
+    VecFormat 4 FmtInt32 -> text "%vV128_" <> pprUniqueAlways u <> text ".4s"
+    VecFormat 2 FmtInt64 -> text "%vV128_" <> pprUniqueAlways u <> text ".2d"
+    VecFormat 4 FmtFloat -> text "%vV128_" <> pprUniqueAlways u <> text ".4s"
+    VecFormat 2 FmtDouble -> text "%vV128_" <> pprUniqueAlways u <> text ".2d"
+    _ -> text "%vV128_" <> pprUniqueAlways u
+  _                            -> pprPanic "AArch64.pprReg" (text $ show r)
+
+  where
+    ppr_reg_no :: Width -> Int -> doc
+    ppr_reg_no w 31
+         | w == W64 = text "sp"
+         | w == W32 = text "wsp"
+
+    -- See Note [AArch64 Register assignments]
+    ppr_reg_no w i
+         | i < 0, w == W32 = text "wzr"
+         | i < 0, w == W64 = text "xzr"
+         | i < 0 = pprPanic "Invalid Zero Reg" (ppr w <+> int i)
+         -- General Purpose Registers
+         | i <= 31, w == W8  = text "w" <> int i      -- there are no byte or half
+         | i <= 31, w == W16 = text "w" <> int i      -- words... word will do.
+         | i <= 31, w == W32 = text "w" <> int i
+         | i <= 31, w == W64 = text "x" <> int i
+         | i <= 31 = pprPanic "Invalid Reg" (ppr w <+> int i)
+         -- Floating Point Registers
+         | i <= 63, w == W8  = text "b" <> int (i-32)
+         | i <= 63, w == W16 = text "h" <> int (i-32)
+         | i <= 63, w == W32 = text "s" <> int (i-32)
+         | i <= 63, w == W64 = text "d" <> int (i-32)
+         | i <= 63, w == W128 = case fmt of
+            VecFormat 16 FmtInt8 -> text "v" <> int (i-32) <> text ".16b"
+            VecFormat 8 FmtInt16 -> text "v" <> int (i-32) <> text ".8h"
+            VecFormat 4 FmtInt32 -> text "v" <> int (i-32) <> text ".4s"
+            VecFormat 2 FmtInt64 -> text "v" <> int (i-32) <> text ".2d"
+            VecFormat 4 FmtFloat -> text "v" <> int (i-32) <> text ".4s"
+            VecFormat 2 FmtDouble -> text "v" <> int (i-32) <> text ".2d"
+            _ -> text "q" <> int (i-32)
+         | otherwise = text "very naughty AArch64 register" <+> parens (text (show w) <+> int i)
+
+isFloatOp :: Operand -> Bool
+isFloatOp (OpReg w (RegReal (RealRegSingle i))) | i > 31, w /= W128 = True
+isFloatOp (OpReg _ (RegVirtual (VirtualRegD _))) = True
+isFloatOp _ = False
+
+isVectorOp :: Operand -> Bool
+isVectorOp (OpReg W128 (RegReal (RealRegSingle i))) | i > 31 = True
+isVectorOp (OpReg _ (RegVirtual (VirtualRegV128 _))) = True
+isVectorOp _ = False
+
+pprInstr :: IsDoc doc => Platform -> Instr -> doc
+pprInstr platform instr = case instr of
+  -- Meta Instructions ---------------------------------------------------------
+  -- see Note [dualLine and dualDoc] in GHC.Utils.Outputable
+  COMMENT s  -> dualDoc (asmComment s) empty
+  MULTILINE_COMMENT s -> dualDoc (asmMultilineComment s) empty
+  ANN d i -> dualDoc (pprInstr platform i <+> asmDoubleslashComment d) (pprInstr platform i)
+
+  LOCATION file line' col _name
+    -> line (text "\t.loc" <+> int file <+> int line' <+> int col)
+  LDATA {} -> panic "pprInstr: LDATA"
+  DELTA d   -> dualDoc (asmComment $ text "\tdelta = " <> int d) empty
+               -- see Note [dualLine and dualDoc] in GHC.Utils.Outputable
+  NEWBLOCK blockid -> -- This is invalid assembly. But NEWBLOCK should never be contained
+                      -- in the final instruction stream. But we still want to be able to
+                      -- print it for debugging purposes.
+                      line (text "BLOCK " <> pprAsmLabel platform (blockLbl blockid))
+
+  -- Pseudo Instructions -------------------------------------------------------
+
+  PUSH_STACK_FRAME -> lines_ [text "\tstp x29, x30, [sp, #-16]!",
+                              text "\tmov x29, sp"]
+
+  POP_STACK_FRAME -> line $ text "\tldp x29, x30, [sp], #16"
+  -- ===========================================================================
+  -- AArch64 Instruction Set
+  -- 1. Arithmetic Instructions ------------------------------------------------
+  ADD  fmt o1 o2 o3
+    | isFloatOrFloatVecFormat fmt -> op3fmt (text "\tfadd") fmt o1 o2 o3
+    | otherwise -> op3fmt (text "\tadd") fmt o1 o2 o3
+  CMP  o1 o2
+    | isFloatOp o1 && isFloatOp o2 -> op2 (text "\tfcmp") o1 o2
+    | otherwise -> op2 (text "\tcmp") o1 o2
+  CMN  o1 o2       -> op2 (text "\tcmn") o1 o2
+  MSUB o1 o2 o3 o4 -> op4 (text "\tmsub") o1 o2 o3 o4
+  MUL  fmt o1 o2 o3
+    | isFloatOrFloatVecFormat fmt -> op3fmt (text "\tfmul") fmt o1 o2 o3
+    | otherwise -> op3fmt (text "\tmul") fmt o1 o2 o3
+  SMULH o1 o2 o3 -> op3 (text "\tsmulh") o1 o2 o3
+  SMULL o1 o2 o3 -> op3 (text "\tsmull") o1 o2 o3
+  UMULH o1 o2 o3 -> op3 (text "\tumulh") o1 o2 o3
+  UMULL o1 o2 o3 -> op3 (text "\tumull") o1 o2 o3
+  NEG  fmt o1 o2
+    | isFloatOrFloatVecFormat fmt -> op2fmt (text "\tfneg") fmt o1 o2
+    | otherwise -> op2fmt (text "\tneg") fmt o1 o2
+  SDIV fmt o1 o2 o3
+    | isFloatOrFloatVecFormat fmt -> op3fmt (text "\tfdiv") fmt o1 o2 o3
+    | otherwise -> op3fmt (text "\tsdiv") fmt o1 o2 o3
+
+  SUB  fmt o1 o2 o3
+    | isFloatOrFloatVecFormat fmt -> op3fmt (text "\tfsub") fmt o1 o2 o3
+    | otherwise -> op3fmt (text "\tsub") fmt o1 o2 o3
+  UDIV o1 o2 o3 -> op3 (text "\tudiv") o1 o2 o3
+
+  -- 2. Bit Manipulation Instructions ------------------------------------------
+  SBFM o1 o2 o3 o4 -> op4 (text "\tsbfm") o1 o2 o3 o4
+  UBFM o1 o2 o3 o4 -> op4 (text "\tubfm") o1 o2 o3 o4
+  CLZ  o1 o2       -> op2 (text "\tclz")  o1 o2
+  RBIT  o1 o2      -> op2 (text "\trbit")  o1 o2
+  REV o1 o2        -> op2 (text "\trev")  o1 o2
+  REV16 fmt o1 o2  -> op2fmt (text "\trev16") fmt o1 o2
+  REV32 fmt o1 o2  -> op2fmt (text "\trev32") fmt o1 o2
+  REV64 fmt o1 o2  -> op2fmt (text "\trev64") fmt o1 o2
+  -- signed and unsigned bitfield extract
+  SBFX o1 o2 o3 o4 -> op4 (text "\tsbfx") o1 o2 o3 o4
+  UBFX o1 o2 o3 o4 -> op4 (text "\tubfx") o1 o2 o3 o4
+  SXTB o1 o2       -> op2 (text "\tsxtb") o1 o2
+  UXTB o1 o2       -> op2 (text "\tuxtb") o1 o2
+  SXTH o1 o2       -> op2 (text "\tsxth") o1 o2
+  SXTW o1 o2       -> op2 (text "\tsxtw") o1 o2
+  UXTH o1 o2       -> op2 (text "\tuxth") o1 o2
+
+  -- 3. Logical and Move Instructions ------------------------------------------
+  AND fmt o1 o2 o3  -> op3fmt (text "\tand") fmt o1 o2 o3
+  ASR o1 o2 o3  -> op3 (text "\tasr") o1 o2 o3
+  EOR fmt o1 o2 o3  -> op3fmt (text "\teor") fmt o1 o2 o3
+  LSL o1 o2 o3  -> op3 (text "\tlsl") o1 o2 o3
+  LSR o1 o2 o3  -> op3 (text "\tlsr") o1 o2 o3
+  MOV o1 o2
+    -- scalar fp <-> scalar fp: FMOV
+    -- scalar fp <-> gp: FMOV
+    -- vector <-> vector: MOV (.16B)
+    -- vector lane <-> gp: MOV
+    | isVectorOp o1 && isVectorOp o2 -> op2fmt (text "\tmov") (VecFormat 16 FmtInt8) o1 o2
+    | isFloatOp o1 || isFloatOp o2 -> op2 (text "\tfmov") o1 o2
+    | otherwise                    -> op2 (text "\tmov") o1 o2
+  MOVK o1 o2    -> op2 (text "\tmovk") o1 o2
+  MOVZ o1 o2    -> op2 (text "\tmovz") o1 o2
+  MVN o1 o2     -> op2 (text "\tmvn") o1 o2
+  ORR fmt o1 o2 o3  -> op3fmt (text "\torr") fmt o1 o2 o3
+
+  -- 4. Branch Instructions ----------------------------------------------------
+  J t            -> pprInstr platform (B t)
+  J_TBL _ _ r    -> pprInstr platform (B (TReg r))
+  B (TBlock bid) -> line $ text "\tb" <+> pprAsmLabel platform (mkLocalBlockLabel (getUnique bid))
+  B (TLabel lbl) -> line $ text "\tb" <+> pprAsmLabel platform lbl
+  B (TReg r)     -> line $ text "\tbr" <+> pprReg W64 r
+
+  BL (TBlock bid) _ -> line $ text "\tbl" <+> pprAsmLabel platform (mkLocalBlockLabel (getUnique bid))
+  BL (TLabel lbl) _ -> line $ text "\tbl" <+> pprAsmLabel platform lbl
+  BL (TReg r)     _ -> line $ text "\tblr" <+> pprReg W64 r
+
+  BCOND c (TBlock bid) -> line $ text "\t" <> pprBcond c <+> pprAsmLabel platform (mkLocalBlockLabel (getUnique bid))
+  BCOND c (TLabel lbl) -> line $ text "\t" <> pprBcond c <+> pprAsmLabel platform lbl
+  BCOND _ (TReg _)     -> panic "AArch64.ppr: No conditional branching to registers!"
+
+  -- 5. Atomic Instructions ----------------------------------------------------
+  -- 6. Conditional Instructions -----------------------------------------------
+  CSET o c  -> line $ text "\tcset" <+> pprOp platform o <> comma <+> pprCond c
+
+  CBZ o (TBlock bid) -> line $ text "\tcbz" <+> pprOp platform o <> comma <+> pprAsmLabel platform (mkLocalBlockLabel (getUnique bid))
+  CBZ o (TLabel lbl) -> line $ text "\tcbz" <+> pprOp platform o <> comma <+> pprAsmLabel platform lbl
+  CBZ _ (TReg _)     -> panic "AArch64.ppr: No conditional (cbz) branching to registers!"
+
+  CBNZ o (TBlock bid) -> line $ text "\tcbnz" <+> pprOp platform o <> comma <+> pprAsmLabel platform (mkLocalBlockLabel (getUnique bid))
+  CBNZ o (TLabel lbl) -> line $ text "\tcbnz" <+> pprOp platform o <> comma <+> pprAsmLabel platform lbl
+  CBNZ _ (TReg _)     -> panic "AArch64.ppr: No conditional (cbnz) branching to registers!"
+
+  -- 7. Load and Store Instructions --------------------------------------------
+  -- NOTE: GHC may do whacky things where it only load the lower part of an
+  --       address. Not observing the correct size when loading will lead
+  --       inevitably to crashes.
+  STR f o1 o2 ->  op2 (subword_suffix f $ text "\tstr") o1 o2
+  STLR f o1 o2 -> op2 (subword_suffix f $ text "\tstlr") o1 o2
+
+  LDR _f o1 (OpImm (ImmIndex lbl' off)) | Just (_info, lbl) <- dynamicLinkerLabelInfo lbl' ->
+    let (adrp', ldr') = op_adrp_reloc_dynamic $ pprAsmLabel platform lbl in
+    op_adrp o1 (adrp') $$
+    op_ldr o1 (ldr') $$
+    op_add o1 (check_off off)
+
+  LDR _f o1 (OpImm (ImmIndex lbl off)) | isForeignLabel lbl ->
+    case platformOS platform of
+      OSMinGW32 ->
+        let (adrp', add') = op_adrp_reloc_local $ pprAsmLabel platform lbl in
+        op_adrp o1 (adrp') $$
+        op_add o1 add' $$
+        op_add o1 (check_off off)
+      _ ->
+        let (adrp', ldr') = op_adrp_reloc_dynamic $ pprAsmLabel platform lbl in
+        op_adrp o1 (adrp') $$
+        op_ldr o1 (ldr') $$
+        op_add o1 (check_off off)
+
+  LDR _f o1 (OpImm (ImmIndex lbl off)) ->
+    let (adrp', add') = op_adrp_reloc_local $ pprAsmLabel platform lbl in
+    op_adrp o1 (adrp') $$
+    op_add o1 (add') $$
+    op_add o1 (check_off off)
+
+  LDR _f o1 (OpImm (ImmCLbl lbl')) | Just (_info, lbl) <- dynamicLinkerLabelInfo lbl' ->
+    let (adrp', ldr') = op_adrp_reloc_dynamic $ pprAsmLabel platform lbl in
+    op_adrp o1 (adrp') $$
+    op_ldr o1 (ldr')
+
+  LDR _f o1 (OpImm (ImmCLbl lbl)) | isForeignLabel lbl ->
+    case platformOS platform of
+      OSMinGW32 ->
+        let (adrp', add') = op_adrp_reloc_local $ pprAsmLabel platform lbl in
+        op_adrp o1 (adrp') $$
+        op_add o1 add'
+      _ ->
+        let (adrp', ldr') = op_adrp_reloc_dynamic $ pprAsmLabel platform lbl in
+        op_adrp o1 (adrp') $$
+        op_ldr o1 (ldr')
+
+  LDR _f o1 (OpImm (ImmCLbl lbl)) ->
+    let (adrp', ldr') = op_adrp_reloc_local $ pprAsmLabel platform lbl in
+    op_adrp o1 adrp' $$
+    op_add o1 ldr'
+
+  LDR f o1 o2 -> op2 (subword_suffix f $ text "\tldr") o1 o2
+  LDAR f o1 o2 -> op2 (subword_suffix f $ text "\tldar") o1 o2
+
+  -- 8. Synchronization Instructions -------------------------------------------
+  DMBISH DmbLoadStore -> line $ text "\tdmb ish"
+  DMBISH DmbLoad -> line $ text "\tdmb ishld"
+
+  -- 9. Floating Point Instructions --------------------------------------------
+  FMOV fmt o1 o2 -> op2fmt (text "\tfmov") fmt o1 o2
+  FCVT o1 o2 -> op2 (text "\tfcvt") o1 o2
+  SCVTF o1 o2 -> op2 (text "\tscvtf") o1 o2
+  FCVTZS o1 o2 -> op2 (text "\tfcvtzs") o1 o2
+  FABS fmt o1 o2 -> op2fmt (text "\tfabs") fmt o1 o2
+  FSQRT fmt o1 o2 -> op2fmt (text "\tfsqrt") fmt o1 o2
+  FMIN fmt o1 o2 o3 -> op3fmt (text "\tfmin") fmt o1 o2 o3
+  FMAX fmt o1 o2 o3 -> op3fmt (text "\tfmax") fmt o1 o2 o3
+  FMA variant d r1 r2 r3 ->
+    let fma = case variant of
+                FMAdd  -> text "\tfmadd"
+                FMSub  -> text "\tfmsub"
+                FNMAdd -> text "\tfnmadd"
+                FNMSub -> text "\tfnmsub"
+    in op4 fma d r1 r2 r3
+
+  -- 10. Vector Instructions ---------------------------------------------------
+  UMOV o1 o2 -> op2 (text "\tumov") o1 o2
+  DUP fmt o1 o2 -> op2fmt (text "\tdup") fmt o1 o2
+  INS fmt o1 o2 -> op2fmt (text "\tins") fmt o1 o2
+  ABS fmt o1 o2 -> op2fmt (text "\tabs") fmt o1 o2
+  SMIN fmt o1 o2 o3 -> op3fmt (text "\tsmin") fmt o1 o2 o3
+  SMAX fmt o1 o2 o3 -> op3fmt (text "\tsmax") fmt o1 o2 o3
+  UMIN fmt o1 o2 o3 -> op3fmt (text "\tumin") fmt o1 o2 o3
+  UMAX fmt o1 o2 o3 -> op3fmt (text "\tumax") fmt o1 o2 o3
+  CMGT fmt o1 o2 o3 -> op3fmt (text "\tcmgt") fmt o1 o2 o3
+  CMHI fmt o1 o2 o3 -> op3fmt (text "\tcmhi") fmt o1 o2 o3
+  BSL o1 o2 o3 -> op3fmt (text "\tbsl") (VecFormat 16 FmtInt8) o1 o2 o3
+  FMLA fmt o1 o2 o3 -> op3fmt (text "\tfmla") fmt o1 o2 o3
+  FMLS fmt o1 o2 o3 -> op3fmt (text "\tfmls") fmt o1 o2 o3
+  EXT o1 o2 o3 i -> op_ext (text "\text") (VecFormat 16 FmtInt8) o1 o2 o3 i
+  ZIP1 fmt o1 o2 o3 -> op3fmt (text "\tzip1") fmt o1 o2 o3
+  ZIP2 fmt o1 o2 o3 -> op3fmt (text "\tzip2") fmt o1 o2 o3
+  UZP1 fmt o1 o2 o3 -> op3fmt (text "\tuzp1") fmt o1 o2 o3
+  UZP2 fmt o1 o2 o3 -> op3fmt (text "\tuzp2") fmt o1 o2 o3
+  TRN1 fmt o1 o2 o3 -> op3fmt (text "\ttrn1") fmt o1 o2 o3
+  TRN2 fmt o1 o2 o3 -> op3fmt (text "\ttrn2") fmt o1 o2 o3
+  MOVI fmt o1 o2 -> op2fmt (text "\tmovi") fmt o1 o2
+  MVNI fmt o1 o2 -> op2fmt (text "\tmvni") fmt o1 o2
+ where op2 op o1 o2        = line $ op <+> pprOp platform o1 <> comma <+> pprOp platform o2
+       op3 op o1 o2 o3     = line $ op <+> pprOp platform o1 <> comma <+> pprOp platform o2 <> comma <+> pprOp platform o3
+       op4 op o1 o2 o3 o4  = line $ op <+> pprOp platform o1 <> comma <+> pprOp platform o2 <> comma <+> pprOp platform o3 <> comma <+> pprOp platform o4
+       op2fmt op fmt o1 o2    = line $ op <+> pprFormatOp platform fmt o1 <> comma <+> pprFormatOp platform fmt o2
+       op3fmt op fmt o1 o2 o3 = line $ op <+> pprFormatOp platform fmt o1 <> comma <+> pprFormatOp platform fmt o2 <> comma <+> pprFormatOp platform fmt o3
+       op_ldr o1 rest      = line $ text "\tldr" <+> pprOp platform o1 <> comma <+> text "[" <> pprOp platform o1 <> comma <+> rest <> text "]"
+       op_adrp o1 rest     = line $ text "\tadrp" <+> pprOp platform o1 <> comma <+> rest
+       op_add o1 rest      = line $ text "\tadd" <+> pprOp platform o1 <> comma <+> pprOp platform o1 <> comma <+> rest
+       op_ext op fmt o1 o2 o3 i = line $ op <+> pprFormatOp platform fmt o1 <> comma <+> pprFormatOp platform fmt o2 <> comma <+> pprFormatOp platform fmt o3 <> comma <+> char '#' <> int i
+
+       op_adrp_reloc_dynamic asm_lbl = case platformOS platform of
+          OSDarwin -> (asm_lbl <> text "@gotpage", asm_lbl <> text "@gotpageoff")
+          OSLinux -> (text ":got:" <> asm_lbl, text ":got_lo12:" <> asm_lbl)
+          OSMinGW32 -> (text "__imp_" <> asm_lbl, text ":lo12:__imp_" <> asm_lbl)
+          os' -> pgmError $ "GHC.CmmToAsm.AArch64.Ppr.op_adrp_reloc_dynamic : " ++ show os' ++ " is unsuppported by relocations"
+
+       op_adrp_reloc_local asm_lbl = case platformOS platform of
+          OSDarwin -> (asm_lbl <> text "@page", asm_lbl <> text "@pageoff")
+          OSLinux -> (asm_lbl, text ":lo12:" <> asm_lbl)
+          OSMinGW32 -> (asm_lbl, text ":lo12:" <> asm_lbl)
+          os' -> pgmError $ "GHC.CmmToAsm.AArch64.Ppr.op_adrp_reloc_local : " ++ show os' ++ " is unsuppported by relocations"
+
+       check_off off = if off >= 0 && off <= 4095 then char '#' <> int off else
+         pgmError $ "GHC.CmmToAsm.AArch64.Ppr.check_off : " ++ show off ++ " is out of 12 bit"
+
+       -- Some instructions encode subword ops via b/h suffix on the instruction.
+       -- We handle this here relying on the format rather than the operands.
+       subword_suffix II8  t = t <> char 'b'
+       subword_suffix II16 t = t <> char 'h'
+       subword_suffix _    t = t
+
+pprBcond :: IsLine doc => Cond -> doc
+pprBcond c = text "b." <> pprCond c
+
+pprCond :: IsLine doc => Cond -> doc
+pprCond c = case c of
+  ALWAYS -> text "al" -- Always
+  EQ     -> text "eq" -- Equal
+  NE     -> text "ne" -- Not Equal
+
+  SLT    -> text "lt" -- Signed less than                  ; Less than, or unordered
+  SLE    -> text "le" -- Signed less than or equal         ; Less than or equal, or unordered
+  SGE    -> text "ge" -- Signed greater than or equal      ; Greater than or equal
+  SGT    -> text "gt" -- Signed greater than               ; Greater than
+
+  ULT    -> text "lo" -- Carry clear/ unsigned lower       ; less than
+  ULE    -> text "ls" -- Unsigned lower or same            ; Less than or equal
+  UGE    -> text "hs" -- Carry set/unsigned higher or same ; Greater than or equal, or unordered
+  UGT    -> text "hi" -- Unsigned higher                   ; Greater than, or unordered
+
+  -- NEVER  -> text "nv" -- Never
+  VS     -> text "vs" -- Overflow                          ; Unordered (at least one NaN operand)
+  VC     -> text "vc" -- No overflow                       ; Not unordered
+
+  -- Ordered variants.  Respecting NaN.
+  OLT    -> text "mi"
+  OLE    -> text "ls"
+  OGE    -> text "ge"
+  OGT    -> text "gt"
+
+  -- Unordered
+  UOLT   -> text "lt"
+  UOLE   -> text "le"
+  UOGE   -> text "pl"
+  UOGT   -> text "hi"

@@ -1,0 +1,223 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RecordWildCards #-}
+
+-- | Put common type definitions here to break recursive module dependencies.
+
+module GHC.CmmToAsm.Reg.Linear.Base (
+        BlockAssignment,
+        lookupBlockAssignment,
+        lookupFirstUsed,
+        emptyBlockAssignment,
+        updateBlockAssignment,
+
+        VLoc(..), Loc(..), IgnoreFormat(..),
+        regsOfLoc,
+        RealRegUsage(..),
+
+        -- for stats
+        SpillReason(..),
+        RegAllocStats(..),
+
+        -- the allocator monad
+        RA_State(..),
+)
+
+where
+
+import GHC.Prelude
+
+import GHC.CmmToAsm.Reg.Linear.StackMap
+import GHC.CmmToAsm.Reg.Liveness
+import GHC.CmmToAsm.Config
+import GHC.Platform.Reg
+
+import GHC.Utils.Outputable
+import GHC.Types.Unique
+import GHC.Types.Unique.FM
+import GHC.Types.Unique.DSM
+import GHC.Cmm.BlockId
+import GHC.Cmm.Dataflow.Label
+import GHC.CmmToAsm.Reg.Utils
+import GHC.CmmToAsm.Format
+
+data ReadingOrWriting = Reading | Writing deriving (Eq,Ord)
+
+-- | Used to store the register assignment on entry to a basic block.
+--      We use this to handle join points, where multiple branch instructions
+--      target a particular label. We have to insert fixup code to make
+--      the register assignments from the different sources match up.
+--
+data BlockAssignment freeRegs
+        = BlockAssignment { blockMap :: !(BlockMap (freeRegs, RegMap Loc))
+                          , firstUsed :: !(UniqFM VirtualReg RealReg) }
+
+-- | Find the register mapping for a specific BlockId.
+lookupBlockAssignment :: BlockId -> BlockAssignment freeRegs -> Maybe (freeRegs, RegMap Loc)
+lookupBlockAssignment bid ba = mapLookup bid (blockMap ba)
+
+-- | Lookup which register a virtual register was first assigned to.
+lookupFirstUsed :: VirtualReg -> BlockAssignment freeRegs -> Maybe RealReg
+lookupFirstUsed vr ba = lookupUFM (firstUsed ba) vr
+
+-- | An initial empty 'BlockAssignment'
+emptyBlockAssignment :: BlockAssignment freeRegs
+emptyBlockAssignment = BlockAssignment mapEmpty mempty
+
+-- | Add new register mappings for a specific block.
+updateBlockAssignment :: BlockId
+  -> (freeRegs, RegMap Loc)
+  -> BlockAssignment freeRegs
+  -> BlockAssignment freeRegs
+updateBlockAssignment dest (freeRegs, regMap) (BlockAssignment {..}) =
+  BlockAssignment
+    (mapInsert dest (freeRegs, regMap) blockMap)
+    (mergeUFM combWithExisting id
+        (mapMaybeUFM (fromVLoc . locWithFormat_loc))
+        firstUsed
+        (toVRegMap regMap)
+    )
+  where
+    -- The blocks are processed in dependency order, so if there's already an
+    -- entry in the map then keep that assignment rather than writing the new
+    -- assignment.
+    combWithExisting :: RealReg -> Loc -> Maybe RealReg
+    combWithExisting old_reg _ = Just $ old_reg
+
+    fromVLoc :: VLoc -> Maybe RealReg
+    fromVLoc (InReg rr) = Just rr
+    fromVLoc (InBoth rr _) = Just rr
+    fromVLoc _ = Nothing
+
+-- | Where a vreg is currently stored.
+--
+--
+--      A temporary can be marked as living in both a register and memory
+--      (InBoth), for example if it was recently loaded from a spill location.
+--      This makes it cheap to spill (no save instruction required), but we
+--      have to be careful to turn this into InReg if the value in the
+--      register is changed.
+
+--      This is also useful when a temporary is about to be clobbered.  We
+--      save it in a spill location, but mark it as InBoth because the current
+--      instruction might still want to read it.
+--
+data VLoc
+        -- | vreg is in a register
+        = InReg   {-# UNPACK #-} !RealReg
+
+        -- | vreg is held in stack slots
+        | InMem   {-# UNPACK #-} !StackSlot
+
+        -- | vreg is held in both a register and stack slots
+        | InBoth  {-# UNPACK #-} !RealReg
+                  {-# UNPACK #-} !StackSlot
+        deriving (Eq, Ord, Show)
+
+-- | Where a virtual register is stored, together with the format it is stored at.
+--
+-- See 'VLoc'.
+data Loc
+  = Loc
+  { locWithFormat_loc    :: {-# UNPACK #-} !VLoc
+  , locWithFormat_format :: Format
+  }
+
+-- | A newtype used to hang off 'Eq' and 'Ord' instances for 'Loc' which
+-- ignore the format, as used in 'GHC.CmmToAsm.Reg.Linear.JoinToTargets'.
+newtype IgnoreFormat a = IgnoreFormat a
+instance Eq (IgnoreFormat Loc) where
+  IgnoreFormat (Loc l1 _) == IgnoreFormat (Loc l2 _) = l1 == l2
+instance Ord (IgnoreFormat Loc) where
+  compare (IgnoreFormat (Loc l1 _)) (IgnoreFormat (Loc l2 _)) = compare l1 l2
+
+instance Outputable VLoc where
+        ppr l = text (show l)
+
+instance Outputable Loc where
+  ppr (Loc loc fmt) = parens (ppr loc <+> dcolon <+> ppr fmt)
+
+-- | A 'RealReg', together with the specific 'Format' it is used at.
+data RealRegUsage
+  = RealRegUsage
+    { realReg :: !RealReg
+    , realRegFormat :: !Format
+    } deriving Show
+
+instance Outputable RealRegUsage where
+  ppr (RealRegUsage r fmt) = ppr r <> dcolon <+> ppr fmt
+
+-- | Get the reg numbers stored in this Loc.
+regsOfLoc :: VLoc -> [RealReg]
+regsOfLoc (InReg r)    = [r]
+regsOfLoc (InBoth r _) = [r]
+regsOfLoc (InMem _)    = []
+
+-- | Reasons why instructions might be inserted by the spiller.
+--      Used when generating stats for -ddrop-asm-stats.
+--
+data SpillReason
+        -- | vreg was spilled to a slot so we could use its
+        --      current hreg for another vreg
+        = SpillAlloc    !Unique
+
+        -- | vreg was moved because its hreg was clobbered
+        | SpillClobber  !Unique
+
+        -- | vreg was loaded from a spill slot
+        | SpillLoad     !Unique
+
+        -- | reg-reg move inserted during join to targets
+        | SpillJoinRR   !Unique
+
+        -- | reg-mem move inserted during join to targets
+        | SpillJoinRM   !Unique
+
+
+-- | Used to carry interesting stats out of the register allocator.
+data RegAllocStats
+        = RegAllocStats
+        { ra_spillInstrs        :: UniqFM Unique [Int] -- Keys are the uniques of regs
+                                                       -- and taken from SpillReason
+                                                       -- See Note [UniqFM and the register allocator]
+        , ra_fixupList     :: [(BlockId,BlockId,BlockId)]
+        -- ^ (from,fixup,to) : We inserted fixup code between from and to
+        }
+
+
+-- | The register allocator state
+data RA_State freeRegs
+        = RA_State
+
+        {
+        -- | the current mapping from basic blocks to
+        --      the register assignments at the beginning of that block.
+          ra_blockassig :: BlockAssignment freeRegs
+
+        -- | free machine registers
+        , ra_freeregs   :: !freeRegs
+
+        -- | assignment of temps to locations
+        , ra_assig      :: RegMap Loc
+
+        -- | current stack delta
+        , ra_delta      :: Int
+
+        -- | free stack slots for spilling
+        , ra_stack      :: StackMap
+
+        -- | unique supply for generating names for join point fixup blocks.
+        , ra_us         :: DUniqSupply
+
+        -- | Record why things were spilled, for -ddrop-asm-stats.
+        --      Just keep a list here instead of a map of regs -> reasons.
+        --      We don't want to slow down the allocator if we're not going to emit the stats.
+        , ra_spills     :: [SpillReason]
+
+        -- | Native code generator configuration
+        , ra_config     :: !NCGConfig
+
+        -- | (from,fixup,to) : We inserted fixup code between from and to
+        , ra_fixups     :: [(BlockId,BlockId,BlockId)]
+
+        }
+

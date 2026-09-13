@@ -1,0 +1,7 @@
+T24807: Uncaught exception ghc-internal:GHC.Internal.Exception.ErrorCall:
+
+hi
+
+HasCallStack backtrace:
+  error, called at T24807.hs:1:8 in main:Main
+

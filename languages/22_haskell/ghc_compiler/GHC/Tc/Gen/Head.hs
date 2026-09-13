@@ -1,0 +1,1019 @@
+{-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE UndecidableInstances #-} -- Wrinkle in Note [Trees That Grow]
+{-# LANGUAGE ViewPatterns         #-}
+{-# LANGUAGE MultiWayIf #-}
+{-
+%
+(c) The University of Glasgow 2006
+(c) The GRASP/AQUA Project, Glasgow University, 1992-1998
+-}
+
+module GHC.Tc.Gen.Head
+       ( HsExprArg(..), HsExprLoc, TcPass(..), QLFlag(..), EWrap(..)
+       , splitHsApps, rebuildHsApps
+       , addArgWrap, isHsValArg, getFunSrcSpan
+       , leadingValArgs, isVisibleArg, getDeepSubsumptionFlag_DataConHead
+
+       , tcInferAppHead, tcInferAppHead_maybe
+       , tcInferId, tcCheckId, tcInferConLike, obviousSig
+       , tyConOf, tyConOfET
+       , nonBidirectionalErr
+
+       , pprArgInst, addFunResCtxt ) where
+
+import {-# SOURCE #-} GHC.Tc.Gen.Expr( tcExpr, tcCheckPolyExprNC, tcPolyLExprSig )
+
+import GHC.Prelude
+import GHC.Hs
+import GHC.Hs.Syn.Type
+
+import GHC.Tc.Gen.HsType
+import GHC.Tc.Gen.Expand( tcExpand )
+import GHC.Tc.Gen.Bind( chooseInferredQuantifiers )
+import GHC.Tc.Gen.Sig( tcUserTypeSig, tcInstSig )
+import GHC.Tc.TyCl.PatSyn( patSynBuilderOcc )
+import GHC.Tc.Utils.Monad
+import GHC.Tc.Utils.Unify
+import GHC.Tc.Utils.Instantiate
+import GHC.Tc.Instance.Family ( tcLookupDataFamInst )
+import GHC.Tc.Errors.Types
+import GHC.Tc.Solver          ( InferMode(..), simplifyInfer )
+import GHC.Tc.Utils.Env
+import GHC.Tc.Utils.TcMType
+import GHC.Tc.Types.ErrCtxt( ReportRedundantConstraints(..) )
+import GHC.Tc.Types.Origin
+import GHC.Tc.Types.Constraint( WantedConstraints )
+import GHC.Tc.Utils.TcType as TcType
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Zonk.TcType
+
+
+import GHC.Core.FamInstEnv    ( FamInstEnvs )
+import GHC.Core.UsageEnv      ( singleUsageUE, UsageEnv )
+import GHC.Core.PatSyn( PatSyn, patSynName )
+import GHC.Core.ConLike( ConLike(..) )
+import GHC.Core.DataCon
+import GHC.Core.TyCon
+import GHC.Core.TyCo.Rep
+import GHC.Core.Type
+
+import GHC.Types.Id
+import GHC.Types.Name
+import GHC.Types.Name.Reader
+import GHC.Types.SrcLoc
+import GHC.Types.Error
+
+import GHC.Builtin.KnownOccs
+import GHC.Builtin.KnownKeys
+
+import GHC.Driver.DynFlags
+import GHC.Utils.Misc
+import GHC.Utils.Outputable as Outputable
+
+import GHC.Data.Maybe
+
+{- *********************************************************************
+*                                                                      *
+              HsExprArg: auxiliary data type
+*                                                                      *
+********************************************************************* -}
+
+{- Note [HsExprArg]
+~~~~~~~~~~~~~~~~~~~
+The data type HsExprArg :: TcPass -> Type
+is a very local type, used only within this module and GHC.Tc.Gen.App
+
+* It's just a bog-standard zipper for an application chain
+  See Note [Application chains and heads] in GHC.Tc.Gen.App for
+  what an "application chain" is.
+
+* It's a GHC-specific type, so using TTG only where necessary
+
+* It is indexed by TcPass, meaning
+  - HsExprArg TcpRn:
+      The result of splitHsApps, which decomposes a HsExpr GhcRn
+
+  - HsExprArg TcpInst:
+      The result of tcInstFun, which instantiates the function type,
+      perhaps taking a quick look at arguments.
+
+  - HsExprArg TcpTc:
+      The result of tcArg, which typechecks the value args
+      In EValArg we now have a (LHsExpr GhcTc)
+
+* rebuildPrefixApps is dual to splitHsApps, and zips an application
+  back into a HsExpr
+
+Invariants:
+
+1. With QL switched off, all arguments are ValArg; no ValArgQL
+
+2. With QL switched on, tcInstFun converts some ValArgs to ValArgQL,
+   under the conditions when quick-look should happen (eg the argument
+   type is guarded) -- see quickLookArg
+
+Note [EValArgQL]
+~~~~~~~~~~~~~~~~
+Data constructor EValArgQL represents an argument that has been
+partly-type-checked by Quick Look: the first part of `tcApp` has been
+done, but not the second, `finishApp` part.
+
+The constuctor captures all the bits and pieces needed to complete
+typechecking.  (An alternative would to to store a function closure,
+but that's less concrete.)  See Note [Quick Look at value arguments]
+in GHC.Tc.Gen.App
+
+Note [splitHsApps]
+~~~~~~~~~~~~~~~~~~
+The key function
+  splitHsApps :: HsExpr GhcRn -> Maybe (HsExpr GhcRn, [HsExprArg 'TcpRn])
+takes apart either an HsApp, HsTypeApp, an infix OpApp, and XExprs returning
+
+* The "head" of the application, an expression that is often a variable/data constructor
+  this is used for typechecking
+
+* The "user head" or "error head" of the application, to be reported to the
+  user in case of an error.  Example:
+         (`op` e)
+  expands (via ExpandedThingRn) to
+         (rightSection op e)
+  but we don't want to see 'rightSection' in error messages. So we keep the
+  innermost un-expanded head as the "error head".
+
+* A list of HsExprArg, the arguments
+
+-}
+
+-- TODO:AZ this is SrcSpanAnnA
+type HsExprLoc = EpAnn [TrailingAnn]    -- The location attached to a HsExpr
+
+data TcPass = TcpRn     -- Arguments decomposed
+            | TcpInst   -- Function instantiated
+            | TcpTc     -- Typechecked
+
+data HsExprArg (p :: TcPass) where -- See Note [HsExprArg]
+
+  -- Data constructor EValArg represents a value argument
+  EValArg :: { ea_loc_span :: HsExprLoc
+             , ea_arg_ty   :: !(XEVAType p)
+             , ea_arg      :: LHsExpr (GhcPass (XPass p)) }
+          -> HsExprArg p
+
+  -- Data constructor EValArgQL represents an argument that has been
+  -- partly-type-checked by Quick Look; see Note [EValArgQL]
+  EValArgQL :: { eaql_loc_span :: HsExprLoc
+               , eaql_arg_ty   :: Scaled TcSigmaType  -- Argument type expected by function
+               , eaql_larg     :: LHsExpr GhcRn       -- Original application, for
+                                                      -- location and error msgs
+               , eaql_rn_fun   :: HsExpr GhcRn        -- Application chain head of the argument
+               , eaql_tc_fun   :: (HsExpr GhcTc, SrcSpan) -- Typechecked head and its location span
+               , eaql_fun_ue   :: UsageEnv -- Usage environment of the typechecked head (QLA5)
+               , eaql_args     :: [HsExprArg 'TcpInst]  -- Args: instantiated, not typechecked
+               , eaql_wanted   :: WantedConstraints
+               , eaql_encl     :: Bool                  -- True <=> we have already qlUnified
+                                                        --          eaql_arg_ty and eaql_res_rho
+               , eaql_res_rho  :: TcRhoType }           -- Result type of the application
+            -> HsExprArg 'TcpInst  -- Only exists in TcpInst phase
+
+  ETypeArg :: { ea_loc_span :: HsExprLoc
+              , ea_hs_ty    :: LHsWcType GhcRn  -- The type arg
+              , ea_ty_arg   :: !(XETAType p) }  -- Kind-checked type arg
+           -> HsExprArg p
+
+  EPrag :: HsExprLoc -> (HsPragE (GhcPass (XPass p))) -> HsExprArg p
+  EWrap :: EWrap                                      -> HsExprArg p
+
+type family XETAType (p :: TcPass) where  -- Type arguments
+  XETAType 'TcpRn = NoExtField
+  XETAType _      = Type
+
+type family XEVAType (p :: TcPass) where   -- Value arguments
+  XEVAType 'TcpInst = Scaled TcSigmaTypeFRR
+  XEVAType _        = NoExtField
+
+data QLFlag = DoQL | NoQL
+
+data EWrap = EPar    HsExprLoc
+           | EExpand HsExprLoc HsCtxt
+           | EHsWrap HsWrapper
+
+
+instance Outputable QLFlag where
+  ppr DoQL = text "DoQL"
+  ppr NoQL = text "NoQL"
+
+type family XPass (p :: TcPass) where
+  XPass 'TcpRn   = 'Renamed
+  XPass 'TcpInst = 'Renamed
+  XPass 'TcpTc   = 'Typechecked
+
+mkEValArg :: HsExprLoc -> LHsExpr GhcRn -> HsExprArg 'TcpRn
+mkEValArg src_loc e = EValArg { ea_arg = e, ea_loc_span = src_loc
+                              , ea_arg_ty = noExtField }
+
+mkETypeArg :: HsExprLoc -> LHsWcType GhcRn -> HsExprArg 'TcpRn
+mkETypeArg src_loc hs_ty =
+  ETypeArg { ea_loc_span = src_loc
+           , ea_hs_ty = hs_ty
+           , ea_ty_arg = noExtField }
+
+addArgWrap :: HsWrapper -> [HsExprArg p] -> [HsExprArg p]
+addArgWrap wrap args
+ | isIdHsWrapper wrap = args
+ | otherwise          = EWrap (EHsWrap wrap) : args
+
+
+--------------------
+getFunSrcSpan :: [HsExprArg 'TcpRn] -> TcM SrcSpan
+getFunSrcSpan [] = getSrcSpanM
+getFunSrcSpan (ETypeArg { ea_loc_span = l }    : _)    = return (locA l)
+getFunSrcSpan (EValArg  { ea_loc_span = l }    : _)    = return (locA l)
+getFunSrcSpan (EPrag l _                       : _)    = return (locA l)
+getFunSrcSpan (EWrap (EPar l)                  : _)    = return (locA l)
+getFunSrcSpan (EWrap (EExpand l _)             : _)    = return (locA l)
+getFunSrcSpan (EWrap (EHsWrap {})              : args) = getFunSrcSpan args
+
+--------------------
+isHsValArg :: HsExprArg id -> Bool
+isHsValArg (EValArg {}) = True
+isHsValArg _            = False
+
+leadingValArgs :: [HsExprArg 'TcpRn] -> [LHsExpr GhcRn]
+leadingValArgs []                                = []
+leadingValArgs (EValArg { ea_arg = arg } : args) = arg : leadingValArgs args
+leadingValArgs (EWrap {}    : args)              = leadingValArgs args
+leadingValArgs (EPrag {}    : args)              = leadingValArgs args
+leadingValArgs (ETypeArg {} : _)                 = []
+
+isValArg :: HsExprArg id -> Bool
+isValArg (EValArg {}) = True
+isValArg _            = False
+
+isVisibleArg :: HsExprArg id -> Bool
+isVisibleArg (EValArg {})  = True
+isVisibleArg (ETypeArg {}) = True
+isVisibleArg _             = False
+
+instance OutputableBndrId (XPass p) => Outputable (HsExprArg p) where
+  ppr (EPrag _ p)                     = text "EPrag" <+> ppr p
+  ppr (ETypeArg { ea_hs_ty = hs_ty }) = char '@' <> ppr hs_ty
+  ppr (EWrap wrap)                    = ppr wrap
+  ppr (EValArg { ea_arg = arg, ea_loc_span = sloc })
+    = text "EValArg" <> braces (ppr sloc) <+> ppr arg
+  ppr (EValArgQL { eaql_tc_fun = fun, eaql_args = args, eaql_res_rho = ty})
+    = hang (text "EValArgQL" <+> ppr fun)
+         2 (vcat [ ppr args, text "ea_ql_ty:" <+> ppr ty ])
+
+pprArgInst :: HsExprArg 'TcpInst -> SDoc
+-- Ugh!  A special version for 'TcpInst, se we can print the arg_ty of EValArg
+pprArgInst (EPrag _ p)                     = text "EPrag" <+> ppr p
+pprArgInst (ETypeArg { ea_hs_ty = hs_ty }) = char '@' <> ppr hs_ty
+pprArgInst (EWrap wrap)                    = ppr wrap
+pprArgInst (EValArg { ea_arg = arg, ea_arg_ty = ty })
+  = hang (text "EValArg" <+> ppr arg)
+       2 (text "arg_ty" <+> ppr ty)
+pprArgInst (EValArgQL { eaql_tc_fun = fun, eaql_args = args, eaql_res_rho = ty})
+  = hang (text "EValArgQL" <+> ppr fun)
+       2 (vcat [ vcat (map pprArgInst args), text "ea_ql_ty:" <+> ppr ty ])
+
+instance Outputable EWrap where
+  ppr (EPar _)      = text "EPar"
+  ppr (EHsWrap w)   = text "EHsWrap" <+> ppr w
+  ppr (EExpand _ _) = text "EExpand"  -- No Outputable instance for HsCtxt yet
+
+
+
+{- *********************************************************************
+*                                                                      *
+                 Splitting and rebuilding
+*                                                                      *
+********************************************************************* -}
+
+-- | Split the expression into an application chain
+-- See Note [splitHsApps]
+-- See Note [Application chains and heads]
+splitHsApps :: HsExpr GhcRn -> TcM (HsExpr GhcRn, [HsExprArg 'TcpRn])
+splitHsApps e = go e []
+  where
+    go (HsPar _ (L l fun))        args = go fun (EWrap (EPar l)   : args)
+    go (HsPragE _ p (L l fun))    args = go fun (EPrag      l p   : args)
+    go (HsAppType _ (L l fun) ty) args = go fun (mkETypeArg l ty  : args)
+    go (HsApp _ (L l fun) arg)    args = go fun (mkEValArg  l arg : args)
+    go fun args = do { mb_hse <- tcExpand fun
+                     ; case mb_hse of
+                          Just (HSE { hse_ctxt = orig, hse_exp = L l fun' })
+                            -> go fun' (EWrap (EExpand l orig) : args)
+                          Nothing
+                            -> return (fun, args) }
+
+-- | Rebuild an application: takes a type-checked application head
+-- expression together with arguments in the form of typechecked 'HsExprArg's
+-- and returns a typechecked application of the head to the arguments.
+rebuildHsApps :: HsExpr GhcTc
+                      -- ^ the function being applied
+              -> [HsExprArg 'TcpTc]
+                      -- ^ the arguments to the function
+              -> HsExpr GhcTc
+rebuildHsApps fun [] = fun
+rebuildHsApps fun (arg : args)
+  = case arg of
+      EValArg { ea_arg = arg, ea_loc_span = l }
+        -> rebuildHsApps (HsApp noExtField (L l fun) arg) args
+      ETypeArg { ea_hs_ty = hs_ty, ea_ty_arg = ty, ea_loc_span = l }
+        -> rebuildHsApps (HsAppType ty (L l fun) hs_ty) args
+      EPrag l p
+        -> rebuildHsApps (HsPragE noExtField p (L l fun)) args
+      EWrap (EPar l)
+        -> rebuildHsApps (HsPar noExtField (L l fun)) args
+      EWrap (EExpand l o)
+        -> rebuildHsApps (XExpr (ExpandedThingTc (HSE o (L l fun)))) args
+      EWrap (EHsWrap wrap)
+        -> rebuildHsApps (mkHsWrap wrap fun) args
+
+
+{- Note [Desugar OpApp in the typechecker]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Operator sections are desugared in the renamer; see GHC.Rename.Expr
+Note [Handling overloaded and rebindable constructs].
+But for reasons explained there, we rename OpApp to OpApp.  Then,
+here in the typechecker, we desugar it to a use of ExpandedThingRn.
+That makes it possible to typecheck something like
+     e1 `f` e2
+where
+   f :: forall a. t1 -> forall b. t2 -> t3
+
+Note [Looking through Template Haskell splices in splitHsApps]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When typechecking an application, we must look through untyped TH splices in
+order to typecheck examples like the one in #21077:
+
+  data Foo = MkFoo () (forall a. a -> a)
+
+  foo :: Foo
+  foo = $([| MkFoo () |]) $ \x -> x
+
+In principle, this is straightforward to accomplish. By the time we typecheck
+`foo`, the renamer will have already run the splice, so all we have to do is
+look at the expanded version of the splice in `splitHsApps`. This is accomplished
+in `splitHsApps` be deligating it to `tcExpand`. Where, `tcExpand` returns the
+expression to `splitHsApps`, to continue splitting the application chain.
+
+There is one slight complication in that untyped TH splices also include
+modFinalizers (see Note [Delaying modFinalizers in untyped splices] in
+GHC.Rename.Splice), which must be run during typechecking. `tcExpand` is a
+convenient place to run the modFinalizers, so we do so there. This is the
+reason that `splitHsApps` uses the TcM monad.
+
+`HsUntypedSplice` covers both ordinary TH splices, such as the example above,
+as well as quasiquotes (see Note [Quasi-quote overview] in
+Language.Haskell.Syntax.Expr). The `tcExpand` case for `HsUntypedSplice`
+handles both of these. This is easy to accomplish, since all the real work in
+handling splices and quasiquotes has already been performed by the renamer by
+the time we get to `splitHsApps`.
+
+-}
+
+{- Note [Type Checking Template Haskell Splices]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+`tcExpr` has a separate case for `HsUntypedSplice`s that do /not/ occur at the
+head of an application. See also Note [Looking through Template Haskell splices in splitHsApps]
+
+This is important to handle programs like this one:
+
+  foo :: (forall a. a -> a) -> b -> b
+  foo = $([| \g x -> g x |])
+
+Here, it is vital that we push the expected type inwards so that `g` gets the
+type `forall a. a -> a`, and the `tcExpr` case for `HsUntypedSplice` performs
+this pushing. Without it, we would instead infer `g` to have type `b -> b`,
+which isn't sufficiently general. Unfortunately, this does mean that there are
+two different places in the code where an `HsUntypedSplice`'s modFinalizers can
+be ran, depending on whether the splice appears at the head of an application
+or not.
+
+-}
+
+
+{- *********************************************************************
+*                                                                      *
+                 tcInferAppHead
+*                                                                      *
+********************************************************************* -}
+
+tcInferAppHead :: (HsExpr GhcRn, SrcSpan)
+               -> TcM (HsExpr GhcTc, TcSigmaType)
+-- Infer type of the head of an application
+--   i.e. the 'f' in (f e1 ... en)
+-- See Note [Application chains and heads] in GHC.Tc.Gen.App
+-- We get back a /SigmaType/ because we have special cases for
+--   * A bare identifier (just look it up)
+--     This case also covers a record selector HsRecSel
+--   * An expression with a type signature (e :: ty)
+--   * An XExpr where 'f' is actually an expanded out expression
+-- See Note [Application chains and heads] in GHC.Tc.Gen.App
+--
+-- Note that [] and (,,) are both HsVar:
+--   see Note [Empty lists] and [ExplicitTuple] in GHC.Hs.Expr
+--
+-- NB: 'e' cannot be HsApp, HsTyApp, HsPrag, HsPar, because those
+--     cases are dealt with by splitHsApps.
+--
+-- See Note [tcApp: typechecking applications] in GHC.Tc.Gen.App
+tcInferAppHead (fun,fun_lspan)
+  = setSrcSpan fun_lspan $
+    do { mb_tc_fun <- tcInferAppHead_maybe fun
+       ; case mb_tc_fun of
+            Just (fun', fun_sigma) -> return (fun', fun_sigma)
+            Nothing                -> runInferRho (tcExpr fun) }
+
+tcInferAppHead_maybe :: HsExpr GhcRn
+                     -> TcM (Maybe (HsExpr GhcTc, TcSigmaType))
+-- See Note [Application chains and heads] in GHC.Tc.Gen.App
+-- Returns Nothing for a complicated head
+-- XExpr's although complicated needs to be looked through, useful for QL things when
+-- the argument is an XExpr
+tcInferAppHead_maybe fun = case fun of
+      HsVar _ nm              -> Just <$> tcInferId nm
+      ExprWithTySig _ e hs_ty -> Just <$> tcExprWithSig e hs_ty
+      HsOverLit _ lit         -> Just <$> tcInferOverLit lit
+      XExpr (HsRecSelRn f)    -> Just <$> tcInferRecSelId f
+      _                       -> return Nothing
+
+{- *********************************************************************
+*                                                                      *
+                 Record selectors
+*                                                                      *
+********************************************************************* -}
+
+tcInferRecSelId :: FieldOcc GhcRn
+                -> TcM ( (HsExpr GhcTc, TcSigmaType))
+tcInferRecSelId (FieldOcc lbl (L l sel_name))
+     = do { sel_id <- tc_rec_sel_id
+        ; let expr = XExpr (HsRecSelTc (FieldOcc lbl (L l sel_id)))
+        ; return $ (expr, idType sel_id)
+        }
+     where
+       occ :: OccName
+       occ = nameOccName sel_name
+       tc_rec_sel_id :: TcM TcId
+       -- Like tc_infer_id, but returns an Id not a HsExpr,
+       -- so we can wrap it back up into a HsRecSel
+       tc_rec_sel_id
+         = do { thing <- tcLookup sel_name
+              ; case thing of
+                    ATcId { tct_id = id }
+                      -> do { check_naughty occ id  -- See Note [Local record selectors]
+                            ; check_local_id id
+                            ; return id }
+
+                    AGlobal (AnId id)
+                      -> do { check_naughty occ id
+                            ; return id }
+                           -- A global cannot possibly be ill-staged
+                           -- nor does it need the 'lifting' treatment
+                           -- hence no checkTh stuff here
+
+                    _ -> failWithTc $ TcRnExpectedValueId thing }
+
+------------------------
+
+-- A type signature on the argument of an ambiguous record selector or
+-- the record expression in an update must be "obvious", i.e. the
+-- outermost constructor ignoring parentheses.
+obviousSig :: HsExpr GhcRn -> Maybe (LHsSigWcType GhcRn)
+obviousSig (ExprWithTySig _ _ ty) = Just ty
+obviousSig (HsPar _ p)            = obviousSig (unLoc p)
+obviousSig (HsPragE _ _ p)        = obviousSig (unLoc p)
+obviousSig _                      = Nothing
+
+-- Extract the outermost TyCon of a type, if there is one; for
+-- data families this is the representation tycon (because that's
+-- where the fields live).
+tyConOf :: FamInstEnvs -> TcSigmaType -> Maybe TyCon
+tyConOf fam_inst_envs ty0
+  = case tcSplitTyConApp_maybe ty of
+      Just (tc, tys) -> Just (fstOf3 (tcLookupDataFamInst fam_inst_envs tc tys))
+      Nothing        -> Nothing
+  where
+    (_, _, ty) = tcSplitSigmaTy ty0
+
+-- Variant of tyConOf that works for ExpTypes
+tyConOfET :: FamInstEnvs -> ExpRhoType -> Maybe TyCon
+tyConOfET fam_inst_envs ty0 = tyConOf fam_inst_envs =<< checkingExpType_maybe ty0
+
+{- *********************************************************************
+*                                                                      *
+                Expressions with a type signature
+                        expr :: type
+*                                                                      *
+********************************************************************* -}
+
+tcExprWithSig :: LHsExpr GhcRn -> LHsSigWcType (NoGhcTc GhcRn)
+              -> TcM (HsExpr GhcTc, TcSigmaType)
+tcExprWithSig expr hs_ty
+  = do { sig_info <- checkNoErrs $  -- Avoid error cascade
+                     tcUserTypeSig loc hs_ty Nothing
+       ; (expr', poly_ty) <- tcExprSig expr sig_info
+       ; return (ExprWithTySig noExtField expr' hs_ty, poly_ty) }
+  where
+    loc = getLocA (dropWildCards hs_ty)
+
+tcExprSig :: LHsExpr GhcRn -> TcIdSig -> TcM (LHsExpr GhcTc, TcSigmaType)
+tcExprSig expr (TcCompleteSig sig)
+   = do { expr' <- tcPolyLExprSig expr sig
+        ; return (expr', idType (sig_bndr sig)) }
+
+tcExprSig expr sig@(TcPartialSig (PSig { psig_name = name, psig_loc = loc }))
+  = setSrcSpan loc $   -- Sets the location for the implication constraint
+    do { (tclvl, wanted, (expr', sig_inst))
+             <- pushLevelAndCaptureConstraints  $
+                do { sig_inst <- tcInstSig sig
+                   ; expr' <- tcExtendNameTyVarEnv (mapSnd binderVar $ sig_inst_skols sig_inst) $
+                              tcExtendNameTyVarEnv (sig_inst_wcs   sig_inst) $
+                              tcCheckPolyExprNC expr (sig_inst_tau sig_inst)
+                   ; return (expr', sig_inst) }
+       -- See Note [Partial expression signatures]
+       ; let tau = sig_inst_tau sig_inst
+             infer_mode | null (sig_inst_theta sig_inst)
+                        , isNothing (sig_inst_wcx sig_inst)
+                        = ApplyMR
+                        | otherwise
+                        = NoRestrictions
+       ; ((qtvs, givens, ev_binds, _), residual)
+           <- captureConstraints $
+              simplifyInfer NotTopLevel tclvl infer_mode
+                            [sig_inst] [(name, tau)] wanted
+       ; emitConstraints residual
+
+       ; tau <- liftZonkM $ zonkTcType tau
+       ; let inferred_theta = map evVarPred givens
+             tau_tvs        = tyCoVarsOfType tau
+       ; (binders, my_theta) <- chooseInferredQuantifiers residual inferred_theta
+                                   tau_tvs qtvs (Just sig_inst)
+       ; let inferred_sigma = mkInfSigmaTy qtvs inferred_theta tau
+             my_sigma       = mkInvisForAllTys binders (mkPhiTy  my_theta tau)
+       ; wrap <- if inferred_sigma `eqType` my_sigma -- NB: eqType ignores vis.
+                 then return idHsWrapper  -- Fast path; also avoids complaint when we infer
+                                          -- an ambiguous type and have AllowAmbiguousType
+                                          -- e..g infer  x :: forall a. F a -> Int
+                 else tcSubTypeSigma ExprSigOrigin (ExprSigCtxt NoRRC) inferred_sigma my_sigma
+
+       ; traceTc "tcExpSig" (ppr qtvs $$ ppr givens $$ ppr inferred_sigma $$ ppr my_sigma)
+       ; let poly_wrap = wrap
+                         <.> mkWpTyLams qtvs
+                         <.> mkWpEvLams givens
+                         <.> mkWpLet  ev_binds
+       ; return (mkLHsWrap poly_wrap expr', my_sigma) }
+
+
+{- Note [Partial expression signatures]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Partial type signatures on expressions are easy to get wrong.  But
+here is a guiding principle
+    e :: ty
+should behave like
+    let x :: ty
+        x = e
+    in x
+
+So for partial signatures we apply the MR if no context is given.  So
+   e :: IO _          apply the MR
+   e :: _ => IO _     do not apply the MR
+just like in GHC.Tc.Gen.Bind.decideGeneralisationPlan
+
+This makes a difference (#11670):
+   peek :: Ptr a -> IO CLong
+   peek ptr = peekElemOff undefined 0 :: _
+from (peekElemOff undefined 0) we get
+          type: IO w
+   constraints: Storable w
+
+We must NOT try to generalise over 'w' because the signature specifies
+no constraints so we'll complain about not being able to solve
+Storable w.  Instead, don't generalise; then _ gets instantiated to
+CLong, as it should.
+-}
+
+
+{- *********************************************************************
+*                                                                      *
+                 Overloaded literals
+*                                                                      *
+********************************************************************* -}
+
+tcInferOverLit :: HsOverLit GhcRn -> TcM (HsExpr GhcTc, TcSigmaType)
+tcInferOverLit lit@(OverLit { ol_val = val
+                            , ol_ext = OverLitRn { ol_rebindable = rebindable
+                                                 , ol_from_fun = L loc from_name } })
+  = -- Desugar "3" to (fromInteger (3 :: Integer))
+    --   where fromInteger is gotten by looking up from_name, and
+    --   the (3 :: Integer) is returned by mkOverLit
+    -- Ditto the string literal "foo" to (fromString ("foo" :: String))
+    --
+    -- See Note [Typechecking overloaded literals] in GHC.Tc.Gen.Expr
+    do { hs_lit <- mkOverLit val
+       ; from_id <- tcLookupId from_name
+       ; (wrap1, from_ty) <- topInstantiate (LiteralOrigin lit) (idType from_id)
+       ; let
+           thing    = NameThing from_name
+           mb_thing = Just thing
+           herald   = ExpectedFunTyArg thing (HsLit noExtField hs_lit)
+       ; (co2, sarg_ty, res_ty) <- matchActualFunTy herald mb_thing (1, from_ty) from_ty
+
+       ; co <- unifyType mb_thing (hsLitType hs_lit) (scaledThing sarg_ty)
+       -- See Note [Source locations for implicit function calls] in GHC.Iface.Ext.Ast
+       ; let lit_expr = L (l2l loc) $ mkHsWrapCo co $
+                        HsLit noExtField hs_lit
+             from_expr = mkHsWrap (mkWpCastN co2 <.> wrap1) $
+                         mkHsVar (L loc from_id)
+             witness = HsApp noExtField (L (l2l loc) from_expr) lit_expr
+             lit' = OverLit { ol_val = tcOverLitVal val
+                            , ol_ext = OverLitTc { ol_rebindable = rebindable
+                                                 , ol_witness = witness
+                                                 , ol_type = res_ty } }
+       ; return (HsOverLit noExtField lit', res_ty) }
+
+{- *********************************************************************
+*                                                                      *
+                 tcInferId, tcCheckId
+*                                                                      *
+********************************************************************* -}
+
+tcCheckId :: Name -> ExpRhoType -> TcM (HsExpr GhcTc)
+tcCheckId name res_ty
+  = do { (expr, actual_res_ty) <- tcInferId (noLocA $ noUserRdr name)
+       ; traceTc "tcCheckId" (vcat [ppr name, ppr actual_res_ty, ppr res_ty])
+       ; addFunResCtxt expr [] actual_res_ty res_ty $
+         tcWrapResultO (OccurrenceOf name) rn_fun expr actual_res_ty res_ty }
+  where
+    rn_fun = mkHsVar (noLocA name)
+
+------------------------
+tcInferId :: LocatedN (WithUserRdr Name) -> TcM (HsExpr GhcTc, TcSigmaType)
+-- Look up an occurrence of an Id
+-- Do not instantiate its type
+tcInferId lname@(L loc (WithUserRdr rdr id_name))
+
+  | id_name `hasKey` assertIdKey
+  = -- See Note [Overview of assertions]
+    do { dflags <- getDynFlags
+       ; if gopt Opt_IgnoreAsserts dflags
+         then tc_infer_id lname
+         else do { assertErrorName <- idName <$> tcLookupKnownOccId assertErrorIdOcc
+                 ; tc_infer_id (L loc $ WithUserRdr rdr assertErrorName) } }
+
+  | otherwise
+  = tc_infer_id lname
+
+tc_infer_id :: LocatedN (WithUserRdr Name) -> TcM (HsExpr GhcTc, TcSigmaType)
+tc_infer_id (L loc (WithUserRdr rdr id_name))
+ = do { thing <- tcLookup id_name
+      ; (expr,ty) <- case thing of
+             ATcId { tct_id = id }
+               -> do { check_local_id id
+                     ; return_id id }
+
+             AGlobal (AnId id) -> return_id id
+               -- A global cannot possibly be ill-staged
+               -- nor does it need the 'lifting' treatment
+               -- Hence no checkTh stuff here
+
+             AGlobal (AConLike cl) -> tcInferConLike cl
+
+             (tcTyThingTyCon_maybe -> Just tc) -> failIllegalTyCon WL_Term (WithUserRdr rdr (tyConName tc))
+             ATyVar name _ -> failIllegalTyVar (WithUserRdr rdr name)
+
+             _ -> failWithTc $ TcRnExpectedValueId thing
+
+       ; traceTc "tcInferId" (ppr id_name <+> dcolon <+> ppr ty)
+       ; return (expr, ty) }
+  where
+    return_id id = return (mkHsVar (L loc id), idType id)
+
+{- Note [Overview of assertions]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If you write (assert pred x) then
+
+  * If `-fignore-asserts` (which sets Opt_IgnoreAsserts) is on, the code is
+    typechecked as written, but `assert`, defined in GHC.Internal.Base
+       assert _pred r = r
+    simply ignores `pred`
+
+  * But without `-fignore-asserts`, GHC rewrites it to (assertError pred e)
+    and that is defined in GHC.Internal.IO.Exception as
+        assertError :: (?callStack :: CallStack) => Bool -> a -> a
+    which does test the predicate and, if it is not True, throws an exception,
+    capturing the CallStack.
+
+    This rewrite is done in `tcInferId`.
+
+So `-fignore-asserts` makes the assertion go away altogether, which may be good for
+production code.
+
+The reason that `assert` and `assertError` are defined in very different modules
+is a historical accident.
+
+Note: the Haddock for `assert` is on `GHC.Internal.Base.assert`, since that is
+what appears in the user's source proram.
+
+It's not entirely kosher to rewrite `assert` to `assertError`, because there's no
+way to "undo" if you want to see the original source code in the typechecker
+output.  We can fix this if it becomes a problem.
+
+Note [Suppress hints with RequiredTypeArguments]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When a type variable is used at the term level, GHC assumes the user might
+have made a typo and suggests a term variable with a similar name.
+
+For example, if the user writes
+  f (Proxy :: Proxy nap) (Proxy :: Proxy gap) = nap (+1) [1,2,3]
+then GHC will helpfully suggest `map` instead of `nap`
+  • Illegal term-level use of the type variable ‘nap’
+  • Perhaps use ‘map’ (imported from Prelude)
+
+Importantly, GHC does /not/ suggest `gap`, which is in scope.
+Question: How does GHC know not to suggest `gap`?  After all, the edit distance
+          between `map`, `nap`, and `gap` is equally short.
+Answer: GHC takes the namespace into consideration. `gap` is a `tvName`, and GHC
+        would only suggest a `varName` at the term level.
+
+In other words, the current hint infrastructure assumes that the namespace of an
+entity is a reliable indicator of its level
+   term-level name <=> term-level entity
+   type-level name <=> type-level entity
+
+With RequiredTypeArguments, this assumption does not hold. Consider
+  bad :: forall a b -> ...
+  bad nap gap = nap
+
+This use of `nap` on the RHS is illegal because `nap` stands for a type
+variable. It cannot be returned as the result of a function. At the same time,
+it is bound as a `varName`, i.e. in the term-level namespace.
+
+Unless we suppress hints, GHC gets awfully confused
+    • Illegal term-level use of the variable ‘nap’
+    • Perhaps use one of these:
+        ‘nap’ (line 2), ‘gap’ (line 2), ‘map’ (imported from Prelude)
+
+GHC shouldn't suggest `gap`, which is also a type variable; using it would
+result in the same error. And it especially shouldn't suggest using `nap`
+instead of `nap`, which is absurd.
+
+The proper solution is to overhaul the hint system to consider what a name
+stands for instead of looking at its namespace alone. This is tracked in #24231.
+As a temporary measure, we avoid those potentially misleading hints by
+suppressing them entirely if RequiredTypeArguments is in effect.
+-}
+
+check_local_id :: Id -> TcM ()
+check_local_id id
+  = do { tcEmitBindingUsage $ singleUsageUE id }
+
+check_naughty :: OccName -> TcId -> TcM ()
+check_naughty lbl id
+  | isNaughtyRecordSelector id = failWithTc (TcRnRecSelectorEscapedTyVar lbl)
+  | otherwise                  = return ()
+
+tcInferConLike :: ConLike -> TcM (HsExpr GhcTc, TcSigmaType)
+tcInferConLike (RealDataCon con) = tcInferDataCon con
+tcInferConLike (PatSynCon ps)    = tcInferPatSyn  ps
+
+tcInferDataCon :: DataCon -> TcM (HsExpr GhcTc, TcSigmaType)
+-- See Note [Typechecking data constructors]
+tcInferDataCon con =
+  return (XExpr (ConLikeTc $ RealDataCon con), idType $ dataConWrapId con)
+
+tcInferPatSyn :: PatSyn -> TcM (HsExpr GhcTc, TcSigmaType)
+tcInferPatSyn ps
+  = case patSynBuilderOcc ps of
+       Just (expr,ty) -> return (expr,ty)
+       Nothing        -> failWithTc (nonBidirectionalErr (patSynName ps))
+
+nonBidirectionalErr :: Name -> TcRnMessage
+nonBidirectionalErr = TcRnPatSynNotBidirectional
+
+{- Note [Typechecking data constructors]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+As per Note [Polymorphisation of linear fields] in GHC.Core.Multiplicity, when
+we use a data constructor as a term, we want to consider its field to have
+polymorphic multiplicities. Note [Data constructors are linear by default] says:
+
+    Just :: a. a %1 -> Maybe a
+
+    data D a = MkD Int a
+    MkD :: Int %1 -> a %1 -> D a
+
+but we want:
+
+    Just :: forall {p} a. a %p -> Maybe a
+    MkD :: forall {p1} {p2} Int %p1 -> a %p2 -> D a
+
+This is particularly important for partial applications, e.g. 'map Just' or
+'map (MkD 3)'. To achieve this, we treat this as a subsumption problem, and
+use the subsumption mechanism that exists for typechecking applications.
+
+Here is how it works.  First, a quick refresher on deep subsumption. Given
+    f :: Int -> forall a. a -> a
+    g :: (forall b. Int -> b -> b) -> ()
+consider the application `g f`, where f’s type doesn’t match the type
+that `g` expects.  We solve this using deep subsumption, by eta-expanding `f`:
+    g (/\b. \x:Int. f x @b)
+See Note [Deep subsumption] in GHC.Tc.Utils.Unify)
+
+How does this apply to data constructors?
+    data D a = MkD Int a
+    MkD :: Int %1 -> a %1 -> D a
+    h :: (a -> D a) -> ()
+We can typecheck `h (MkD 3)` by saying that
+    a %1-> D a   <=    a -> D a
+
+That is, the linear type is "more polymorphic than" the non-linear one.
+We can witness this by doing deep subsumption, which generates this:
+    h (\ y -> MkD 3 y)
+The typing rule for lambda turns the linear arrow on `MkD` into whatever
+linearity the caller needs.
+
+However, it's wasteful to introduce a lambda abstraction here: after all,
+we are just making up for Note [Data constructors are linear by default]. If
+we had given data constructors a multiplicity-polymorphic type from the get go,
+we wouldn't have needed to introduce these lambdas. Indeed, introducing lambda
+abstractions comes with its own raft of subtle implications (e.g. loss of sharing),
+as explained in Note [Desugaring WpFun]. We avoid these issues by generating a
+cast instead of a WpFun HsWrapper, using an unsafe coercion which coercions from
+One to Many: see the calls to 'mkSubMultFunCo' in 'mkWpFun', and the use of
+'OneSubMult' in GHC.Tc.utils.Unify.tc_sub_type_deep.
+These coercions only serve to lint the output of the typechecker as per
+Note [Linting linearity] in GHC.Core.Lint; these coercions get eliminated during
+coercion optimisation (see GHC.Core.Coercion.Opt.opt_univ).
+
+Bottom line: when typechecking a data constructor application, when doing the
+subtype check wrt the context of that application, use deep subsumption,
+treating linear arrows as if they were multiplicity-polymorphic. You can
+see this happening in the 'go_fun' case of GHC.Tc.Utils.Unify.tc_sub_type_deep.
+
+Notice that this is only needed for /partially applied/ data constructors.
+Moreover, we only generalise linear fields this way: fields with multiplicity
+Many, or other multiplicity expressions are exclusive to -XLinearTypes, hence
+don't have backward compatibility implications.
+
+See the LinearEtaExpansions test which contains many tricky test cases, with
+commentary.
+
+[Historical note]
+
+  In the original implementation (from GHC 9.0 and up until GHC 9.14), and as
+  described in GHC proposal #111, we instead generalised ALL occurrences of
+  data constructors, even fully applied occurrences. For example, "Just 3"
+  would turn into "(\ x -> Just x) 3", later beta-reduced by the simplifier.
+
+  However, this caused problems, as it was liable to introduce lambda
+  abstractions whose binder did not have a fixed runtime representation,
+  in particular in conjunction with -XUnliftedNewtypes. For example (#17201):
+
+    {-# LANGUAGE TypeFamilies, UnliftedNewtypes #-}
+
+    type N :: TYPE r -> TYPE r
+    newtype N a = MkN a
+
+  Given an expression such as 'MkN False', we would eta-expand 'MkN', which
+  resulted in:
+
+    ( ( /\r /\(a :: TYPE r) \(x :: a) -> MkN x ) @LiftedRep @Bool False
+
+  in which the binder (x :: a :: TYPE r) does not have a fixed RuntimeRep
+  (see Note [Fixed RuntimeRep] in GHC.Tc.Utils.Concrete). We would then have
+  to rely on the simple optimiser beta-reducing this away before it caused
+  problems. However, this eta-expansion is completely needless, as MkN
+  appears fully saturated.
+
+  See also #17021, a similar example in which the representation is hidden
+  under a type family application. In this example, it was even more difficult
+  to get the optimiser to take care of the lambda; much better to avoid
+  unnecessarily eta-expanding altogether.
+
+  The proposal incorrectly stated that "eta expansion is not sufficient to
+  restore backwards compatibility", but this is incorrect: if one does a full
+  subtype check like with deep subsumption, then the eta-expansion approach
+  works. This did require fixing some bugs in deep subsumption (#26225).
+-}
+
+{-
+************************************************************************
+*                                                                      *
+                 Template Haskell checks
+*                                                                      *
+************************************************************************
+-}
+
+
+{-
+Note [Lifting strings]
+~~~~~~~~~~~~~~~~~~~~~~
+If we see $(... [| s |] ...) where s::String, we don't want to
+generate a mass of Cons (CharL 'x') (Cons (CharL 'y') ...)) etc.
+So this conditional short-circuits the lifting mechanism to generate
+(liftString "xy") in that case.  I didn't want to use overlapping instances
+for the Lift class in TH.Syntax, because that can lead to overlapping-instance
+errors in a polymorphic situation.
+
+If this check fails (which isn't impossible) we get another chance; see
+Note [Converting strings] in Convert.hs
+
+Note [Local record selectors]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Record selectors for TyCons in this module are ordinary local bindings,
+which show up as ATcIds rather than AGlobals.  So we need to check for
+naughtiness in both branches.  c.f. GHC.Tc.TyCl.Utils.mkRecSelBinds.
+
+Note [Explicit Level Imports]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This is the overview note which explains the whole implementation of ExplicitLevelImports
+
+GHC Proposal: https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0682-explicit-level-imports.rst
+Paper: https://mpickering.github.io/papers/explicit-level-imports.pdf
+
+The feature is turned on by the `ExplicitLevelImports` extension.
+At the source level, the user marks imports with `quote` or `splice` to introduce
+them at level 1 or -1.
+
+The function GHC.Tc.Utils.Monad.getCurrentAndBindLevel. computes the levels
+at which a Name is available:
+  - for top-level Names, this information is stored in its GRE; it is either local
+    (level 0) or imported, in which case the levels it is imported at are stored in the
+    'ImpDeclSpec's for the GRE. The function 'greLevels' retrieves this information.
+  - for locally-bound Names, this information is stored in the ThBindEnv.
+GHC.Rename.Splice.checkCrossLevelLifting checks that levels in user-written programs
+are correct.
+
+Instances are checked by `checkWellLevelledDFun`, which computes the level of an
+instance by calling `checkWellLevelledInstanceWhat`, which sees what is available at by looking at the module graph.
+
+That's it for the main implementation of the feature; the rest is modifications
+to the driver parts of the code to use this information. For example, in downsweep,
+we only enable code generation for modules needed at the runtime stage.
+See Note [-fno-code mode].
+
+-}
+
+
+{- *********************************************************************
+*                                                                      *
+         Error reporting for function result mis-matches
+*                                                                      *
+********************************************************************* -}
+
+addFunResCtxt :: HasDebugCallStack
+              => HsExpr GhcTc -> [HsExprArg p]
+              -> TcType -> ExpRhoType
+              -> TcM a -> TcM a
+-- When we have a mis-match in the return type of a function
+-- try to give a helpful message about too many/few arguments
+-- But not in generated code, where we don't want
+-- to mention internal (rebindable syntax) function names
+addFunResCtxt fun args fun_res_ty env_ty thing_inside
+  = addErrCtxt (FunResCtxt fun (count isValArg args) fun_res_ty env_ty) $
+    thing_inside
+      -- NB: use a landmark error context, so that an empty context
+      -- doesn't suppress some more useful context
+
+{-
+Note [Splitting nested sigma types in mismatched function types]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When one applies a function to too few arguments, GHC tries to determine this
+fact if possible so that it may give a helpful error message. It accomplishes
+this by checking if the type of the applied function has more argument types
+than supplied arguments.
+
+Previously, GHC computed the number of argument types through tcSplitSigmaTy.
+This is incorrect in the face of nested foralls, however!
+This caused Ticket #13311, for instance:
+
+  f :: forall a. (Monoid a) => Int -> forall b. (Monoid b) => Maybe a -> Maybe b
+
+If one uses `f` like so:
+
+  do { f; putChar 'a' }
+
+Then tcSplitSigmaTy will decompose the type of `f` into:
+
+  Tyvars: [a]
+  Context: (Monoid a)
+  Argument types: []
+  Return type: Int -> forall b. Monoid b => Maybe a -> Maybe b
+
+That is, it will conclude that there are *no* argument types, and since `f`
+was given no arguments, it won't print a helpful error message. On the other
+hand, tcSplitNestedSigmaTys correctly decomposes `f`'s type down to:
+
+  Tyvars: [a, b]
+  Context: (Monoid a, Monoid b)
+  Argument types: [Int, Maybe a]
+  Return type: Maybe b
+
+So now GHC recognizes that `f` has one more argument type than it was actually
+provided.
+
+Notice that tcSplitNestedSigmaTys looks through function arrows too, regardless
+of simple/deep subsumption.  Here we are concerned only whether there is a
+mis-match in the number of value arguments.
+-}

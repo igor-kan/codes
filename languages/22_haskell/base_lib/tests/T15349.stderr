@@ -1,0 +1,11 @@
+T15349.exe: Uncaught exception ghc-internal:GHC.Internal.Control.Exception.Base.NonTermination:
+
+<<loop>>
+
+While handling ghc-internal:GHC.Internal.IO.Exception.BlockedIndefinitelyOnMVar:
+  |
+  | thread blocked indefinitely in an MVar operation
+
+HasCallStack backtrace:
+  throwIO, called at libraries\ghc-internal\src\GHC\Internal\Control\Monad\ST\Imp.hs:59:37 in ghc-internal:GHC.Internal.Control.Monad.ST.Imp
+

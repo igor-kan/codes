@@ -1,0 +1,8 @@
+assert: Uncaught exception ghc-internal:GHC.Internal.IO.Exception.AssertionFailed:
+
+Assertion failed
+
+HasCallStack backtrace:
+  throwIO, called at libraries/ghc-internal/src/GHC/Internal/IO/Exception.hs:444:5 in ghc-internal:GHC.Internal.IO.Exception
+  assert, called at assert.hs:9:11 in main:Main
+

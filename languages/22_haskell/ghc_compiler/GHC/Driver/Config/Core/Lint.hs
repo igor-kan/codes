@@ -1,0 +1,183 @@
+module GHC.Driver.Config.Core.Lint
+  ( endPass
+  , endPassHscEnvIO
+  , initEndPassConfig
+  , initLintPassResultConfig
+  , initLintConfig
+  ) where
+
+import GHC.Prelude
+
+import GHC.Driver.Env
+import GHC.Driver.DynFlags
+import GHC.Driver.Config.Diagnostic
+
+import GHC.Core
+import GHC.Core.Lint
+import GHC.Core.Lint.Interactive
+import GHC.Core.Opt.Pipeline.Types
+import GHC.Core.Opt.Simplify ( SimplifyOpts(..) )
+import GHC.Core.Opt.Simplify.Env ( SimplMode(..), SimplPhase(..) )
+import GHC.Core.Opt.Monad
+import GHC.Core.Coercion
+
+import GHC.Types.InlinePragma ( CompilerPhase(..) )
+
+import GHC.Utils.Outputable as Outputable
+
+{-
+These functions are not CoreM monad stuff, but they probably ought to
+be, and it makes a convenient place for them.  They print out stuff
+before and after core passes, and do Core Lint when necessary.
+-}
+
+endPass :: CoreToDo -> CoreProgram -> [CoreRule] -> CoreM ()
+endPass pass binds rules
+  = do { hsc_env <- getHscEnv
+       ; name_ppr_ctx <- getNamePprCtx
+       ; liftIO $ endPassHscEnvIO hsc_env
+           name_ppr_ctx pass binds rules
+       }
+
+endPassHscEnvIO :: HscEnv -> NamePprCtx
+          -> CoreToDo -> CoreProgram -> [CoreRule] -> IO ()
+endPassHscEnvIO hsc_env name_ppr_ctx pass binds rules
+  = do { let dflags  = hsc_dflags hsc_env
+       ; endPassIO
+           (hsc_logger hsc_env)
+           (initEndPassConfig dflags (interactiveInScope $ hsc_IC hsc_env) name_ppr_ctx pass)
+           binds rules
+       }
+
+initEndPassConfig :: DynFlags -> [Var] -> NamePprCtx -> CoreToDo -> EndPassConfig
+initEndPassConfig dflags extra_vars name_ppr_ctx pass = EndPassConfig
+  { ep_dumpCoreSizes = not (gopt Opt_SuppressCoreSizes dflags)
+  , ep_lintPassResult = if gopt Opt_DoCoreLinting dflags
+      then Just $ initLintPassResultConfig dflags extra_vars pass
+      else Nothing
+  , ep_namePprCtx = name_ppr_ctx
+  , ep_dumpFlag = coreDumpFlag pass
+  , ep_prettyPass = ppr pass
+  , ep_passDetails = pprPassDetails pass
+  }
+
+coreDumpFlag :: CoreToDo -> Maybe DumpFlag
+coreDumpFlag (CoreDoSimplify {})      = Just Opt_D_verbose_core2core
+coreDumpFlag (CoreDoPluginPass {})    = Just Opt_D_verbose_core2core
+coreDumpFlag CoreDoFloatInwards       = Just Opt_D_dump_float_in
+coreDumpFlag (CoreDoFloatOutwards {}) = Just Opt_D_dump_float_out
+coreDumpFlag CoreLiberateCase         = Just Opt_D_dump_liberate_case
+coreDumpFlag CoreDoStaticArgs         = Just Opt_D_dump_static_argument_transformation
+coreDumpFlag CoreDoCallArity          = Just Opt_D_dump_call_arity
+coreDumpFlag CoreDoExitify            = Just Opt_D_dump_exitify
+coreDumpFlag (CoreDoDemand {})        = Just Opt_D_dump_dmdanal
+coreDumpFlag CoreDoCpr                = Just Opt_D_dump_cpranal
+coreDumpFlag CoreDoWorkerWrapper      = Just Opt_D_dump_worker_wrapper
+coreDumpFlag CoreDoSpecialising       = Just Opt_D_dump_spec
+coreDumpFlag CoreDoSpecConstr         = Just Opt_D_dump_spec_constr
+coreDumpFlag CoreCSE                  = Just Opt_D_dump_cse
+coreDumpFlag CoreDesugar              = Just Opt_D_dump_ds_preopt
+coreDumpFlag CoreDesugarOpt           = Just Opt_D_dump_ds
+coreDumpFlag CoreTidy                 = Just Opt_D_dump_simpl
+coreDumpFlag CorePrep                 = Just Opt_D_dump_prep
+
+coreDumpFlag CoreAddCallerCcs         = Nothing
+coreDumpFlag CoreAddLateCcs           = Nothing
+coreDumpFlag CoreDoPrintCore          = Nothing
+coreDumpFlag (CoreDoRuleCheck {})     = Nothing
+coreDumpFlag CoreDoNothing            = Nothing
+coreDumpFlag (CoreDoPasses {})        = Nothing
+
+initLintPassResultConfig :: DynFlags -> [Var] -> CoreToDo -> LintPassResultConfig
+initLintPassResultConfig dflags extra_vars pass = LintPassResultConfig
+  { lpr_diagOpts      = initDiagOpts dflags
+  , lpr_platform      = targetPlatform dflags
+  , lpr_makeLintFlags = perPassFlags dflags pass
+  , lpr_passPpr       = ppr pass
+  , lpr_preSubst      = doPreSubst pass
+  , lpr_localsInScope = extra_vars
+  }
+
+doPreSubst :: CoreToDo -> Bool
+doPreSubst CoreDesugar = True   -- Output of desugarer, /before/ running any optimisation,
+                                -- not even simpleOpt. See Note Note [Substituting type-lets]
+                                -- in GHC.Core.SubstTypeLets
+doPreSubst _           = False
+
+perPassFlags :: DynFlags -> CoreToDo -> LintFlags
+perPassFlags dflags pass
+  = (defaultLintFlags dflags)
+               { lf_check_global_ids           = check_globals
+               , lf_check_inline_loop_breakers = check_lbs
+               , lf_check_static_ptrs          = check_static_ptrs
+               , lf_check_linearity            = check_linearity
+               , lf_check_rubbish_lits         = check_rubbish
+               , lf_allow_beta_joins           = allow_beta_joins
+               , lf_allow_weak_joins           = allow_weak_joins
+               , lf_allow_dead_occs            = False }
+  where
+    -- See Note [Checking for global Ids]
+    check_globals = case pass of
+                      CoreTidy -> False
+                      CorePrep -> False
+                      _        -> True
+
+    -- See Note [Checking for INLINE loop breakers]
+    check_lbs = case pass of
+                      CoreDesugar    -> False
+                      CoreDesugarOpt -> False
+
+                      -- Disable Lint warnings on the first simplifier pass, because
+                      -- there may be some INLINE knots still tied, which is tiresomely noisy
+                      CoreDoSimplify cfg
+                        | SimplPhase InitialPhase <- sm_phase (so_mode cfg)
+                        -> False
+                      _              -> True
+
+    -- See Note [Checking StaticPtrs]
+    check_static_ptrs = case pass of
+                          CoreTidy -> RejectEverywhere
+                          CorePrep -> RejectEverywhere
+                          _        -> AllowAtTopLevel
+
+    -- See Note [Linting linearity]
+    check_linearity = gopt Opt_DoLinearCoreLinting dflags || (
+                        case pass of
+                          CoreDesugar -> True
+                          _ -> False)
+
+    -- See Note [Checking for rubbish literals] in GHC.Core.Lint
+    check_rubbish = case pass of
+                      CorePrep -> True
+                      _        -> False
+
+    -- See Note [Linting join points with casts or ticks] in GHC.Core.Lint
+    allow_weak_joins = case pass of
+                      CorePrep -> True
+                      _        -> False
+
+    -- See Note [Join points and beta-redexes] in GHC.Core.Lint
+    allow_beta_joins = case pass of
+                          CoreDoWorkerWrapper -> True
+                          _                   -> False
+
+initLintConfig :: DynFlags -> [Var] -> LintConfig
+initLintConfig dflags vars =LintConfig
+  { l_diagOpts = initDiagOpts dflags
+  , l_platform = targetPlatform dflags
+  , l_flags    = defaultLintFlags dflags
+  , l_vars     = vars
+  }
+
+defaultLintFlags :: DynFlags -> LintFlags
+defaultLintFlags dflags = LF { lf_check_global_ids = False
+                             , lf_check_inline_loop_breakers = True
+                             , lf_check_static_ptrs = AllowAtTopLevel
+                             , lf_check_linearity = gopt Opt_DoLinearCoreLinting dflags
+                             , lf_report_unsat_syns = True
+                             , lf_check_fixed_rep = True
+                             , lf_check_rubbish_lits = True
+                             , lf_allow_weak_joins = False
+                             , lf_allow_beta_joins = False
+                             , lf_allow_dead_occs  = False
+                             }

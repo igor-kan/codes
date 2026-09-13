@@ -1,0 +1,7 @@
+mkdirExists: Uncaught exception ghc-internal:GHC.Internal.IO.Exception.IOException:
+
+foo: createDirectory: already exists (File exists)
+
+HasCallStack backtrace:
+  ioError, called at libraries/unix/System/Posix/PosixPath/FilePath.hsc:106:5 in unix-2.8.5.1-inplace:System.Posix.PosixPath.FilePath
+

@@ -1,0 +1,913 @@
+{-
+(c) The University of Glasgow 2006
+(c) The GRASP/AQUA Project, Glasgow University, 1992-1998
+
+
+Monadery used in desugaring
+-}
+
+module GHC.HsToCore.Monad (
+        DsM, mapM, mapAndUnzipM,
+        initDs, initDsTc, initTcDsForSolver, initDsWithModGuts, fixDs,
+        foldlM, foldrM, whenGOptM, unsetGOptM, unsetWOptM, xoptM,
+        Applicative(..),(<$>),
+
+        duplicateLocalDs, newSysLocalDs, newSysLocalsDs,
+        newSysLocalMDs, newSysLocalsMDs, newFailLocalMDs,
+        newUniqueId, newPredVarDs, newStaticId,
+        getSrcSpanDs, putSrcSpanDs, putSrcSpanDsA,
+        mkNamePprCtxDs,
+        newUnique,
+        UniqSupply, newUniqueSupply,
+        getGhcModeDs, dsGetFamInstEnvs, dsGetGlobalRdrEnv,
+        getCCIndexDsM,
+
+        -- Looking up in the environment
+        dsLookupGlobal, dsLookupGlobalId, dsLookupTyCon,
+        dsLookupDataCon, dsLookupConLike,
+        dsLookupKnownKeyTyCon, dsLookupKnownKeyDataCon, dsLookupKnownKeyId,
+        dsLookupKnownKeyName, dsLookupKnownOccName, dsGetKnownKeySource,
+        dsLookupKnownOccId, dsLookupKnownOccTyCon, dsLookupKnownOccDataCon,
+
+        DsMetaEnv, DsMetaVal(..), dsGetMetaEnv, dsLookupMetaEnv, dsExtendMetaEnv,
+
+        -- Static bindings
+        emitStaticBinds, getStaticBinds,
+
+        -- Getting and setting pattern match oracle states
+        getPmNablas, updPmNablas,
+
+        -- Tracking evidence variable coherence
+        addUnspecables, getUnspecables, zapUnspecables,
+
+        -- Get COMPLETE sets of a TyCon
+        dsGetCompleteMatches,
+
+        -- Warnings and errors
+        DsWarning, diagnosticDs, errDsCoreExpr,
+        failWithDs, failDs, discardWarningsDs,
+
+        -- Data types
+        DsMatchContext(..),
+        EquationInfo(..), EquationInfoNE, prependPats, mkEqnInfo, eqnMatchResult,
+        MatchId(..), mkMatchId, castMatchId,
+        matchIdExpr, matchIdType, matchIdMult, matchIdScaledType,
+        MatchResult (..), runMatchResult, DsWrapper, idDsWrapper,
+
+        -- Trace injection
+        pprRuntimeTrace
+    ) where
+
+import GHC.Prelude
+
+import GHC.Driver.Env
+import GHC.Driver.Env.KnotVars
+import GHC.Driver.DynFlags
+import GHC.Driver.Ppr
+import GHC.Driver.Config.Diagnostic
+
+import GHC.Hs
+
+import GHC.HsToCore.Types
+import GHC.HsToCore.Errors.Types
+import GHC.HsToCore.Pmc.Solver.Types (initNablas)
+
+import GHC.Core.FamInstEnv
+import GHC.Core
+import GHC.Core.Coercion ( MCoercionR, MCoercion(..), coercionRKind, mkTransMCo )
+import GHC.Core.Make  ( unitExpr )
+import GHC.Core.Utils ( exprType )
+import GHC.Core.DataCon
+import GHC.Core.ConLike
+import GHC.Core.TyCon
+import GHC.Core.Type
+import GHC.Core.Multiplicity
+
+import GHC.IfaceToCore
+import GHC.Iface.Load
+
+import GHC.Tc.Utils.Monad
+
+import GHC.Builtin.KnownOccs (traceIdOcc)
+import GHC.Builtin.KnownKeys
+import GHC.Builtin.Modules (usesEssentialsModule)
+
+import GHC.Data.FastString
+
+import GHC.Unit.Env
+import GHC.Unit.External
+import GHC.Unit.Module
+import GHC.Unit.Module.ModGuts
+
+import GHC.Types.Name.Reader
+import GHC.Types.SourceFile
+import GHC.Types.Id
+import GHC.Types.Var (EvVar)
+import GHC.Types.Var.Set( VarSet, emptyVarSet, extendVarSetList )
+import GHC.Types.SrcLoc
+import GHC.Types.TypeEnv
+import GHC.Types.Unique.Supply
+import GHC.Types.Name
+import GHC.Types.Name.Env
+import GHC.Types.Name.Ppr
+import GHC.Types.Literal ( mkLitString )
+import GHC.Types.CostCentre.State
+import GHC.Types.TyThing
+import GHC.Types.Error
+import GHC.Types.CompleteMatch
+import GHC.Types.Unique.DSet
+
+import GHC.Tc.Utils.Env (lookupGlobal)
+
+import GHC.Utils.Error
+import GHC.Utils.Outputable
+import GHC.Utils.Panic
+import GHC.Utils.Misc( HasDebugCallStack )
+
+import qualified GHC.Data.Strict as Strict
+import GHC.Data.Maybe
+import GHC.Data.OrdList
+
+import Data.IORef
+
+import GHC.IO.Unsafe (unsafeInterleaveIO)
+
+{-
+************************************************************************
+*                                                                      *
+                Data types for the desugarer
+*                                                                      *
+************************************************************************
+-}
+
+data DsMatchContext
+  = DsMatchContext HsMatchContextRn SrcSpan
+  deriving ()
+
+instance Outputable DsMatchContext where
+  ppr (DsMatchContext hs_match ss) = ppr ss <+> pprMatchContext hs_match
+
+data EquationInfo
+  = EqnMatch  { eqn_pat :: LPat GhcTc
+                -- ^ The first pattern of the equation
+                --
+                -- NB: The location info is used to determine whether the
+                -- pattern is generated or not.
+                -- This helps us avoid warnings on patterns that GHC elaborated.
+                --
+                -- NB: We have /already/ applied 'decideBangHood' to this
+                -- pattern. See Note [decideBangHood] in "GHC.HsToCore.Utils"
+
+              , eqn_rest :: EquationInfo }
+                -- ^ The rest of the equation after its first pattern
+
+  | EqnDone
+  -- The empty tail of an equation having no more patterns
+            (MatchResult CoreExpr)
+            -- ^ What to do after match
+
+type EquationInfoNE = EquationInfo
+-- An EquationInfo which has at least one pattern
+--   i.e. it's an EqnMatch, not EqnDone
+
+prependPats :: [LPat GhcTc] -> EquationInfo -> EquationInfo
+prependPats [] eqn = eqn
+prependPats (pat:pats) eqn = EqnMatch { eqn_pat = pat, eqn_rest = prependPats pats eqn }
+
+mkEqnInfo :: [LPat GhcTc] -> MatchResult CoreExpr -> EquationInfo
+mkEqnInfo pats = prependPats pats . EqnDone
+
+eqnMatchResult :: EquationInfo -> MatchResult CoreExpr
+eqnMatchResult (EqnDone rhs) = rhs
+eqnMatchResult (EqnMatch { eqn_rest = eq }) = eqnMatchResult eq
+
+instance Outputable EquationInfo where
+    ppr = ppr . allEqnPats where
+      allEqnPats (EqnDone {}) = []
+      allEqnPats (EqnMatch { eqn_pat = pat, eqn_rest = eq }) = unLoc pat : allEqnPats eq
+
+type DsWrapper = CoreExpr -> CoreExpr
+idDsWrapper :: DsWrapper
+idDsWrapper e = e
+
+-- The semantics of (match vs (EqnInfo wrap pats rhs)) is the MatchResult CoreExpr
+--      \fail. wrap (case vs of { pats -> rhs fail })
+-- where vs are not bound by wrap
+
+-- | This is a value of type a with potentially a CoreExpr-shaped hole in it.
+-- This is used to deal with cases where we are potentially handling pattern
+-- match failure, and want to later specify how failure is handled.
+data MatchResult a
+  -- | We represent the case where there is no hole without a function from
+  -- 'CoreExpr', like this, because sometimes we have nothing to put in the
+  -- hole and so want to be sure there is in fact no hole.
+  = MR_Infallible (DsM a)
+  | MR_Fallible (CoreExpr -> DsM a)
+  deriving (Functor)
+
+-- | Product is an "or" on fallibility---the combined match result is infallible
+-- only if the left and right argument match results both were.
+--
+-- This is useful for combining a bunch of alternatives together and then
+-- getting the overall fallibility of the entire group. See 'mkDataConCase' for
+-- an example.
+instance Applicative MatchResult where
+  pure v = MR_Infallible (pure v)
+  MR_Infallible f <*> MR_Infallible x = MR_Infallible (f <*> x)
+  f <*> x = MR_Fallible $ \fail -> runMatchResult fail f <*> runMatchResult fail x
+
+-- Given a fail expression to use, and a MatchResult CoreExpr, compute the filled CoreExpr whether
+-- the MatchResult CoreExpr was failable or not.
+runMatchResult :: CoreExpr -> MatchResult a -> DsM a
+runMatchResult fail = \case
+  MR_Infallible body -> body
+  MR_Fallible body_fn -> body_fn fail
+
+{-
+************************************************************************
+*                                                                      *
+                          Match Ids
+*                                                                      *
+************************************************************************
+-}
+
+
+-- | The scrutinee of one column of a pattern match: a (possibly casted) variable.
+--
+-- See Note [Match Ids].
+data MatchId
+  = MatchId
+      { matchId :: Id
+        -- ^ The match variable.
+      , matchCo :: MCoercionR
+      }
+
+instance Outputable MatchId where
+  ppr = ppr . matchIdExpr
+
+-- | Create a 'MatchId' from a match variable.
+mkMatchId :: Id -> MatchId
+mkMatchId v = MatchId { matchId = v, matchCo = MRefl }
+
+-- | Cast a 'MatchId'.
+castMatchId :: MatchId -> MCoercionR -> MatchId
+castMatchId (MatchId v mco) mco' = MatchId v (mco `mkTransMCo` mco')
+
+-- | Compute the scrutinee expression corresponding to a 'MatchId': the casted
+-- match varible.
+matchIdExpr :: MatchId -> CoreExpr
+matchIdExpr (MatchId v MRefl)    = Var v
+matchIdExpr (MatchId v (MCo co)) = Var v `Cast` co
+
+-- | The type of the scrutinee expression ('matchIdExpr').
+matchIdType :: MatchId -> Type
+matchIdType (MatchId v MRefl)    = idType v
+matchIdType (MatchId _ (MCo co)) = coercionRKind co
+
+-- | The multiplicity at which this column of the pattern match was typechecked.
+matchIdMult :: MatchId -> Mult
+matchIdMult = idMult . matchId
+
+-- | The type of the scrutinee expression, scaled by the multiplicity of the
+-- match variable.
+matchIdScaledType :: MatchId -> Scaled Type
+matchIdScaledType mid = Scaled (matchIdMult mid) (matchIdType mid)
+
+{- Note [Match Ids]
+~~~~~~~~~~~~~~~~~~~
+We desugar pattern matching by using casted matching variables as the scrutinees
+of each individual matching function (in GHC.HsToCore.Match and friends).
+
+A match variable is an 'Id'. As such, it contains not only the match variable's
+name, but also its type and the multiplicity at which its column has been typechecked.
+The desugared expression may sometimes use the underlying variable in a local
+binding or as a case binder, so it should not have an External name (Lint
+rejects non-top-level binders with External names, see #13043).
+See Note [Localise pattern binders] in GHC.HsToCore.Utils.
+
+A 'MatchId' is a casted match variable. The cast allows the pattern matching
+functions to accumulate coercions as they go, instead of needing to bind
+intermediate variables as in:
+
+  let v' = v |> co in <match against v'>
+
+Avoiding these intermediate variables is important for
+Note [Typechecking newtype constructor patterns] in GHC.Tc.Gen.Pat.
+The newtype unwrapping coercion of a representation-polymorphic unlifted newtype
+may have LHS/RHS types that do not have a fixed RuntimeRep.
+Instead, two casts from different origins must coalesce: the newtype unwrapping
+coercion and the coercion introduced by representation-polymorphism checking.
+
+Example (T20363):
+
+  type NilRep :: RuntimeRep
+  type family NilRep where { NilRep = TupleRep '[] }
+  type UnitTupleNT :: TYPE NilRep
+  newtype UnitTupleNT = MkNT (# #)
+
+  f :: UnitTupleNT -> ()
+  f (MkNT x) = ()
+
+After elaboration by the typechecker, the pattern has the shape
+
+  (MkNT (x |> arg_co)) |> k_co
+    -- k_co   :: (UnitTupleNT |> kco) ~R# UnitTupleNT
+    -- arg_co :: fld_ty ~R# (fld_ty |> arg_kco)
+
+Matching proceeds by pushing casts onto the match variable:
+
+  v                              :: UnitTupleNT |> kco
+    -- (matchCoercion)
+  v |> k_co                      :: UnitTupleNT
+    -- (matchNewtypeCon)
+  v |> (k_co ; nt_co)            :: fld_ty
+    -- (matchCoercion)
+  v |> (k_co ; nt_co ; arg_co)   :: fld_ty |> arg_kco
+    -- (bindMatchId)
+  let x = v |> (k_co ; nt_co ; arg_co) in ()
+
+We thus end up with a single let binding whose binder, x, has a fixed RuntimeRep.
+Crucially, we avoid ever producing a binding such as
+
+  let y :: UnitTupleNT :: TYPE NilRep
+      y = v |> k_co
+
+in which the binder does not have a fixed RuntimeRep.
+-}
+
+{-
+************************************************************************
+*                                                                      *
+                Monad functions
+*                                                                      *
+************************************************************************
+-}
+
+-- Compatibility functions
+fixDs :: (a -> DsM a) -> DsM a
+fixDs    = fixM
+
+type DsWarning = (SrcSpan, SDoc)
+        -- Not quite the same as a WarnMsg, we have an SDoc here
+        -- and we'll do the name_ppr_ctx stuff later on to turn it
+        -- into a Doc.
+
+-- | Run a 'DsM' action inside the 'TcM' monad.
+initDsTc :: DsM a -> TcM (Messages DsMessage, Maybe a)
+initDsTc thing_inside
+  = do { tcg_env  <- getGblEnv
+       ; msg_var  <- liftIO $ newIORef emptyMessages
+       ; hsc_env  <- getTopEnv
+       ; envs     <- mkDsEnvsFromTcGbl hsc_env msg_var tcg_env
+       ; e_result <- tryM $  -- need to tryM so that we don't discard
+                             -- DsMessages
+                     setEnvs envs thing_inside
+       ; msgs     <- liftIO $ readIORef msg_var
+       ; return (msgs, case e_result of Left _  -> Nothing
+                                        Right x -> Just x)
+       }
+
+-- | Run a 'DsM' action inside the 'IO' monad.
+initDs :: HscEnv -> TcGblEnv -> DsM a -> IO (Messages DsMessage, Maybe a)
+initDs hsc_env tcg_env thing_inside
+  = do { msg_var <- newIORef emptyMessages
+       ; envs <- mkDsEnvsFromTcGbl hsc_env msg_var tcg_env
+       ; runDs hsc_env envs thing_inside
+       }
+
+-- | Build a set of desugarer environments derived from a 'TcGblEnv'.
+mkDsEnvsFromTcGbl :: MonadIO m
+                  => HscEnv -> IORef (Messages DsMessage) -> TcGblEnv
+                  -> m (DsGblEnv, DsLclEnv)
+mkDsEnvsFromTcGbl hsc_env msg_var tcg_env
+  = do { cc_st_var   <- liftIO $ newIORef newCostCentreState
+       ; statics_var <- liftIO $ newIORef nilOL
+           -- ToDo: what becomes of the values put into these ref-cells?
+
+       ; eps <- liftIO $ hscEPS hsc_env
+       ; let unit_env = hsc_unit_env hsc_env
+             this_mod = tcg_mod tcg_env
+             type_env = tcg_type_env tcg_env
+             rdr_env  = tcg_rdr_env tcg_env
+             fam_inst_env = tcg_fam_inst_env tcg_env
+             ptc = initPromotionTickContext (hsc_dflags hsc_env)
+             -- re-use existing next_wrapper_num to ensure uniqueness
+             next_wrapper_num_var = tcg_next_wrapper_num tcg_env
+             tcg_comp_env = tcg_complete_match_env tcg_env
+
+       ; ds_complete_matches <-
+           liftIO $ unsafeInterleaveIO $
+             -- Note [Lazily loading COMPLETE pragmas]
+             -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+             -- This call to 'unsafeInterleaveIO' ensures we only do this work
+             -- when we need to look at the COMPLETE pragmas, avoiding doing work
+             -- when we don't need them.
+             --
+             -- Relevant test case: MultiLayerModulesTH_Make, which regresses
+             -- in allocations by ~5% if we don't do this.
+           traverse (lookupCompleteMatch type_env hsc_env) =<<
+             localAndImportedCompleteMatches tcg_comp_env eps
+       ; tcm_plugins <- liftIO $ readIORef (tcg_plugins tcg_env)
+
+       -- Pass the running 'TcM' plugins to the desugarer, so that the pattern-match
+       -- checker can invoke the typechecker without having to re-initialise them.
+       --
+       -- See Note [Stop TcM plugins after desugaring] in GHC.Driver.Main.
+       ; let tcm_plugin_env = tcMPluginsRunActions $ runningTcMPlugins tcm_plugins
+       ; return $ mkDsEnvs unit_env this_mod rdr_env type_env fam_inst_env
+                           tcm_plugin_env ptc msg_var cc_st_var statics_var
+                           next_wrapper_num_var
+                           (tcg_known_key_maps tcg_env) -- Re-use known-entity maps loaded by typechecker
+                           ds_complete_matches
+       }
+
+-- | We have in hand the `CompleteMatches` for the module, but when
+-- doing pattern-match overlap checking we want the `ConLike` for each
+-- data constructor, not just its `Name`.  This function makes the
+-- transition.
+lookupCompleteMatch :: TypeEnv -> HscEnv -> CompleteMatch -> IO DsCompleteMatch
+lookupCompleteMatch type_env hsc_env (CompleteMatch { cmConLikes = nms, cmResultTyCon = mb_tc })
+  = do { cons <- mapMUniqDSet lookup_conLike nms
+       ; return $ CompleteMatch { cmConLikes = cons, cmResultTyCon = mb_tc } }
+  where
+    lookup_conLike :: Name -> IO ConLike
+    lookup_conLike nm
+      | Just ty <- wiredInNameTyThing_maybe nm
+      = go ty
+      | Just ty <- lookupTypeEnv type_env nm
+      = go ty
+      | otherwise
+      = go =<< lookupGlobal hsc_env nm
+      where
+        go :: TyThing -> IO ConLike
+        go (AConLike cl) = return cl
+        go ty = pprPanic "lookup_conLike not a ConLike" (ppr nm <+> ppr ty)
+
+runDs :: HscEnv -> (DsGblEnv, DsLclEnv) -> DsM a -> IO (Messages DsMessage, Maybe a)
+runDs hsc_env (ds_gbl, ds_lcl) thing_inside
+  = do { res    <- initTcRnIf DsTag hsc_env ds_gbl ds_lcl
+                              (tryM thing_inside)
+       ; msgs   <- readIORef (ds_msgs ds_gbl)
+       ; let final_res
+               | errorsFound msgs = Nothing
+               | Right r <- res   = Just r
+               | otherwise        = panic "initDs"
+       ; return (msgs, final_res)
+       }
+
+-- | Run a 'DsM' action in the context of an existing 'ModGuts'
+initDsWithModGuts :: HscEnv -> ModGuts -> DsM a -> IO (Messages DsMessage, Maybe a)
+initDsWithModGuts hsc_env (ModGuts { mg_module = this_mod, mg_binds = binds
+                                   , mg_tcs = tycons, mg_fam_insts = fam_insts
+                                   , mg_patsyns = patsyns, mg_rdr_env = rdr_env
+                                   , mg_fam_inst_env = fam_inst_env
+                                   , mg_complete_matches = local_complete_matches
+                          }) thing_inside
+  = do { cc_st_var        <- newIORef newCostCentreState
+       ; next_wrapper_num <- newIORef emptyModuleEnv
+       ; msg_var          <- newIORef emptyMessages
+       ; statics_var      <- newIORef nilOL
+       ; known_key_maps_var <- newIORef Nothing
+       ; eps <- liftIO $ hscEPS hsc_env
+       ; let unit_env = hsc_unit_env hsc_env
+             type_env = typeEnvFromEntities ids tycons patsyns fam_insts
+             ptc = initPromotionTickContext (hsc_dflags hsc_env)
+             bindsToIds (NonRec v _)   = [v]
+             bindsToIds (Rec    binds) = map fst binds
+             ids = concatMap bindsToIds binds
+       ; ds_complete_matches <- traverse (lookupCompleteMatch type_env hsc_env) =<<
+            localAndImportedCompleteMatches local_complete_matches eps
+       ; let
+            tcm_plugins = emptyTcMPluginsRun
+            envs  = mkDsEnvs unit_env this_mod rdr_env type_env
+                             fam_inst_env tcm_plugins ptc
+                             msg_var cc_st_var statics_var
+                             next_wrapper_num known_key_maps_var
+                             ds_complete_matches
+       ; runDs hsc_env envs thing_inside
+       }
+
+initTcDsForSolver :: HasDebugCallStack => TcM a -> DsM a
+-- Spin up a TcM context so that we can run the constraint solver
+-- Returns any error messages generated by the constraint solver
+-- and (Just res) if no error happened; Nothing if an error happened
+--
+-- Simon says: I'm not very happy about this.  We spin up a complete TcM monad
+--             only to immediately refine it to a TcS monad.
+-- Better perhaps to make TcS into its own monad, rather than building on TcS
+-- But that may in turn interact with plugins
+
+initTcDsForSolver thing_inside
+  = do { (gbl, lcl) <- getEnvs
+       ; hsc_env    <- getTopEnv
+
+         -- The DsGblEnv is used to inform the typechecker's solver of a few
+         -- key pieces of information:
+         --
+         --  - ds_fam_inst_env tells it how to reduce type families,
+         --  - ds_gbl_rdr_env  tells it which newtypes it can unwrap.
+       ; let DsGblEnv { ds_mod          = mod
+                      , ds_type_env     = type_env
+                      , ds_fam_inst_env = fam_inst_env
+                      , ds_gbl_rdr_env  = rdr_env
+                      , ds_tcm_plugins  = tcm_plugins
+                      } = gbl
+             DsLclEnv { dsl_loc = loc } = lcl
+
+       ; let
+           -- We specifically stored TcM plugins in the DsGblEnv so that we
+           -- can invoke the typechecker without having to re-initialise them.
+           running_tcm_plugins =
+             TcMPluginsRunning $
+               RunningTcMPlugins
+                 tcm_plugins
+                 emptyTcMPluginsPostTc
+                 emptyTcMPluginsShutdown
+
+       ; tcm_plugins_ref <- liftIO $ newIORef running_tcm_plugins
+       ; (msgs, mb_ret) <- liftIO $ initTc UseRunningTcMPlugins hsc_env HsSrcFile False mod loc $
+         updGblEnv (\tc_gbl -> tc_gbl { tcg_fam_inst_env = fam_inst_env
+                                      , tcg_rdr_env      = rdr_env
+                                      , tcg_type_env     = type_env
+                                      , tcg_plugins      = tcm_plugins_ref
+                                        -- Re-use known-entity maps
+                                      , tcg_known_key_maps = ds_known_key_maps gbl }) $
+         thing_inside
+       ; case mb_ret of
+           Just ret -> pure ret
+           Nothing  -> panicMessage "initTcDsForSolver" (getErrorMessages msgs) }
+
+mkDsEnvs :: UnitEnv -> Module -> GlobalRdrEnv -> TypeEnv -> FamInstEnv
+         -> TcMPluginsRun
+         -> PromotionTickContext
+         -> IORef (Messages DsMessage) -> IORef CostCentreState
+         -> IORef (OrdList (Id,CoreExpr))
+         -> IORef (ModuleEnv Int)
+         -> IORef (Maybe KnownKeyNameMaps)
+         -> DsCompleteMatches
+         -> (DsGblEnv, DsLclEnv)
+mkDsEnvs unit_env mod rdr_env type_env fam_inst_env tcm_plugins ptc msg_var
+         cc_st_var statics_var next_wrapper_num known_key_maps_var
+         complete_matches
+  = let if_genv = IfGblEnv { if_doc       = text "mkDsEnvs"
+                           , if_rec_types = KnotVars [mod] knot_var_fun }
+                  -- Failing tests here are `ghci` and `T11985` if you get this wrong.
+                  -- This is very very "at a distance" because the reason for this check
+                  -- is that the type_env in interactive mode is the smushed together
+                  -- of all the interactive modules.
+                  -- See Note [Why is KnotVars not a ModuleEnv]
+
+        knot_var_fun :: Module -> Maybe (IfG TypeEnv)
+        knot_var_fun that_mod
+          | that_mod == mod || isInteractiveModule mod = Just (return type_env)
+          | otherwise                                  = Nothing
+
+        if_lenv = mkIfLclEnv mod (text "GHC error in desugarer lookup in" <+> ppr mod)
+                             NotBoot
+        real_span = realSrcLocSpan (mkRealSrcLoc (moduleNameFS (moduleName mod)) 1 1)
+
+        gbl_env = DsGblEnv { ds_mod          = mod
+                           , ds_fam_inst_env = fam_inst_env
+                           , ds_type_env     = type_env
+                           , ds_gbl_rdr_env  = rdr_env
+                           , ds_tcm_plugins = tcm_plugins
+                           , ds_if_env  = (if_genv, if_lenv)
+                           , ds_name_ppr_ctx = mkNamePprCtx ptc unit_env rdr_env
+                           , ds_msgs    = msg_var
+                           , ds_complete_matches = complete_matches
+                           , ds_cc_st   = cc_st_var
+                           , ds_static_binds = statics_var
+                           , ds_next_wrapper_num = next_wrapper_num
+                           , ds_known_key_maps = known_key_maps_var
+                           }
+        lcl_env = DsLclEnv { dsl_meta        = emptyNameEnv
+                           , dsl_loc         = real_span
+                           , dsl_nablas      = Ldi initNablas
+                           , dsl_unspecables = Just emptyVarSet
+                           }
+    in (gbl_env, lcl_env)
+
+dsToIfL :: IfL a -> DsM a
+-- Run an Iface action in the Ds monad
+dsToIfL iface_action
+  = do { env <- getGblEnv
+       ; setEnvs (ds_if_env env) iface_action }
+
+
+{-
+************************************************************************
+*                                                                      *
+                Operations in the monad
+*                                                                      *
+************************************************************************
+
+And all this mysterious stuff is so we can occasionally reach out and
+grab one or more names.  @newLocalDs@ isn't exported---exported
+functions are defined with it.  The difference in name-strings makes
+it easier to read debugging output.
+
+-}
+
+-- Make a new Id with the same print name, but different type, and new unique
+newUniqueId :: Id -> Mult -> Type -> DsM Id
+newUniqueId id = mkSysLocalOrCoVarM (occNameFS (nameOccName (idName id)))
+
+newStaticId :: Type -> DsM Id
+-- See Note [Grand plan for static forms] in GHC.Iface.Tidy.StaticPtrTable
+newStaticId rhs_ty
+  = do { uniq <- newUnique
+       ; let name = mkSystemVarName uniq (mkFastString "static_ptr")
+       ; return (mkExportedVanillaId name rhs_ty) }
+
+duplicateLocalDs :: Id -> DsM Id
+duplicateLocalDs old_local
+  = do  { uniq <- newUnique
+        ; return (setIdUnique old_local uniq) }
+
+newPredVarDs :: PredType -> DsM Var
+newPredVarDs
+ = mkSysLocalOrCoVarM (fsLit "ds") ManyTy  -- like newSysLocalDs, but we allow covars
+
+newSysLocalMDs, newFailLocalMDs :: Type -> DsM Id
+-- Implicitly have ManyTy multiplicity, hence the "M"
+newSysLocalMDs  = mkSysLocalM (fsLit "ds")    ManyTy
+newFailLocalMDs = mkSysLocalM (fsLit "fail") ManyTy
+
+newSysLocalsMDs :: [Type] -> DsM [Id]
+newSysLocalsMDs = mapM newSysLocalMDs
+
+newSysLocalDs :: Scaled Type -> DsM Id
+newSysLocalDs (Scaled w t) = mkSysLocalM (fsLit "ds") w t
+
+newSysLocalsDs :: [Scaled Type] -> DsM [Id]
+newSysLocalsDs = mapM newSysLocalDs
+
+{-
+We can also reach out and either set/grab location information from
+the @SrcSpan@ being carried around.
+-}
+
+getGhcModeDs :: DsM GhcMode
+getGhcModeDs =  getDynFlags >>= return . ghcMode
+
+-- | Get the current pattern match oracle state. See 'dsl_nablas'.
+getPmNablas :: DsM LdiNablas
+getPmNablas = do { env <- getLclEnv; return (dsl_nablas env) }
+
+-- | Set the pattern match oracle state within the scope of the given action.
+-- See 'dsl_nablas'.
+updPmNablas :: LdiNablas -> DsM a -> DsM a
+updPmNablas nablas = updLclEnv (\env -> env { dsl_nablas = nablas })
+
+addUnspecables :: [EvVar] -> DsM a -> DsM a
+addUnspecables new_unspecables
+  = updLclEnv (\env -> case dsl_unspecables env of
+                          Nothing -> env
+                          Just us -> env { dsl_unspecables
+                                             = Just (us `extendVarSetList` new_unspecables) })
+
+zapUnspecables :: DsM a -> DsM a
+zapUnspecables = updLclEnv (\env -> env{ dsl_unspecables = Nothing })
+
+getUnspecables :: DsM (Maybe VarSet)
+getUnspecables = dsl_unspecables <$> getLclEnv
+
+getSrcSpanDs :: DsM SrcSpan
+getSrcSpanDs = do { env <- getLclEnv
+                  ; return (RealSrcSpan (dsl_loc env) Strict.Nothing) }
+
+putSrcSpanDs :: SrcSpan -> DsM a -> DsM a
+putSrcSpanDs (RealSrcSpan real_span _) thing_inside
+  = updLclEnv (\ env -> env {dsl_loc = real_span}) thing_inside
+putSrcSpanDs UnhelpfulSpan{} thing_inside
+  = thing_inside
+putSrcSpanDs GeneratedSrcSpan{} thing_inside
+  = thing_inside
+
+putSrcSpanDsA :: EpAnn ann -> DsM a -> DsM a
+putSrcSpanDsA loc = putSrcSpanDs (locA loc)
+
+-- | Emit a diagnostic for the current source location. In case the diagnostic is a warning,
+-- the latter will be ignored and discarded if the relevant 'WarningFlag' is not set in the DynFlags.
+-- See Note [Discarding Messages] in 'GHC.Types.Error'.
+diagnosticDs :: DsMessage -> DsM ()
+diagnosticDs dsMessage
+  = do { env <- getGblEnv
+       ; loc <- getSrcSpanDs
+       ; !diag_opts <- initDiagOpts <$> getDynFlags
+       ; let msg = mkMsgEnvelope diag_opts loc (ds_name_ppr_ctx env) dsMessage
+       ; updMutVar (ds_msgs env) (\ msgs -> msg `addMessage` msgs) }
+
+-- | Issue an error, but return the expression for (), so that we can continue
+-- reporting errors.
+errDsCoreExpr :: DsMessage -> DsM CoreExpr
+errDsCoreExpr msg
+  = do { diagnosticDs msg
+       ; return unitExpr }
+
+failWithDs :: DsMessage -> DsM a
+failWithDs msg
+  = do  { diagnosticDs msg
+        ; failM }
+
+failDs :: DsM a
+failDs = failM
+
+mkNamePprCtxDs :: DsM NamePprCtx
+mkNamePprCtxDs = ds_name_ppr_ctx <$> getGblEnv
+
+{- *********************************************************************
+*                                                                      *
+                Looking things up in the monad
+*                                                                      *
+********************************************************************* -}
+
+dsGetKnownKeySource :: DsM KnownEntitySource
+dsGetKnownKeySource
+  = do { rebindable_path <- goptM Opt_RebindableKnownNames
+       ; env <- getGblEnv
+       ; if usesEssentialsModule rebindable_path (moduleName (ds_mod env))
+         then KES_FromModule <$> dsGetKnownKeyNameMaps env
+         else return (KES_InScope { ke_mod = ds_mod env
+                                  , ke_rdr_env = ds_gbl_rdr_env env
+                                  , ke_gbl_type_env = ds_type_env env
+                                  , ke_lcl_type_env = emptyNameEnv }) }
+
+-- | Desugarer version of 'GHC.Tc.Utils.Env.getKnownKeyNameMaps'.
+dsGetKnownKeyNameMaps :: DsGblEnv -> DsM KnownKeyNameMaps
+dsGetKnownKeyNameMaps env
+  = do { mb_maps <- readTcRef (ds_known_key_maps env)
+       ; case mb_maps of
+           Just maps -> return maps
+           Nothing ->
+             do { maps <- dsToIfL $
+                    do { mb_res <- loadKnownKeyOccMaps
+                       ; case mb_res of
+                           Succeeded maps -> return maps
+                           Failed err     -> failIfM (pprDiagnostic err) }
+                ; writeTcRef (ds_known_key_maps env) (Just maps)
+                ; return maps } }
+
+--------------------------------------
+-- Lookups for known-occ things
+
+dsLookupKnownOccName :: KnownOcc -> DsM Name
+dsLookupKnownOccName occ
+  = do { rebindable_src <- dsGetKnownKeySource
+       ; dsToIfL $
+         do { mb_res <- lookupKnownOccName occ rebindable_src
+            ; case mb_res of
+                 Succeeded name -> return name
+                 Failed msg -> failIfM (pprDiagnostic msg) } }
+
+dsLookupKnownOccThing :: KnownOcc -> DsM TyThing
+dsLookupKnownOccThing occ
+  = do { rebindable_src <- dsGetKnownKeySource
+       ; dsToIfL $
+         do { mb_res <- lookupKnownOccThing occ rebindable_src
+            ; case mb_res of
+                 Succeeded thing -> return thing
+                 Failed msg -> failIfM (pprDiagnostic msg) } }
+
+dsLookupKnownOccTyCon :: KnownOcc -> DsM TyCon
+dsLookupKnownOccTyCon uniq = tyThingTyCon <$> dsLookupKnownOccThing uniq
+
+dsLookupKnownOccDataCon :: KnownOcc -> DsM DataCon
+dsLookupKnownOccDataCon uniq = tyThingDataCon <$> dsLookupKnownOccThing uniq
+
+dsLookupKnownOccId :: KnownOcc -> DsM Id
+dsLookupKnownOccId uniq = tyThingId <$> dsLookupKnownOccThing uniq
+
+--------------------------------------
+-- Lookups for known-key things
+
+dsLookupKnownKeyName :: HasDebugCallStack => KnownKey -> DsM Name
+dsLookupKnownKeyName uniq
+  = do { rebindable_src <- dsGetKnownKeySource
+       ; dsToIfL $
+         do { mb_res <- lookupKnownKeyName uniq rebindable_src
+            ; case mb_res of
+                 Succeeded name -> return name
+                 Failed msg -> failIfM (pprDiagnostic msg) } }
+
+dsLookupKnownKeyThing :: HasDebugCallStack => KnownKey -> DsM TyThing
+dsLookupKnownKeyThing uniq
+  = do { rebindable_src <- dsGetKnownKeySource
+       ; dsToIfL $
+         do { mb_res <- lookupKnownKeyThing uniq rebindable_src
+            ; case mb_res of
+                 Succeeded thing -> return thing
+                 Failed msg -> failIfM (pprDiagnostic msg) } }
+
+dsLookupKnownKeyTyCon :: HasDebugCallStack => KnownKey -> DsM TyCon
+dsLookupKnownKeyTyCon uniq = tyThingTyCon <$> dsLookupKnownKeyThing uniq
+
+dsLookupKnownKeyDataCon :: HasDebugCallStack => KnownKey -> DsM DataCon
+dsLookupKnownKeyDataCon uniq = tyThingDataCon <$> dsLookupKnownKeyThing uniq
+
+dsLookupKnownKeyId :: HasDebugCallStack => KnownKey -> DsM Id
+dsLookupKnownKeyId uniq = tyThingId <$> dsLookupKnownKeyThing uniq
+
+--------------------------------------
+-- Lookups given a Name
+
+dsLookupGlobal :: HasDebugCallStack => Name -> DsM TyThing
+dsLookupGlobal name = dsToIfL (tcIfaceGlobal name)
+
+dsLookupGlobalId :: HasDebugCallStack => Name -> DsM Id
+dsLookupGlobalId name = tyThingId <$> dsLookupGlobal name
+
+dsLookupTyCon :: Name -> DsM TyCon
+dsLookupTyCon name = tyThingTyCon <$> dsLookupGlobal name
+
+dsLookupDataCon :: Name -> DsM DataCon
+dsLookupDataCon name = tyThingDataCon <$> dsLookupGlobal name
+
+dsLookupConLike :: Name -> DsM ConLike
+dsLookupConLike name = tyThingConLike <$> dsLookupGlobal name
+
+
+{- *********************************************************************
+*                                                                      *
+                Other monadic operations
+*                                                                      *
+********************************************************************* -}
+
+dsGetFamInstEnvs :: DsM FamInstEnvs
+-- Gets both the external-package inst-env
+-- and the home-pkg inst env (includes module being compiled)
+dsGetFamInstEnvs
+  = do { eps <- getEps; env <- getGblEnv
+       ; return (eps_fam_inst_env eps, ds_fam_inst_env env) }
+
+dsGetMetaEnv :: DsM (NameEnv DsMetaVal)
+dsGetMetaEnv = do { env <- getLclEnv; return (dsl_meta env) }
+
+dsGetGlobalRdrEnv :: DsM GlobalRdrEnv
+dsGetGlobalRdrEnv = ds_gbl_rdr_env <$> getGblEnv
+
+-- | The @COMPLETE@ pragmas that are in scope.
+dsGetCompleteMatches :: DsM DsCompleteMatches
+dsGetCompleteMatches = ds_complete_matches <$> getGblEnv
+
+dsLookupMetaEnv :: Name -> DsM (Maybe DsMetaVal)
+dsLookupMetaEnv name = do { env <- getLclEnv; return (lookupNameEnv (dsl_meta env) name) }
+
+dsExtendMetaEnv :: DsMetaEnv -> DsM a -> DsM a
+dsExtendMetaEnv menv thing_inside
+  = updLclEnv (\env -> env { dsl_meta = dsl_meta env `plusNameEnv` menv }) thing_inside
+
+discardWarningsDs :: DsM a -> DsM a
+-- Ignore warnings inside the thing inside;
+-- used to ignore inaccessible cases etc. inside generated code
+discardWarningsDs thing_inside
+  = do  { env <- getGblEnv
+        ; old_msgs <- readTcRef (ds_msgs env)
+
+        ; result <- thing_inside
+
+        -- Revert messages to old_msgs
+        ; writeTcRef (ds_msgs env) old_msgs
+
+        ; return result }
+
+-- | Inject a trace message into the compiled program. Whereas
+-- pprTrace prints out information *while compiling*, pprRuntimeTrace
+-- captures that information and causes it to be printed *at runtime*
+-- using Debug.Trace.trace.
+--
+--   pprRuntimeTrace hdr doc expr
+--
+-- will produce an expression that looks like
+--
+--   trace (hdr + doc) expr
+--
+-- When using this to debug a module that Debug.Trace depends on,
+-- it is necessary to import {-# SOURCE #-} Debug.Trace () in that
+-- module. We could avoid this inconvenience by wiring in Debug.Trace.trace,
+-- but that doesn't seem worth the effort and maintenance cost.
+pprRuntimeTrace :: String   -- ^ header
+                -> SDoc     -- ^ information to output
+                -> CoreExpr -- ^ expression
+                -> DsM CoreExpr
+pprRuntimeTrace str doc expr = do
+  traceId <- dsLookupKnownOccId traceIdOcc
+  unpackCStringId <- dsLookupKnownKeyId unpackCStringIdKey
+  dflags <- getDynFlags
+  let message :: CoreExpr
+      message = App (Var unpackCStringId) $
+                Lit $ mkLitString $ showSDoc dflags (hang (text str) 4 doc)
+  return $ mkApps (Var traceId) [Type (exprType expr), message, expr]
+
+-- | See 'getCCIndexM'.
+getCCIndexDsM :: FastString -> DsM CostCentreIndex
+getCCIndexDsM = getCCIndexM ds_cc_st
+
+emitStaticBinds :: [(Id,CoreExpr)] -> DsM ()
+emitStaticBinds static_binds
+  = do { env <- getGblEnv
+       ; liftIO $ modifyIORef' (ds_static_binds env) (`appOL` toOL static_binds) }
+
+getStaticBinds :: DsM (OrdList (Id,CoreExpr))
+getStaticBinds = do { env <- getGblEnv
+                    ; liftIO $ readIORef (ds_static_binds env) }

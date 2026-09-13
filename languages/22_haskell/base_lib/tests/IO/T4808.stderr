@@ -1,0 +1,7 @@
+T4808: Uncaught exception ghc-internal:GHC.Internal.IO.Exception.IOException:
+
+T4808.test: hGetLine: illegal operation (handle is closed)
+
+HasCallStack backtrace:
+  ioException, called at libraries/ghc-internal/src/GHC/Internal/IO/Handle/Internals.hs:347:20 in ghc-internal:GHC.Internal.IO.Handle.Internals
+

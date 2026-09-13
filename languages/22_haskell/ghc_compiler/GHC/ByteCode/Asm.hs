@@ -1,0 +1,1178 @@
+{-# LANGUAGE CPP             #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE MagicHash       #-}
+{-# LANGUAGE UnboxedTuples   #-}
+{-# LANGUAGE PatternSynonyms   #-}
+{-# OPTIONS_GHC -optc-DNON_POSIX_SOURCE #-}
+{-# LANGUAGE LambdaCase #-}
+--
+--
+--  (c) The University of Glasgow 2002-2006
+--
+
+-- | Bytecode assembler and linker
+module GHC.ByteCode.Asm (
+        assembleBCOs,
+        bcoFreeNames,
+        SizedSeq, sizeSS, ssElts,
+        iNTERP_STACK_CHECK_THRESH,
+        mkNativeCallInfoLit,
+
+        -- * For testing
+        assembleBCO
+  ) where
+
+import GHC.Prelude hiding ( any, words )
+
+import Data.Maybe
+import qualified GHC.Data.Strict as Strict
+
+import GHC.ByteCode.Instr
+import GHC.ByteCode.InfoTable
+import GHC.ByteCode.Types
+import GHC.Runtime.Heap.Layout ( fromStgWord, StgWord )
+
+import GHC.Types.Name
+import GHC.Types.Name.Set
+import GHC.Types.Literal
+import GHC.Types.Literal.Floating
+import GHC.Types.Unique.DSet
+import GHC.Types.SptEntry
+import GHC.Types.Unique.FM
+import GHC.Unit.Types
+
+import GHC.Utils.Outputable ( Outputable(..), text, (<+>), vcat )
+import GHC.Utils.Panic
+
+import GHC.Builtin.WiredIn.Prim ( addrPrimTy )
+import GHC.Core.Type          ( isUnliftedType )
+import GHC.Core.TyCo.Compare  ( eqType )
+import GHC.Core.TyCon
+import GHC.Data.SizedSeq
+import GHC.Data.SmallArray
+
+import GHC.StgToCmm.Layout     ( ArgRep(..) )
+import GHC.Cmm.Expr
+import GHC.Cmm.Reg             ( GlobalArgRegs(..) )
+import GHC.Cmm.CallConv        ( allArgRegsCover )
+import GHC.Platform
+import GHC.Platform.Profile
+import Language.Haskell.Syntax.Module.Name
+
+import Control.Monad
+import qualified Control.Monad.Trans.State.Strict as MTL
+
+import qualified Data.Array.Unboxed as Array
+import qualified Data.Array.IO as Array
+import Data.Array.Base  ( UArray(..), numElements, unsafeFreeze )
+
+#if ! defined(DEBUG)
+import Data.Array.Base  ( unsafeWrite )
+#endif
+
+import Foreign hiding (shiftL, shiftR)
+import Data.ByteString (ByteString)
+import Data.Char  (ord)
+import GHC.Float (castFloatToWord32, castDoubleToWord64)
+
+import qualified Data.List as List ( any )
+import GHC.Exts
+import GHC.Core.DataCon
+import GHC.Data.FlatBag
+import GHC.Types.Id
+import Data.List (unfoldr)
+import GHC.Types.RepType (typePrimRepU)
+
+
+-- -----------------------------------------------------------------------------
+-- Unlinked BCOs
+
+-- CompiledByteCode represents the result of byte-code
+-- compiling a bunch of functions and data types
+
+-- | Finds external references.  Remember to remove the names
+-- defined by this group of BCOs themselves
+bcoFreeNames :: UnlinkedBCO -> UniqDSet Name
+bcoFreeNames bco
+  = bco_refs bco
+  where
+    bco_refs UnlinkedBCO{unlinkedBCOName, unlinkedBCOLits, unlinkedBCOPtrs}
+        = unionManyUniqDSets (
+             mkUniqDSet [ n | BCOPtrName n <- elemsFlatBag unlinkedBCOPtrs ] :
+             mkUniqDSet [ n | BCONPtrItbl n <- elemsFlatBag unlinkedBCOLits ] :
+             map bco_refs [ bco | BCOPtrBCO bco <- elemsFlatBag unlinkedBCOPtrs ]
+          ) `uniqDSetMinusUniqSet` mkNameSet [unlinkedBCOName]
+    bco_refs UnlinkedStaticCon{ unlinkedStaticConName, unlinkedStaticConDataConName
+                              , unlinkedStaticConLits, unlinkedStaticConPtrs }
+        = unionManyUniqDSets (
+             mkUniqDSet [ unlinkedStaticConDataConName ] :
+             mkUniqDSet [ n | BCOPtrName n <- elemsFlatBag unlinkedStaticConPtrs ] :
+             mkUniqDSet [ n | BCONPtrItbl n <- elemsFlatBag unlinkedStaticConLits ] :
+             map bco_refs [ bco | BCOPtrBCO bco <- elemsFlatBag unlinkedStaticConPtrs ]
+          )
+          `uniqDSetMinusUniqSet` mkNameSet [ unlinkedStaticConName ]
+
+-- -----------------------------------------------------------------------------
+-- The bytecode assembler
+
+-- The object format for bytecodes is: 16 bits for the opcode, and 16
+-- for each field -- so the code can be considered a sequence of
+-- 16-bit ints.  Each field denotes either a stack offset or number of
+-- items on the stack (eg SLIDE), and index into the pointer table (eg
+-- PUSH_G), an index into the literal table (eg PUSH_I/D/L), or a
+-- bytecode address in this BCO.
+
+-- Top level assembler fn.
+assembleBCOs
+  :: Profile
+  -> FlatBag ProtoBCO
+  -> [TyCon]
+  -> [(Name, ByteString)]
+  -> Maybe InternalModBreaks
+  -> [SptEntry]
+  -> Strict.Maybe ByteCodeHpcInfo
+  -> IO CompiledByteCode
+assembleBCOs profile proto_bcos tycons top_strs modbreaks spt_entries use_hpc = do
+  -- TODO: the profile should be bundled with the interpreter: the rts ways are
+  -- fixed for an interpreter
+  let itbls = mkITbls profile tycons
+  bcos    <- mapM (assembleBCO (profilePlatform profile)) proto_bcos
+  return CompiledByteCode
+    { bc_bcos = bcos
+    , bc_itbls = itbls
+    , bc_strs = top_strs
+    , bc_breaks = modbreaks
+    , bc_spt_entries = spt_entries
+    , bc_hpc_info = use_hpc
+    }
+
+-- Note [Allocating string literals]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Our strategy for handling top-level string literal bindings is described in
+-- Note [Generating code for top-level string literal bindings] in GHC.StgToByteCode,
+-- but not all Addr# literals in a program are guaranteed to be lifted to the
+-- top level. Our strategy for handling local Addr# literals is somewhat simpler:
+-- after assembling, we find all the BCONPtrStr arguments in the program, malloc
+-- memory for them, and bake the resulting addresses into the instruction stream
+-- in the form of BCONPtrWord arguments.
+--
+-- We used to allocate remote buffers for BCONPtrStr ByteStrings when
+-- assembling, but this gets in the way of bytecode serialization: we
+-- want the ability to serialize and reload assembled bytecode, so
+-- it's better to preserve BCONPtrStr as-is, and only perform the
+-- actual allocation at link-time.
+--
+-- Note that, as with top-level string literal bindings, this memory is never
+-- freed, so it just leaks if the BCO is unloaded. See Note [Generating code for
+-- top-level string literal bindings] in GHC.StgToByteCode for some discussion
+-- about why.
+--
+
+data RunAsmReader = RunAsmReader { isn_array :: {-# UNPACK #-} !(Array.IOUArray Int Word16)
+                                 , ptr_array :: {-# UNPACK #-} !(SmallMutableArrayIO BCOPtr)
+                                 , lit_array :: {-# UNPACK #-} !(SmallMutableArrayIO BCONPtr)
+                                 }
+
+data RunAsmResult = RunAsmResult { final_isn_array :: !(Array.UArray Int Word16)
+                                 , final_ptr_array :: !(SmallArray BCOPtr)
+                                 , final_lit_array :: !(SmallArray BCONPtr) }
+
+-- How many words we have written so far.
+data AsmState = AsmState { nisn :: !Int, nptr :: !Int, nlit :: !Int }
+
+
+{-# NOINLINE inspectInstrs #-}
+-- | Perform analysis of the bytecode to determine
+--  1. How many instructions we will produce
+--  2. If we are going to need long jumps.
+--  3. The offsets that labels refer to
+inspectInstrs :: Platform -> Bool -> Word -> [BCInstr] -> InspectState
+inspectInstrs platform long_jump e instrs =
+  inspectAsm long_jump e (mapM_ (assembleInspectAsm platform) instrs)
+
+{-# NOINLINE runInstrs #-}
+-- | Assemble the bytecode from the instructions.
+runInstrs ::  Platform -> Bool -> InspectState -> [BCInstr] -> IO RunAsmResult
+runInstrs platform long_jumps is_state instrs = do
+  -- Produce arrays of exactly the right size, corresponding to the result of inspectInstrs.
+  isn_array <- Array.newArray_ (0, (fromIntegral $ instrCount is_state) - 1)
+  ptr_array <- newSmallArrayIO (fromIntegral $ ptrCount is_state) undefined
+  lit_array <- newSmallArrayIO (fromIntegral $ litCount is_state) undefined
+  let env :: LocalLabel -> Word
+      env lbl = fromMaybe
+        (pprPanic "assembleBCO.findLabel" (ppr lbl))
+        (lookupUFM (lblEnv is_state) lbl)
+  let initial_state  = AsmState 0 0 0
+  let initial_reader = RunAsmReader{..}
+  runAsm long_jumps env initial_reader initial_state (mapM_ (\i -> assembleRunAsm platform i) instrs)
+  final_isn_array <- unsafeFreeze isn_array
+  final_ptr_array <- unsafeFreezeSmallArrayIO ptr_array
+  final_lit_array <- unsafeFreezeSmallArrayIO lit_array
+  return $ RunAsmResult {..}
+
+assembleRunAsm :: Platform -> BCInstr -> RunAsm ()
+assembleRunAsm p i = assembleI @RunAsm p i
+
+assembleInspectAsm :: Platform -> BCInstr -> InspectAsm ()
+assembleInspectAsm p i = assembleI @InspectAsm p i
+
+assembleBCO :: Platform -> ProtoBCO -> IO UnlinkedBCO
+assembleBCO platform
+            (ProtoStaticCon { protoStaticConName
+                            , protoStaticCon = dc
+                            , protoStaticConData = args
+                            }) = do
+  let fullword_args = packSubwordArgs platform args
+  let ptrs    = foldr mappendFlatBag emptyFlatBag (mapMaybe idBCOArg fullword_args)
+  let nonptrs = foldr mappendFlatBag emptyFlatBag (mapMaybe litBCOArg fullword_args)
+  pure UnlinkedStaticCon
+    { unlinkedStaticConName = protoStaticConName
+    , unlinkedStaticConDataConName = dataConName dc
+    , unlinkedStaticConLits = nonptrs
+    , unlinkedStaticConPtrs = ptrs
+    , unlinkedStaticConIsUnlifted = isUnliftedType (idType (dataConWrapId dc))
+    }
+  where
+    litBCOArg (Left l) = Just $ case l of
+      OnlyOne np -> unitFlatBag np
+      OnlyTwo np1 np2 -> TupleFlatBag np1 np2
+    litBCOArg (Right var)
+      -- Addr# literals are non-pointers
+      | idType var `eqType` addrPrimTy
+      = Just $ unitFlatBag (BCONPtrAddr (getName var))
+      | otherwise
+      = Nothing
+
+    idBCOArg (Left _) = Nothing
+    idBCOArg (Right var)
+      | idType var `eqType` addrPrimTy
+      = Nothing
+      | Just prim <- isPrimOpId_maybe var
+      = Just $ unitFlatBag (BCOPtrPrimOp prim)
+      | otherwise
+      = Just $ unitFlatBag (BCOPtrName (getName var))
+
+assembleBCO platform
+            (ProtoBCO { protoBCOName       = nm
+                      , protoBCOInstrs     = instrs
+                      , protoBCOBitmap     = bitmap
+                      , protoBCOBitmapSize = bsize
+                      , protoBCOArity      = arity }) = do
+  -- pass 1: collect up the offsets of the local labels.
+  let initial_offset = 0
+
+      -- Jump instructions are variable-sized, there are long and short variants
+      -- depending on the magnitude of the offset.  However, we can't tell what
+      -- size instructions we will need until we have calculated the offsets of
+      -- the labels, which depends on the size of the instructions...  So we
+      -- first create the label environment assuming that all jumps are short,
+      -- and if the final size is indeed small enough for short jumps, we are
+      -- done.  Otherwise, we repeat the calculation, and we force all jumps in
+      -- this BCO to be long.
+      is0 = inspectInstrs platform False initial_offset instrs
+      (is1, long_jumps)
+        | isLargeInspectState is0
+                    = (inspectInstrs platform True initial_offset instrs, True)
+        | otherwise = (is0, False)
+
+
+  -- pass 2: run assembler and generate instructions, literals and pointers
+  RunAsmResult{..} <- runInstrs platform long_jumps is1 instrs
+
+  -- precomputed size should be equal to final size
+  massertPpr (fromIntegral (instrCount is1) == numElements final_isn_array
+              && fromIntegral (ptrCount is1) == sizeofSmallArray final_ptr_array
+              && fromIntegral (litCount is1) == sizeofSmallArray final_lit_array)
+             (text "bytecode instruction count mismatch")
+
+  let !insns_arr =  mkBCOByteArray $ final_isn_array
+      !bitmap_arr = mkBCOByteArray $ mkBitmapArray bsize bitmap
+      ul_bco = UnlinkedBCO { unlinkedBCOName = nm
+                           , unlinkedBCOArity = arity
+                           , unlinkedBCOInstrs = insns_arr
+                           , unlinkedBCOBitmap = bitmap_arr
+                           , unlinkedBCOLits = fromSmallArray final_lit_array
+                           , unlinkedBCOPtrs = fromSmallArray final_ptr_array
+                           }
+
+  -- 8 Aug 01: Finalisers aren't safe when attached to non-primitive
+  -- objects, since they might get run too early.  Disable this until
+  -- we figure out what to do.
+  -- when (notNull malloced) (addFinalizer ul_bco (mapM_ zonk malloced))
+
+  return ul_bco
+
+-- | Pack sub-word literals (which should appear contiguously in the argument
+-- list) into full words, and leave full-word-sized arguments alone.
+packSubwordArgs :: Platform -> [Either Literal Id] -> [Either (OneOrTwo BCONPtr) Id]
+packSubwordArgs platform = map packWord . groupWords
+  where
+    -- Assumes packed sub-words are always ordered from largest to smallest literal
+    packWord :: Either [Literal] Id -> Either (OneOrTwo BCONPtr) Id
+    packWord (Right v)    = Right v -- already word size
+    packWord (Left [lit]) = Left $ literal platform lit -- single >=word_size literal
+    packWord (Left lits)  = Left $ OnlyOne (BCONPtrWord packedWord)
+      where
+        packedWord = go 0 lits
+
+        go :: Int -> [Literal] -> Word
+        go _      []     = 0
+        go offset (l:ls) =
+          (subwordLiteral l `shiftBy` offset) .|. go (offset + litBits l) ls
+
+        shiftBy :: Word -> Int -> Word
+        shiftBy w offset = case platformByteOrder platform of
+          LittleEndian -> w `unsafeShiftL` offset
+          BigEndian    -> w `unsafeShiftR` offset
+
+        subwordLiteral :: Literal -> Word
+        subwordLiteral l = case literal platform l of
+          OnlyOne (BCONPtrWord w) -> w
+          _ -> pprPanic "packSubwordArgs: expected a subword literal to lower to one BCONPtrWord" (ppr l)
+
+        litBits :: Literal -> Int
+        litBits l = litBytes l * 8
+
+    -- Group literals into lists of literals making up a full word, where in
+    -- singleton lists the literal may be larger than a word
+    -- (e.g. Word64 in 32bit platform)
+    groupWords :: [Either Literal Id] -> [Either [Literal] Id]
+    groupWords = unfoldr step
+      where
+        step [] = Nothing
+        step (Right v:xs) = Just (Right v, xs)
+        step (Left l:xs) =
+          let (chunk, rest) = takeWord [] (Left l:xs)
+          in Just (Left chunk, rest)
+
+        -- take subwords from list until a full-word is accumulated
+        takeWord acc rest
+          -- reached a full word in the accumulator; exit!
+          | sum (map litBytes acc) == ws
+          = (reverse acc, rest)
+        takeWord [sing] rest
+          -- a larger than word single lit in the accumulator; exit!
+          | litBytes sing > ws
+          = ([sing], rest)
+        takeWord acc (Left l:ls)
+          -- contiguous lits should be sub-words of right size to form full
+          -- word; else, the exit condition is never reached.
+          = takeWord (l:acc) ls
+        takeWord acc _
+          = pprPanic "packSubwordArgs: Reached Ptr or end of list before forming a full word from contiguous literals."
+                     (text "acc:" <+> ppr acc)
+
+    litBytes = primRepSizeB platform . typePrimRepU . literalType
+    ws = platformWordSizeInBytes platform
+
+-- | Construct a word-array containing an @StgLargeBitmap@.
+mkBitmapArray :: Word -> [StgWord] -> UArray Int Word
+-- Here the return type must be an array of Words, not StgWords,
+-- because the underlying ByteArray# will end up as a component
+-- of a BCO object.
+mkBitmapArray bsize bitmap
+  = Array.listArray (0, length bitmap) $
+      fromIntegral bsize : map (fromInteger . fromStgWord) bitmap
+
+
+data Operand
+  = Op Word
+  | IOp Int
+  | SmallOp Word16
+  | LabelOp LocalLabel
+
+wOp :: WordOff -> Operand
+wOp = Op . fromIntegral
+
+bOp :: ByteOff -> Operand
+bOp = Op . fromIntegral
+
+truncHalfWord :: Platform -> HalfWord -> Operand
+truncHalfWord platform w = case platformWordSize platform of
+  PW4 | w <= 65535      -> Op (fromIntegral w)
+  PW8 | w <= 4294967295 -> Op (fromIntegral w)
+  _ -> pprPanic "GHC.ByteCode.Asm.truncHalfWord" (ppr w)
+
+
+ptr :: MonadAssembler m => BCOPtr -> m Word
+ptr = ioptr . return
+
+type LabelEnv = LocalLabel -> Word
+
+largeOp :: Bool -> Operand -> Bool
+largeOp long_jumps op = case op of
+   SmallOp _ -> False
+   Op w      -> isLargeW w
+   IOp i     -> isLargeI i
+   LabelOp _ -> long_jumps
+
+newtype RunAsm a = RunAsm' { runRunAsm :: Bool
+                                       -> LabelEnv
+                                       -> RunAsmReader
+                                       -> AsmState
+                                       -> IO (AsmState, a) }
+
+pattern RunAsm :: (Bool -> LabelEnv -> RunAsmReader -> AsmState -> IO (AsmState, a))
+                  -> RunAsm a
+pattern RunAsm m <- RunAsm' m
+  where
+    RunAsm m = RunAsm' (oneShot $ \a -> oneShot $ \b -> oneShot $ \c -> oneShot $ \d -> m a b c d)
+{-# COMPLETE RunAsm #-}
+
+instance Functor RunAsm where
+  fmap f (RunAsm x) = RunAsm (\a b c !s -> fmap (fmap f) (x a b c s))
+
+instance Applicative RunAsm where
+  pure x = RunAsm $ \_ _ _ !s -> pure (s, x)
+  (RunAsm f) <*> (RunAsm x) = RunAsm $ \a b c !s -> do
+                                  (!s', f') <- f a b c s
+                                  (!s'', x') <- x a b c s'
+                                  return (s'', f' x')
+  {-# INLINE (<*>) #-}
+
+
+instance Monad RunAsm where
+  return  = pure
+  (RunAsm m) >>= f = RunAsm $ \a b c !s -> m a b c s >>= \(s', r) -> runRunAsm (f r) a b c s'
+  {-# INLINE (>>=) #-}
+
+runAsm :: Bool -> LabelEnv -> RunAsmReader -> AsmState -> RunAsm a -> IO a
+runAsm long_jumps e r s (RunAsm'{runRunAsm}) = fmap snd $ runRunAsm long_jumps e r s
+
+expand :: PlatformWordSize -> Bool -> Operand -> RunAsm ()
+expand word_size largeArgs o = do
+  e <- askEnv
+  case o of
+    (SmallOp w) -> writeIsn w
+    (LabelOp w) -> let !r = e w in handleLargeArg r
+    (Op w) -> handleLargeArg w
+    (IOp i) -> handleLargeArg i
+
+  where
+    handleLargeArg :: Integral a => a -> RunAsm ()
+    handleLargeArg w  =
+      if largeArgs
+        then largeArg word_size (fromIntegral w)
+        else writeIsn (fromIntegral w)
+
+lift :: IO a -> RunAsm a
+lift io = RunAsm $ \_ _ _ s -> io >>= \a -> pure (s, a)
+
+askLongJumps :: RunAsm Bool
+askLongJumps = RunAsm $ \a _ _ s -> pure (s, a)
+
+askEnv :: RunAsm LabelEnv
+askEnv = RunAsm $ \_ b _ s -> pure (s, b)
+
+writePtr :: BCOPtr -> RunAsm Word
+writePtr w
+            = RunAsm $ \_ _ (RunAsmReader{..}) asm -> do
+              writeSmallArrayIO ptr_array (nptr asm) w
+              let !n' = nptr asm + 1
+              let !asm' = asm { nptr = n' }
+              return (asm', fromIntegral (nptr asm))
+
+writeLit :: BCONPtr -> RunAsm Word
+writeLit w = RunAsm $ \_ _ (RunAsmReader{..}) asm -> do
+              writeSmallArrayIO lit_array (nlit asm) w
+              let !n' = nlit asm + 1
+              let !asm' = asm { nlit = n' }
+              return (asm', fromIntegral (nlit asm))
+
+writeLits :: OneOrTwo BCONPtr -> RunAsm Word
+writeLits (OnlyOne l) = writeLit l
+writeLits (OnlyTwo l1 l2) = writeLit l1 <* writeLit l2
+
+writeIsn :: Word16 -> RunAsm ()
+writeIsn w = RunAsm $ \_ _ (RunAsmReader{..}) asm -> do
+#if defined(DEBUG)
+              Array.writeArray isn_array (nisn asm) w
+#else
+              unsafeWrite isn_array (nisn asm) w
+#endif
+              let !n' = nisn asm + 1
+              let !asm' = asm { nisn = n' }
+              return (asm', ())
+
+{-# INLINE any #-}
+-- Any is unrolled manually so that the call in `emit` can be eliminated without
+-- relying on SpecConstr (which does not work across modules).
+any :: (a -> Bool) -> [a] -> Bool
+any _ [] = False
+any f [x] = f x
+any f [x,y] = f x || f y
+any f [x,y,z] = f x || f y || f z
+any f [x1,x2,x3,x4] = f x1 || f x2 || f x3 || f x4
+any f [x1,x2,x3,x4, x5] = f x1 || f x2 || f x3 || f x4 || f x5
+any f [x1,x2,x3,x4,x5,x6] = f x1 || f x2 || f x3 || f x4 || f x5 || f x6
+any f xs = List.any f xs
+
+{-# INLINE mapM6_ #-}
+mapM6_ :: Monad m => (a -> m b) -> [a] -> m ()
+mapM6_ _ [] = return ()
+mapM6_ f [x] = () <$ f x
+mapM6_ f [x,y] = () <$ f x <* f y
+mapM6_ f [x,y,z] = () <$ f x <* f y <* f z
+mapM6_ f [a1,a2,a3,a4] = () <$ f a1 <* f a2 <* f a3 <* f a4
+mapM6_ f [a1,a2,a3,a4,a5] = () <$ f a1 <* f a2 <* f a3 <* f a4 <* f a5
+mapM6_ f [a1,a2,a3,a4,a5,a6] = () <$ f a1 <* f a2 <* f a3 <* f a4 <* f a5 <* f a6
+mapM6_ f xs = mapM_ f xs
+
+instance MonadAssembler RunAsm where
+  ioptr p_io = do
+    p <- lift p_io
+    writePtr p
+  lit lits = writeLits lits
+
+  label _ = return ()
+
+  emit pwordsize w ops = do
+    long_jumps <- askLongJumps
+    -- See the definition of `any` above
+    let largeArgs = any (largeOp long_jumps) ops
+    let opcode
+          | largeArgs = largeArgInstr w
+          | otherwise = w
+    writeIsn opcode
+    mapM6_ (expand pwordsize largeArgs) ops
+
+  {-# INLINE emit #-}
+  {-# INLINE label #-}
+  {-# INLINE lit #-}
+  {-# INLINE ioptr #-}
+
+type LabelEnvMap = UniqFM LocalLabel Word
+
+data InspectState = InspectState
+  { instrCount :: !Word
+  , ptrCount :: !Word
+  , litCount :: !Word
+  , lblEnv :: LabelEnvMap
+  }
+
+instance Outputable InspectState where
+  ppr (InspectState i p l m) = text "InspectState" <+> ppr [ppr i, ppr p, ppr l, ppr (sizeUFM m)]
+
+isLargeInspectState :: InspectState -> Bool
+isLargeInspectState InspectState{..} =
+  isLargeW (fromIntegral $ sizeUFM lblEnv)
+    || isLargeW instrCount
+
+newtype InspectEnv = InspectEnv { _inspectLongJumps :: Bool
+                                }
+
+newtype InspectAsm a = InspectAsm' { runInspectAsm :: InspectEnv -> InspectState -> (# InspectState,  a #) }
+
+pattern InspectAsm :: (InspectEnv -> InspectState -> (# InspectState, a #))
+                   -> InspectAsm a
+pattern InspectAsm m <- InspectAsm' m
+  where
+    InspectAsm m = InspectAsm' (oneShot $ \a -> oneShot $ \b -> m a b)
+{-# COMPLETE InspectAsm #-}
+
+instance Functor InspectAsm where
+  fmap f (InspectAsm k) = InspectAsm $ \a b -> case k a b of
+                                                  (# b', c #) -> (# b', f c #)
+
+instance Applicative InspectAsm where
+  pure x = InspectAsm $ \_ s -> (# s, x #)
+  (InspectAsm f) <*> (InspectAsm x) = InspectAsm $ \a b -> case f a b of
+                                                              (# s', f' #) ->
+                                                                case x a s' of
+                                                                  (# s'', x' #) -> (# s'', f' x' #)
+
+instance Monad InspectAsm where
+  return = pure
+  (InspectAsm m) >>= f = InspectAsm $ \ a b -> case m a b of
+                                                (# s', a' #) -> runInspectAsm (f a') a s'
+
+get_ :: InspectAsm InspectState
+get_ = InspectAsm $ \_ b -> (# b, b #)
+
+put_ :: InspectState -> InspectAsm ()
+put_ !s = InspectAsm $ \_ _ -> (# s, () #)
+
+modify_ :: (InspectState -> InspectState) -> InspectAsm ()
+modify_ f = InspectAsm $ \_ s -> let !s' = f s in (# s', () #)
+
+ask_ :: InspectAsm InspectEnv
+ask_ = InspectAsm $ \a b -> (# b, a #)
+
+inspectAsm :: Bool -> Word -> InspectAsm () -> InspectState
+inspectAsm long_jumps initial_offset (InspectAsm s) =
+  case s (InspectEnv long_jumps) (InspectState initial_offset 0 0 emptyUFM) of
+    (# res, () #) -> res
+{-# INLINE inspectAsm #-}
+
+
+
+instance MonadAssembler InspectAsm where
+  ioptr _ = do
+    s <- get_
+    let n = ptrCount s
+    put_ (s { ptrCount = n + 1 })
+    return n
+
+  lit ls = do
+    s <- get_
+    let n = litCount s
+    put_ (s { litCount = n + oneTwoLength ls })
+    return n
+
+  label lbl = modify_ (\s -> let !count = instrCount s in let !env' = addToUFM (lblEnv s) lbl count in s { lblEnv = env' })
+
+  emit pwordsize _ ops = do
+    InspectEnv long_jumps <- ask_
+    -- Size is written in this way as `mapM6_` is also used by RunAsm, and guaranteed
+    -- to unroll for arguments up to size 6.
+    let size = (MTL.execState (mapM6_ (\x -> MTL.modify (count' x +)) ops) 0) + 1
+        largeOps = any (largeOp long_jumps) ops
+        bigSize = largeArg16s pwordsize
+        count' = if largeOps then countLarge bigSize else countSmall bigSize
+
+    s <- get_
+    put_ (s { instrCount = instrCount s + size })
+
+  {-# INLINE emit #-}
+  {-# INLINE label #-}
+  {-# INLINE lit #-}
+  {-# INLINE ioptr #-}
+
+count :: Word -> Bool -> Operand -> Word
+count _ _ (SmallOp _)          = 1
+count big largeOps (LabelOp _) = if largeOps then big else 1
+count big largeOps (Op _)      = if largeOps then big else 1
+count big largeOps (IOp _)     = if largeOps then big else 1
+{-# INLINE count #-}
+
+countSmall, countLarge :: Word -> Operand -> Word
+countLarge big x = count big True x
+countSmall big x = count big False x
+
+
+-- Bring in all the bci_ bytecode constants.
+#include "Bytecodes.h"
+
+largeArgInstr :: Word16 -> Word16
+largeArgInstr bci = bci_FLAG_LARGE_ARGS .|. bci
+
+{-# INLINE largeArg #-}
+largeArg :: PlatformWordSize -> Word64 -> RunAsm ()
+largeArg wsize w = case wsize of
+   PW8 ->  do writeIsn (fromIntegral (w `shiftR` 48))
+              writeIsn (fromIntegral (w `shiftR` 32))
+              writeIsn (fromIntegral (w `shiftR` 16))
+              writeIsn (fromIntegral w)
+   PW4 -> assertPpr (w < fromIntegral (maxBound :: Word32))
+                    (text "largeArg too big:" <+> ppr w) $ do
+          writeIsn (fromIntegral (w `shiftR` 16))
+          writeIsn (fromIntegral w)
+
+largeArg16s :: PlatformWordSize -> Word
+largeArg16s pwordsize = case pwordsize of
+   PW8 -> 4
+   PW4 -> 2
+
+data OneOrTwo a = OnlyOne a | OnlyTwo a a deriving (Functor)
+
+oneTwoLength :: OneOrTwo a -> Word
+oneTwoLength (OnlyOne {}) = 1
+oneTwoLength (OnlyTwo {}) = 2
+
+class Monad m => MonadAssembler m where
+  ioptr :: IO BCOPtr -> m Word
+  lit   :: OneOrTwo BCONPtr -> m Word
+  label :: LocalLabel -> m ()
+  emit  :: PlatformWordSize -> Word16 -> [Operand] -> m ()
+
+lit1 :: MonadAssembler m => BCONPtr -> m Word
+lit1 p = lit (OnlyOne p)
+
+{-# SPECIALISE assembleI :: Platform -> BCInstr -> InspectAsm () #-}
+{-# SPECIALISE assembleI :: Platform -> BCInstr -> RunAsm () #-}
+
+assembleI :: forall m . MonadAssembler m
+          => Platform
+          -> BCInstr
+          -> m ()
+assembleI platform i = case i of
+  STKCHECK n               -> emit_ bci_STKCHECK [Op n]
+  PUSH_L o1                -> emit_ bci_PUSH_L [wOp o1]
+  PUSH_LL o1 o2            -> emit_ bci_PUSH_LL [wOp o1, wOp o2]
+  PUSH_LLL o1 o2 o3        -> emit_ bci_PUSH_LLL [wOp o1, wOp o2, wOp o3]
+  PUSH8 o1                 -> emit_ bci_PUSH8 [bOp o1]
+  PUSH16 o1                -> emit_ bci_PUSH16 [bOp o1]
+  PUSH32 o1                -> emit_ bci_PUSH32 [bOp o1]
+  PUSH8_W o1               -> emit_ bci_PUSH8_W [bOp o1]
+  PUSH16_W o1              -> emit_ bci_PUSH16_W [bOp o1]
+  PUSH32_W o1              -> emit_ bci_PUSH32_W [bOp o1]
+  PUSH_G nm                -> do p <- ptr (BCOPtrName nm)
+                                 emit_ bci_PUSH_G [Op p]
+  PUSH_PRIMOP op           -> do p <- ptr (BCOPtrPrimOp op)
+                                 emit_ bci_PUSH_G [Op p]
+  PUSH_BCO proto           -> do let ul_bco = assembleBCO platform proto
+                                 p <- ioptr (liftM BCOPtrBCO ul_bco)
+                                 emit_ bci_PUSH_G [Op p]
+  PUSH_ALTS proto pk
+                           -> do let ul_bco = assembleBCO platform proto
+                                 p <- ioptr (liftM BCOPtrBCO ul_bco)
+                                 emit_ (push_alts pk) [Op p]
+  PUSH_ALTS_TUPLE proto call_info tuple_proto
+                           -> do let ul_bco = assembleBCO platform proto
+                                     ul_tuple_bco = assembleBCO platform
+                                                                tuple_proto
+                                 p <- ioptr (liftM BCOPtrBCO ul_bco)
+                                 p_tup <- ioptr (liftM BCOPtrBCO ul_tuple_bco)
+                                 info <- lit $ word $ fromIntegral $
+                                              mkNativeCallInfoSig platform call_info
+                                 emit_ bci_PUSH_ALTS_T
+                                      [Op p, Op info, Op p_tup]
+  PUSH_PAD8                -> emit_ bci_PUSH_PAD8 []
+  PUSH_PAD16               -> emit_ bci_PUSH_PAD16 []
+  PUSH_PAD32               -> emit_ bci_PUSH_PAD32 []
+  PUSH_UBX8 litv           -> do np <- lit $ literal platform litv
+                                 emit_ bci_PUSH_UBX8 [Op np]
+  PUSH_UBX16 litv          -> do np <- lit $ literal platform litv
+                                 emit_ bci_PUSH_UBX16 [Op np]
+  PUSH_UBX32 litv          -> do np <- lit $ literal platform litv
+                                 emit_ bci_PUSH_UBX32 [Op np]
+  PUSH_UBX litv nws        -> do np <- lit $ literal platform litv
+                                 emit_ bci_PUSH_UBX [Op np, wOp nws]
+  -- see Note [Generating code for top-level string literal bindings] in GHC.StgToByteCode
+  PUSH_ADDR nm             -> do np <- lit1 (BCONPtrAddr nm)
+                                 emit_ bci_PUSH_UBX [Op np, SmallOp 1]
+
+  PUSH_APPLY_N             -> emit_ bci_PUSH_APPLY_N []
+  PUSH_APPLY_V             -> emit_ bci_PUSH_APPLY_V []
+  PUSH_APPLY_F             -> emit_ bci_PUSH_APPLY_F []
+  PUSH_APPLY_D             -> emit_ bci_PUSH_APPLY_D []
+  PUSH_APPLY_L             -> emit_ bci_PUSH_APPLY_L []
+  PUSH_APPLY_P             -> emit_ bci_PUSH_APPLY_P []
+  PUSH_APPLY_PP            -> emit_ bci_PUSH_APPLY_PP []
+  PUSH_APPLY_PPP           -> emit_ bci_PUSH_APPLY_PPP []
+  PUSH_APPLY_PPPP          -> emit_ bci_PUSH_APPLY_PPPP []
+  PUSH_APPLY_PPPPP         -> emit_ bci_PUSH_APPLY_PPPPP []
+  PUSH_APPLY_PPPPPP        -> emit_ bci_PUSH_APPLY_PPPPPP []
+
+  SLIDE     n by           -> emit_ bci_SLIDE [wOp n, wOp by]
+  ALLOC_AP  n              -> emit_ bci_ALLOC_AP [truncHalfWord platform n]
+  ALLOC_AP_NOUPD n         -> emit_ bci_ALLOC_AP_NOUPD [truncHalfWord platform n]
+  ALLOC_PAP arity n        -> emit_ bci_ALLOC_PAP [truncHalfWord platform arity, truncHalfWord platform n]
+  MKAP      off sz         -> emit_ bci_MKAP [wOp off, truncHalfWord platform sz]
+  MKPAP     off sz         -> emit_ bci_MKPAP [wOp off, truncHalfWord platform sz]
+  UNPACK    n              -> emit_ bci_UNPACK [wOp n]
+  PACK      dcon sz        -> do itbl_no <- lit1 (BCONPtrItbl (getName dcon))
+                                 emit_ bci_PACK [Op itbl_no, wOp sz]
+  LABEL     lbl            -> label lbl
+  TESTLT_I  i l            -> do np <- lit $ int i
+                                 emit_ bci_TESTLT_I [Op np, LabelOp l]
+  TESTEQ_I  i l            -> do np <- lit $ int i
+                                 emit_ bci_TESTEQ_I [Op np, LabelOp l]
+  TESTLT_W  w l            -> do np <- lit $ word w
+                                 emit_ bci_TESTLT_W [Op np, LabelOp l]
+  TESTEQ_W  w l            -> do np <- lit $ word w
+                                 emit_ bci_TESTEQ_W [Op np, LabelOp l]
+  TESTLT_I64  i l          -> do np <- lit $ word64 platform (fromIntegral i)
+                                 emit_ bci_TESTLT_I64 [Op np, LabelOp l]
+  TESTEQ_I64  i l          -> do np <- lit $ word64 platform (fromIntegral i)
+                                 emit_ bci_TESTEQ_I64 [Op np, LabelOp l]
+  TESTLT_I32  i l          -> do np <- lit $ word (fromIntegral i)
+                                 emit_ bci_TESTLT_I32 [Op np, LabelOp l]
+  TESTEQ_I32 i l           -> do np <- lit $ word (fromIntegral i)
+                                 emit_ bci_TESTEQ_I32 [Op np, LabelOp l]
+  TESTLT_I16  i l          -> do np <- lit $ word (fromIntegral i)
+                                 emit_ bci_TESTLT_I16 [Op np, LabelOp l]
+  TESTEQ_I16 i l           -> do np <- lit $ word (fromIntegral i)
+                                 emit_ bci_TESTEQ_I16 [Op np, LabelOp l]
+  TESTLT_I8  i l           -> do np <- lit $ word (fromIntegral i)
+                                 emit_ bci_TESTLT_I8 [Op np, LabelOp l]
+  TESTEQ_I8 i l            -> do np <- lit $ word (fromIntegral i)
+                                 emit_ bci_TESTEQ_I8 [Op np, LabelOp l]
+  TESTLT_W64  w l          -> do np <- lit $ word64 platform w
+                                 emit_ bci_TESTLT_W64 [Op np, LabelOp l]
+  TESTEQ_W64  w l          -> do np <- lit $ word64 platform w
+                                 emit_ bci_TESTEQ_W64 [Op np, LabelOp l]
+  TESTLT_W32  w l          -> do np <- lit $ word (fromIntegral w)
+                                 emit_ bci_TESTLT_W32 [Op np, LabelOp l]
+  TESTEQ_W32  w l          -> do np <- lit $ word (fromIntegral w)
+                                 emit_ bci_TESTEQ_W32 [Op np, LabelOp l]
+  TESTLT_W16  w l          -> do np <- lit $ word (fromIntegral w)
+                                 emit_ bci_TESTLT_W16 [Op np, LabelOp l]
+  TESTEQ_W16  w l          -> do np <- lit $ word (fromIntegral w)
+                                 emit_ bci_TESTEQ_W16 [Op np, LabelOp l]
+  TESTLT_W8  w l           -> do np <- lit $ word (fromIntegral w)
+                                 emit_ bci_TESTLT_W8 [Op np, LabelOp l]
+  TESTEQ_W8  w l           -> do np <- lit $ word (fromIntegral w)
+                                 emit_ bci_TESTEQ_W8 [Op np, LabelOp l]
+  TESTLT_F  f l            -> do np <- lit $ float platform f
+                                 emit_ bci_TESTLT_F [Op np, LabelOp l]
+  TESTEQ_F  f l            -> do np <- lit $ float platform f
+                                 emit_ bci_TESTEQ_F [Op np, LabelOp l]
+  TESTLT_D  d l            -> do np <- lit $ double platform d
+                                 emit_ bci_TESTLT_D [Op np, LabelOp l]
+  TESTEQ_D  d l            -> do np <- lit $ double platform d
+                                 emit_ bci_TESTEQ_D [Op np, LabelOp l]
+  TESTLT_P  i l            -> emit_ bci_TESTLT_P [SmallOp i, LabelOp l]
+  TESTEQ_P  i l            -> emit_ bci_TESTEQ_P [SmallOp i, LabelOp l]
+  CASEFAIL                 -> emit_ bci_CASEFAIL []
+  SWIZZLE   stkoff n       -> emit_ bci_SWIZZLE [wOp stkoff, IOp n]
+  JMP       l              -> emit_ bci_JMP [LabelOp l]
+  ENTER                    -> emit_ bci_ENTER []
+  RETURN rep               -> emit_ (return_non_tuple rep) []
+  RETURN_TUPLE             -> emit_ bci_RETURN_T []
+  CCALL off ffi i          -> do np <- lit1 $ BCONPtrFFIInfo ffi
+                                 emit_ bci_CCALL [wOp off, Op np, SmallOp i]
+  PRIMCALL                 -> emit_ bci_PRIMCALL []
+
+  OP_ADD w -> case w of
+    W64                   -> emit_ bci_OP_ADD_64 []
+    W32                   -> emit_ bci_OP_ADD_32 []
+    W16                   -> emit_ bci_OP_ADD_16 []
+    W8                    -> emit_ bci_OP_ADD_08 []
+    _                     -> unsupported_width
+  OP_SUB w -> case w of
+    W64                   -> emit_ bci_OP_SUB_64 []
+    W32                   -> emit_ bci_OP_SUB_32 []
+    W16                   -> emit_ bci_OP_SUB_16 []
+    W8                    -> emit_ bci_OP_SUB_08 []
+    _                     -> unsupported_width
+  OP_AND w -> case w of
+    W64                   -> emit_ bci_OP_AND_64 []
+    W32                   -> emit_ bci_OP_AND_32 []
+    W16                   -> emit_ bci_OP_AND_16 []
+    W8                    -> emit_ bci_OP_AND_08 []
+    _                     -> unsupported_width
+  OP_XOR w -> case w of
+    W64                   -> emit_ bci_OP_XOR_64 []
+    W32                   -> emit_ bci_OP_XOR_32 []
+    W16                   -> emit_ bci_OP_XOR_16 []
+    W8                    -> emit_ bci_OP_XOR_08 []
+    _                     -> unsupported_width
+  OP_OR w -> case w of
+    W64                    -> emit_ bci_OP_OR_64 []
+    W32                    -> emit_ bci_OP_OR_32 []
+    W16                    -> emit_ bci_OP_OR_16 []
+    W8                     -> emit_ bci_OP_OR_08 []
+    _                      -> unsupported_width
+  OP_NOT w -> case w of
+    W64                   -> emit_ bci_OP_NOT_64 []
+    W32                   -> emit_ bci_OP_NOT_32 []
+    W16                   -> emit_ bci_OP_NOT_16 []
+    W8                    -> emit_ bci_OP_NOT_08 []
+    _                     -> unsupported_width
+  OP_NEG w -> case w of
+    W64                   -> emit_ bci_OP_NEG_64 []
+    W32                   -> emit_ bci_OP_NEG_32 []
+    W16                   -> emit_ bci_OP_NEG_16 []
+    W8                    -> emit_ bci_OP_NEG_08 []
+    _                     -> unsupported_width
+  OP_MUL w -> case w of
+    W64                   -> emit_ bci_OP_MUL_64 []
+    W32                   -> emit_ bci_OP_MUL_32 []
+    W16                   -> emit_ bci_OP_MUL_16 []
+    W8                    -> emit_ bci_OP_MUL_08 []
+    _                     -> unsupported_width
+  OP_SHL w -> case w of
+    W64                   -> emit_ bci_OP_SHL_64 []
+    W32                   -> emit_ bci_OP_SHL_32 []
+    W16                   -> emit_ bci_OP_SHL_16 []
+    W8                    -> emit_ bci_OP_SHL_08 []
+    _                     -> unsupported_width
+  OP_ASR w -> case w of
+    W64                   -> emit_ bci_OP_ASR_64 []
+    W32                   -> emit_ bci_OP_ASR_32 []
+    W16                   -> emit_ bci_OP_ASR_16 []
+    W8                    -> emit_ bci_OP_ASR_08 []
+    _                     -> unsupported_width
+  OP_LSR w -> case w of
+    W64                   -> emit_ bci_OP_LSR_64 []
+    W32                   -> emit_ bci_OP_LSR_32 []
+    W16                   -> emit_ bci_OP_LSR_16 []
+    W8                    -> emit_ bci_OP_LSR_08 []
+    _                     -> unsupported_width
+
+  OP_NEQ w -> case w of
+    W64                   -> emit_ bci_OP_NEQ_64 []
+    W32                   -> emit_ bci_OP_NEQ_32 []
+    W16                   -> emit_ bci_OP_NEQ_16 []
+    W8                    -> emit_ bci_OP_NEQ_08 []
+    _                     -> unsupported_width
+  OP_EQ w -> case w of
+    W64                    -> emit_ bci_OP_EQ_64 []
+    W32                    -> emit_ bci_OP_EQ_32 []
+    W16                    -> emit_ bci_OP_EQ_16 []
+    W8                     -> emit_ bci_OP_EQ_08 []
+    _                      -> unsupported_width
+
+  OP_U_LT w -> case w of
+    W64                  -> emit_ bci_OP_U_LT_64 []
+    W32                  -> emit_ bci_OP_U_LT_32 []
+    W16                  -> emit_ bci_OP_U_LT_16 []
+    W8                   -> emit_ bci_OP_U_LT_08 []
+    _                    -> unsupported_width
+  OP_S_LT w -> case w of
+    W64                  -> emit_ bci_OP_S_LT_64 []
+    W32                  -> emit_ bci_OP_S_LT_32 []
+    W16                  -> emit_ bci_OP_S_LT_16 []
+    W8                   -> emit_ bci_OP_S_LT_08 []
+    _                    -> unsupported_width
+  OP_U_GE w -> case w of
+    W64                  -> emit_ bci_OP_U_GE_64 []
+    W32                  -> emit_ bci_OP_U_GE_32 []
+    W16                  -> emit_ bci_OP_U_GE_16 []
+    W8                   -> emit_ bci_OP_U_GE_08 []
+    _                    -> unsupported_width
+  OP_S_GE w -> case w of
+    W64                  -> emit_ bci_OP_S_GE_64 []
+    W32                  -> emit_ bci_OP_S_GE_32 []
+    W16                  -> emit_ bci_OP_S_GE_16 []
+    W8                   -> emit_ bci_OP_S_GE_08 []
+    _                    -> unsupported_width
+  OP_U_GT w -> case w of
+    W64                  -> emit_ bci_OP_U_GT_64 []
+    W32                  -> emit_ bci_OP_U_GT_32 []
+    W16                  -> emit_ bci_OP_U_GT_16 []
+    W8                   -> emit_ bci_OP_U_GT_08 []
+    _                    -> unsupported_width
+  OP_S_GT w -> case w of
+    W64                  -> emit_ bci_OP_S_GT_64 []
+    W32                  -> emit_ bci_OP_S_GT_32 []
+    W16                  -> emit_ bci_OP_S_GT_16 []
+    W8                   -> emit_ bci_OP_S_GT_08 []
+    _                    -> unsupported_width
+  OP_U_LE w -> case w of
+    W64                  -> emit_ bci_OP_U_LE_64 []
+    W32                  -> emit_ bci_OP_U_LE_32 []
+    W16                  -> emit_ bci_OP_U_LE_16 []
+    W8                   -> emit_ bci_OP_U_LE_08 []
+    _                    -> unsupported_width
+  OP_S_LE w -> case w of
+    W64                  -> emit_ bci_OP_S_LE_64 []
+    W32                  -> emit_ bci_OP_S_LE_32 []
+    W16                  -> emit_ bci_OP_S_LE_16 []
+    W8                   -> emit_ bci_OP_S_LE_08 []
+    _                    -> unsupported_width
+
+  OP_INDEX_ADDR w -> case w of
+    W64                  -> emit_ bci_OP_INDEX_ADDR_64 []
+    W32                  -> emit_ bci_OP_INDEX_ADDR_32 []
+    W16                  -> emit_ bci_OP_INDEX_ADDR_16 []
+    W8                   -> emit_ bci_OP_INDEX_ADDR_08 []
+    _                    -> unsupported_width
+
+  BRK_FUN ibi@(InternalBreakpointId info_mod infox) -> do
+    p1 <- ptr $ BCOPtrBreakArray info_mod
+    let -- cast that checks that round-tripping through Word32 doesn't change the value
+        infoW32 = let r = fromIntegral infox :: Word32
+                   in if fromIntegral r == infox
+                    then r
+                    else pprPanic "schemeER_wrk: breakpoint tick/info index too large!" (ppr infox)
+        ix_hi = fromIntegral (infoW32 `shiftR` 16)
+        ix_lo = fromIntegral (infoW32 .&. 0xffff)
+    info_addr        <- lit1 $ BCONPtrFS $ moduleNameFS $ moduleName info_mod
+    info_unitid_addr <- lit1 $ BCONPtrFS $ unitIdFS     $ moduleUnitId info_mod
+    np               <- lit1 $ BCONPtrCostCentre ibi
+    emit_ bci_BRK_FUN [ Op p1, Op info_addr, Op info_unitid_addr
+                      , SmallOp ix_hi, SmallOp ix_lo, Op np ]
+
+  HPC_TICK lbl ix -> do
+    p <- lit1 (BCONPtrLbl lbl)
+    let ix_hi = fromIntegral (ix `shiftR` 16)
+        ix_lo = fromIntegral (ix .&. 0xffff)
+    emit_ bci_HPC_TICK [Op p, SmallOp ix_hi, SmallOp ix_lo]
+
+#if MIN_VERSION_rts(1,0,3)
+  BCO_NAME name            -> do np <- lit1 (BCONPtrStr name)
+                                 emit_ bci_BCO_NAME [Op np]
+#endif
+
+
+
+  where
+    unsupported_width = panic "GHC.ByteCode.Asm: Unsupported Width"
+    emit_ = emit (platformWordSize platform)
+
+literal :: Platform -> Literal -> OneOrTwo BCONPtr
+literal platform = \case
+  LitLabel fs _  -> OnlyOne (BCONPtrLbl fs)
+  LitNullAddr    -> word 0
+  LitFloating LitFloat  x -> float platform (litFloatingToHostFloat x)
+  LitFloating LitDouble x -> double platform (litFloatingToHostDouble x)
+  LitChar c      -> int (ord c)
+  LitString bs   -> OnlyOne (BCONPtrStr bs)
+   -- LitString requires a zero-terminator when emitted
+  LitNumber nt i -> case nt of
+    LitNumInt     -> word (fromIntegral i)
+    LitNumWord    -> word (fromIntegral i)
+    LitNumInt8    -> word8  platform (fromIntegral i)
+    LitNumWord8   -> word8  platform (fromIntegral i)
+    LitNumInt16   -> word16 platform (fromIntegral i)
+    LitNumWord16  -> word16 platform (fromIntegral i)
+    LitNumInt32   -> word32 platform (fromIntegral i)
+    LitNumWord32  -> word32 platform (fromIntegral i)
+    LitNumInt64   -> word64 platform (fromIntegral i)
+    LitNumWord64  -> word64 platform (fromIntegral i)
+    LitNumBigNat  -> panic "GHC.ByteCode.Asm.literal: LitNumBigNat"
+
+    -- We can lower 'LitRubbish' to an arbitrary constant, but @NULL@ is most
+    -- likely to elicit a crash (rather than corrupt memory) in case absence
+    -- analysis messed up.
+  LitRubbish {} -> word 0
+
+words :: OneOrTwo Word -> OneOrTwo BCONPtr
+words ws = fmap BCONPtrWord ws
+
+word :: Word -> OneOrTwo BCONPtr
+word w = words (OnlyOne w)
+
+word2 :: Word -> Word -> OneOrTwo BCONPtr
+word2 w1 w2 = words (OnlyTwo w1 w2)
+
+-- Make lists of host-sized words for literals, so that when the
+-- words are placed in memory at increasing addresses, the
+-- bit pattern is correct for the host's word size and endianness.
+--
+-- Note that we only support host endianness == target endianness for now,
+-- even with the external interpreter. This would need to be fixed to
+-- support host endianness /= target endianness
+int :: Int -> OneOrTwo BCONPtr
+int i = word (fromIntegral i)
+
+float :: Platform -> Float -> OneOrTwo BCONPtr
+float platform f = word32 platform (castFloatToWord32 f)
+
+double :: Platform -> Double -> OneOrTwo BCONPtr
+double p d = word64 p (castDoubleToWord64 d)
+
+word64 :: Platform -> Word64 -> OneOrTwo BCONPtr
+word64 platform ww = case platformWordSize platform of
+   PW4 ->
+    let !wl = fromIntegral ww
+        !wh = fromIntegral (ww `unsafeShiftR` 32)
+    in case platformByteOrder platform of
+        LittleEndian -> word2 wl wh
+        BigEndian    -> word2 wh wl
+   PW8 -> word (fromIntegral ww)
+
+word8 :: Platform -> Word8 -> OneOrTwo BCONPtr
+word8 platform x = case platformByteOrder platform of
+  LittleEndian -> word (fromIntegral x)
+  BigEndian    -> word (fromIntegral x `unsafeShiftL` (platformWordSizeInBits platform - 8))
+
+word16 :: Platform -> Word16 -> OneOrTwo BCONPtr
+word16 platform x = case platformByteOrder platform of
+  LittleEndian -> word (fromIntegral x)
+  BigEndian    -> word (fromIntegral x `unsafeShiftL` (platformWordSizeInBits platform - 16))
+
+word32 :: Platform -> Word32 -> OneOrTwo BCONPtr
+word32 platform x = case platformByteOrder platform of
+  LittleEndian -> word (fromIntegral x)
+  BigEndian    -> case platformWordSize platform of
+    PW4 -> word (fromIntegral x)
+    PW8 -> word (fromIntegral x `unsafeShiftL` 32)
+
+isLargeW :: Word -> Bool
+isLargeW n = n > 65535
+
+isLargeI :: Int -> Bool
+isLargeI n = n > 32767 || n < -32768
+
+push_alts :: ArgRep -> Word16
+push_alts V   = bci_PUSH_ALTS_V
+push_alts P   = bci_PUSH_ALTS_P
+push_alts N   = bci_PUSH_ALTS_N
+push_alts L   = bci_PUSH_ALTS_L
+push_alts F   = bci_PUSH_ALTS_F
+push_alts D   = bci_PUSH_ALTS_D
+push_alts V16 = error "push_alts: vector"
+push_alts V32 = error "push_alts: vector"
+push_alts V64 = error "push_alts: vector"
+
+return_non_tuple :: ArgRep -> Word16
+return_non_tuple V   = bci_RETURN_V
+return_non_tuple P   = bci_RETURN_P
+return_non_tuple N   = bci_RETURN_N
+return_non_tuple L   = bci_RETURN_L
+return_non_tuple F   = bci_RETURN_F
+return_non_tuple D   = bci_RETURN_D
+return_non_tuple V16 = error "return_non_tuple: vector"
+return_non_tuple V32 = error "return_non_tuple: vector"
+return_non_tuple V64 = error "return_non_tuple: vector"
+
+{-
+  The maximum number of words that can be spilled on the stack for
+  a tuple return. This is limited by the encoding of the stack
+  spill size in the call_info word (used by stg_ret_t):
+
+    - On 32-bit platforms: 8-bit  (bits 24-31), max 255
+    - On 64-bit platforms: 40-bit (bits 24-63)
+
+  The stg_ctoi_t frame itself has no size limit since it reads the
+  spill count from the TSO's ctoi_tuple_spill_words field. See
+  Note [GHCi unboxed tuples stack spills] in StgMiscClosures.cmm.
+
+  Note that the limit is the number of words passed on the stack.
+  If the calling convention passes part of the tuple in registers, the
+  maximum number of tuple elements may be larger. Elements can also
+  take multiple words on the stack (for example Double# on a 32 bit
+  platform).
+ -}
+maxTupleReturnNativeStackSize :: Platform -> WordOff
+maxTupleReturnNativeStackSize platform = case platformWordSize platform of
+  PW4 -> 255
+  PW8 -> 1099511627775
+
+{-
+  Construct the call_info word that stg_ctoi_t, stg_ret_t and stg_primcall
+  use to convert arguments between the native calling convention and the
+  interpreter.
+
+  See Note [GHCi and native call registers] for more information.
+ -}
+mkNativeCallInfoSig :: Platform -> NativeCallInfo -> Word64
+mkNativeCallInfoSig platform NativeCallInfo{..}
+  | nativeCallType == NativeTupleReturn
+  && nativeCallStackSpillSize > maxTupleReturnNativeStackSize platform
+  = pprPanic "mkNativeCallInfoSig: tuple too big for the bytecode compiler"
+             (ppr nativeCallStackSpillSize <+> text "stack words." <+>
+              text "Use -fobject-code to get around this limit"
+             )
+  | otherwise
+  = -- 24 bits for register bitmap
+    assertPpr (length argRegs <= 24) (text "too many registers for bitmap:" <+> ppr (length argRegs))
+
+    -- continuation offset must fit in available bits above the bitmap
+    assertPpr (cont_offset <= fromIntegral (maxTupleReturnNativeStackSize platform))
+              (text "continuation offset too large:" <+> ppr cont_offset)
+
+    -- all regs accounted for
+    assertPpr (all (`elem` (map fst argRegs)) (regSetToList nativeCallRegs))
+      ( vcat
+        [ text "not all registers accounted for"
+        , text "argRegs:" <+> ppr argRegs
+        , text "nativeCallRegs:" <+> ppr nativeCallRegs
+        ] ) $
+      -- SIMD GHCi TODO: the above assertion doesn't account for register overlap;
+      -- it will need to be adjusted for SIMD vector support in the bytecode interpreter.
+
+    foldl' reg_bit 0 argRegs .|. (cont_offset `shiftL` 24)
+  where
+    cont_offset :: Word64
+    cont_offset
+      | nativeCallType == NativeTupleReturn = fromIntegral nativeCallStackSpillSize
+      | otherwise                           = 0 -- there is no continuation for primcalls
+
+    reg_bit :: Word64 -> (GlobalReg, Int) -> Word64
+    reg_bit x (r, n)
+      | r `elemRegSet` nativeCallRegs = x .|. 1 `shiftL` n
+      | otherwise                     = x
+    argRegs = zip (allArgRegsCover platform SCALAR_ARG_REGS) [0..]
+      -- The bytecode interpreter does not (currently) handle vector registers,
+      -- so we only use the scalar argument-passing registers here.
+
+mkNativeCallInfoLit :: Platform -> NativeCallInfo -> Literal
+mkNativeCallInfoLit platform call_info =
+  mkLitWord platform . fromIntegral $ mkNativeCallInfoSig platform call_info
+
+iNTERP_STACK_CHECK_THRESH :: Int
+iNTERP_STACK_CHECK_THRESH = INTERP_STACK_CHECK_THRESH
