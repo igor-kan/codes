@@ -1,0 +1,3872 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2021 The Elixir Team
+
+Code.require_file("type_helper.exs", __DIR__)
+
+defmodule Module.Types.ExprTest do
+  use ExUnit.Case, async: true
+
+  import TypeHelper
+  import Module.Types.Descr
+  defmacro domain_key(arg) when is_atom(arg), do: [arg]
+
+  defmacro generated_foo_call(x) do
+    quote generated: true do
+      unquote(x).foo()
+    end
+  end
+
+  test "literal" do
+    assert typecheck!(true) == atom([true])
+    assert typecheck!(false) == atom([false])
+    assert typecheck!(:foo) == atom([:foo])
+    assert typecheck!(0) == integer()
+    assert typecheck!(0.0) == float()
+    assert typecheck!("foo") == binary()
+    assert typecheck!([]) == empty_list()
+    assert typecheck!(%{}) == closed_map([])
+  end
+
+  test "generated" do
+    assert typecheck!([x = 1], generated_foo_call(x)) == dynamic()
+  end
+
+  describe "bitstrings" do
+    test "integer alignment" do
+      assert typecheck!(<<round(:rand.uniform())>>) == binary()
+      assert typecheck!(<<round(:rand.uniform())::1>>) == opt_difference(bitstring(), binary())
+      assert typecheck!(<<round(:rand.uniform())::4, round(:rand.uniform())::4>>) == binary()
+      assert typecheck!([size], <<round(:rand.uniform())::size(size)>>) == bitstring()
+    end
+
+    test "bitstring alignment" do
+      assert typecheck!(
+               [coef, sign, exp],
+               <<Integer.to_string(coef * sign)::bitstring, ".0e"::bitstring,
+                 Integer.to_string(exp)::bitstring>>
+             ) == binary()
+
+      # This will be truncated to size, so it is a bitstring
+      assert typecheck!([exp], <<Integer.to_string(exp)::bitstring-size(20)>>) ==
+               bitstring_no_binary()
+    end
+  end
+
+  describe "lists" do
+    test "creating lists" do
+      assert typecheck!([1, 2]) == non_empty_list(integer())
+      assert typecheck!([1, 2 | 3]) == non_empty_list(integer(), integer())
+      assert typecheck!([1, 2 | [3, 4]]) == non_empty_list(integer())
+
+      assert typecheck!([:ok, 123]) == non_empty_list(opt_union(atom([:ok]), integer()))
+      assert typecheck!([:ok | 123]) == non_empty_list(atom([:ok]), integer())
+
+      assert typecheck!([x], [:ok, x])
+             |> equal?(opt_union(non_empty_list(atom([:ok])), dynamic(non_empty_list(term()))))
+
+      assert typecheck!([x], [:ok | x]) == dynamic(non_empty_list(term(), term()))
+    end
+
+    test "inference" do
+      assert typecheck!(
+               [x, y, z],
+               (
+                 List.to_integer([x, y | z])
+                 {x, y, z}
+               )
+             ) == dynamic(tuple([integer(), integer(), list(integer())]))
+    end
+
+    test "hd" do
+      assert typecheck!([x = [123, :foo]], hd(x)) == dynamic(opt_union(atom([:foo]), integer()))
+      assert typecheck!([x = [123 | :foo]], hd(x)) == dynamic(integer())
+
+      assert typeerror!(hd([])) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.hd/1:
+
+                   hd([])
+
+               given types:
+
+                   empty_list()
+
+               but expected one of:
+
+                   non_empty_list(term(), term())
+               """
+
+      assert typeerror!(hd(123)) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.hd/1:
+
+                   hd(123)
+
+               given types:
+
+                   integer()
+
+               but expected one of:
+
+                   non_empty_list(term(), term())
+               """
+    end
+
+    test "tl" do
+      assert typecheck!([x = [123, :foo]], tl(x)) ==
+               dynamic(list(opt_union(atom([:foo]), integer())))
+
+      assert typecheck!([x = [123 | :foo]], tl(x)) ==
+               dynamic(opt_union(atom([:foo]), non_empty_list(integer(), atom([:foo]))))
+
+      assert typeerror!(tl([])) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.tl/1:
+
+                   tl([])
+
+               given types:
+
+                   empty_list()
+
+               but expected one of:
+
+                   non_empty_list(term(), term())
+               """
+
+      assert typeerror!(tl(123)) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.tl/1:
+
+                   tl(123)
+
+               given types:
+
+                   integer()
+
+               but expected one of:
+
+                   non_empty_list(term(), term())
+               """
+    end
+
+    test "++" do
+      assert typecheck!([x], [] ++ String.to_integer(x)) == integer()
+      assert typecheck!([x], [x] ++ []) == non_empty_list(dynamic())
+
+      assert typeerror!([x], String.to_integer(x) ++ []) |> strip_ansi() =~
+               ~l"""
+               incompatible types given to Kernel.++/2:
+
+                   String.to_integer(x) ++ []
+
+               given types:
+
+                   integer(), empty_list()
+
+               but expected one of:
+
+                   #1
+                   empty_list(), term()
+
+                   #2
+                   non_empty_list(term()), term()
+               """
+    end
+  end
+
+  describe "funs" do
+    test "infers calls" do
+      assert typecheck!(
+               [x],
+               (
+                 x.(1, 2)
+                 x
+               )
+             ) == dynamic(fun(2))
+    end
+
+    test "infers functions" do
+      assert typecheck!(& &1) |> equal?(fun([term()], dynamic()))
+
+      assert typecheck!(fn -> :ok end) |> equal?(fun([], dynamic(atom([:ok]))))
+
+      assert typecheck!(fn
+               <<"ok">>, {} -> :ok
+               <<"error">>, {} -> :error
+               [_ | _], %{} -> :list
+             end)
+             |> equal?(
+               opt_intersection(
+                 fun(
+                   [non_empty_list(term(), term()), open_map()],
+                   dynamic(atom([:list]))
+                 ),
+                 fun(
+                   [binary(), tuple([])],
+                   dynamic(atom([:ok, :error]))
+                 )
+               )
+             )
+
+      assert typecheck!(fn x -> Integer.to_string(x) end) ==
+               fun([integer()], dynamic(binary()))
+    end
+
+    test "application" do
+      assert typecheck!(
+               [map],
+               (fn
+                  %{a: a} = data -> %{data | b: a}
+                  %{} = data -> data
+                end).(map)
+             ) == dynamic()
+
+      assert typecheck!(
+               [],
+               [true, false]
+               |> Enum.random()
+               |> then(fn
+                 true -> :ok
+                 _ -> :error
+               end)
+             ) == dynamic(atom([:ok, :error]))
+    end
+
+    test "warns on redundant clauses" do
+      assert typewarn!(fn
+               x when is_binary(x) -> x
+               "foo" -> "bar"
+             end)
+             |> elem(1) == """
+             the following clause is redundant:
+
+                 "foo" ->
+
+             previous clauses have already matched on the following types:
+
+                 binary()
+             """
+    end
+
+    test "bad function" do
+      assert typeerror!([%x{}, a1, a2], x.(a1, a2)) == ~l"""
+             expected a 2-arity function on function call:
+
+                 x.(a1, a2)
+
+             but got type:
+
+                 dynamic(atom())
+
+             where "x" was given the type:
+
+                 # type: dynamic(atom())
+                 # from: types_test.ex:LINE
+                 %x{}
+             """
+    end
+
+    test "bad arity" do
+      assert typeerror!([a1, a2], (&String.to_integer/1).(a1, a2)) == ~l"""
+             expected a 2-arity function on function call:
+
+                 (&String.to_integer/1).(a1, a2)
+
+             but got function with arity 1:
+
+                 (binary() -> integer())
+             """
+    end
+
+    test "bad argument" do
+      assert typeerror!([], (&String.to_integer/1).(:foo))
+             |> strip_ansi() == ~l"""
+             incompatible types given on function call:
+
+                 (&String.to_integer/1).(:foo)
+
+             given types:
+
+                 :foo
+
+             but function has type:
+
+                 (binary() -> integer())
+             """
+
+      assert typeerror!(
+               [x],
+               (if x do
+                  &String.to_integer/1
+                else
+                  &List.to_integer/1
+                end).(:foo)
+             )
+             |> strip_ansi() == ~l"""
+             incompatible types given on function call:
+
+                 (if x do
+                    &String.to_integer/1
+                  else
+                    &List.to_integer/1
+                  end).(:foo)
+
+             given types:
+
+                 :foo
+
+             but function has type:
+
+                 (binary() -> integer()) or (non_empty_list(integer()) -> integer())
+
+             hint: the function has an empty domain and therefore cannot be applied to any argument. \
+             This may happen when you have a union of functions, which means the only valid argument \
+             to said function are types that satisfy all sides of the union (which may be none)
+             """
+    end
+
+    test "bad arguments from inferred type" do
+      assert typeerror!(
+               (
+                 fun = fn %{} -> :map end
+                 fun.(:error)
+               )
+             )
+             |> strip_ansi() == """
+             incompatible types given on function call:
+
+                 fun.(:error)
+
+             given types:
+
+                 :error
+
+             but function has type:
+
+                 (map() -> dynamic(:map))
+             """
+    end
+
+    test "capture printing" do
+      assert typeerror!(123 = &{:ok, &1}) == """
+             the following pattern will never match:
+
+                 123 = &{:ok, &1}
+
+             because the right-hand side has type:
+
+                 (term() -> dynamic({:ok, term()}))
+             """
+    end
+
+    test "works when there are multiple clauses with lists and maps" do
+      type =
+        typecheck!(fn
+          [:oban, :job, _event], _measure, _meta, _opts ->
+            :ok
+
+          [:oban, :notifier, :switch], _measure, %{status: _status}, _opts ->
+            :ok
+
+          [:oban, :peer, :election, :stop], _measure, _meta, _opts ->
+            :ok
+
+          [:oban, :plugin, :exception], _measure, _meta, _opts ->
+            :ok
+
+          [:oban, :plugin, :stop], _measure, _meta, _opts ->
+            :ok
+
+          [:oban, :queue, :shutdown], _measure, %{orphaned: [_ | _]}, _opts ->
+            :ok
+
+          [:oban, :stager, :switch], _measure, %{mode: _mode}, _opts ->
+            :ok
+
+          _event, _measure, _meta, _opts ->
+            :ok
+        end)
+
+      assert subtype?(type, fun([term(), term(), term(), term()], atom([:ok])))
+    end
+  end
+
+  describe "remotes" do
+    test "dynamic calls" do
+      assert typecheck!([%x{}], x.foo_bar()) == dynamic()
+    end
+
+    test "infers atoms" do
+      assert typecheck!(
+               [x],
+               (
+                 x.foo_bar()
+                 x
+               )
+             ) == dynamic(atom())
+
+      assert typecheck!(
+               [x],
+               (
+                 x.foo_bar(123)
+                 x
+               )
+             ) == dynamic(atom())
+
+      assert typecheck!(
+               [x],
+               (
+                 &x.foo_bar/1
+                 x
+               )
+             ) == dynamic(atom())
+    end
+
+    test "infers maps" do
+      assert typecheck!(
+               [x],
+               (
+                 :foo = x.foo_bar
+                 123 = x.baz_bat
+                 x
+               )
+             ) == dynamic(open_map(foo_bar: {atom([:foo]), false}, baz_bat: {integer(), false}))
+    end
+
+    test "infers args" do
+      assert typecheck!(
+               [x, y],
+               (
+                 z = Integer.to_string(x + y)
+                 {x, y, z}
+               )
+             ) == dynamic(tuple([integer(), integer(), binary()]))
+    end
+
+    test "send returns the message" do
+      assert typecheck!(send(self(), {:msg, 1})) == tuple([atom([:msg]), integer()])
+
+      assert typeerror!(send(123, {:msg, 1})) =~
+               "incompatible types given to Kernel.send/2"
+    end
+
+    test "raises with arbitrary stacktrace extra info" do
+      assert typecheck!(
+               :erlang.raise(:error, :oops, [
+                 {__MODULE__, :example, 1,
+                  [line: 1, column: 2, file: "example.ex", custom: {:any, :term}]}
+               ])
+             ) == none()
+
+      assert typeerror!(
+               :erlang.raise(:error, :oops, [
+                 {__MODULE__, :example, 1, [line: :unknown]}
+               ])
+             ) =~ "incompatible types given to :erlang.raise/3"
+    end
+
+    test "undefined function warnings" do
+      assert typewarn!(URI.unknown("foo")) ==
+               {dynamic(), "URI.unknown/1 is undefined or private"}
+
+      assert typewarn!(if(:rand.uniform() > 0.5, do: URI.unknown("foo"))) ==
+               {dynamic() |> opt_union(atom([nil])), "URI.unknown/1 is undefined or private"}
+
+      assert typewarn!(try(do: :ok, after: URI.unknown("foo"))) ==
+               {atom([:ok]), "URI.unknown/1 is undefined or private"}
+
+      # Check it also emits over a union
+      assert typewarn!(
+               [x = Atom, y = GenServer, z],
+               (
+                 mod =
+                   cond do
+                     z -> x
+                     true -> y
+                   end
+
+                 mod.to_string(:atom)
+               )
+             ) ==
+               {opt_union(dynamic(), binary()), "GenServer.to_string/1 is undefined or private"}
+    end
+
+    test "calling a function with none()" do
+      assert typeerror!(Integer.to_string(raise "oops")) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Integer.to_string/1:
+
+                   Integer.to_string(raise RuntimeError.exception("oops"))
+
+               given types:
+
+                   none()
+
+               the 1st argument is empty (often represented as none()), \
+               most likely because it is the result of an expression that \
+               always fails, such as a `raise` or a previous invalid call. \
+               This causes any function called with this value to fail
+               """
+    end
+
+    test "calling a nullary function on non atoms" do
+      assert typeerror!([<<x::integer>>], x.foo_bar()) ==
+               ~l"""
+               expected a module (an atom) when invoking foo_bar/0 in expression:
+
+                   x.foo_bar()
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   <<x::integer>>
+
+               #{hints(:dot)}
+               """
+    end
+
+    test "calling a function on non atoms with arguments" do
+      assert typeerror!([<<x::integer>>], x.foo_bar(1, 2)) ==
+               ~l"""
+               expected a module (an atom) when invoking foo_bar/2 in expression:
+
+                   x.foo_bar(1, 2)
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   <<x::integer>>
+               """
+
+      assert typeerror!(
+               [<<x::integer>>, y = SomeMod, z],
+               (
+                 mod =
+                   cond do
+                     z -> x
+                     true -> y
+                   end
+
+                 mod.to_string(:atom)
+               )
+             ) ==
+               ~l"""
+               expected a module (an atom) when invoking to_string/1 in expression:
+
+                   mod.to_string(:atom)
+
+               where "mod" was given the type:
+
+                   # type: dynamic(SomeMod) or integer()
+                   # from: types_test.ex:LINE-9
+                   mod =
+                     cond do
+                       ...
+                     end
+               """
+    end
+
+    test "calling a function with invalid arguments on variables" do
+      assert typeerror!(
+               (
+                 x = List
+                 x.to_tuple(123)
+               )
+             )
+             |> strip_ansi() ==
+               ~l"""
+               incompatible types given to List.to_tuple/1:
+
+                   x.to_tuple(123)
+
+               given types:
+
+                   integer()
+
+               but expected one of:
+
+                   list(term())
+
+               where "x" was given the type:
+
+                   # type: List
+                   # from: types_test.ex:LINE-5
+                   x = List
+               """
+    end
+
+    test "computes union of all combinations" do
+      assert typecheck!(
+               [condition, arg],
+               (
+                 mod = if condition, do: String, else: List
+                 res = mod.to_integer(arg)
+                 {arg, res}
+               )
+             ) == dynamic(tuple([opt_union(binary(), non_empty_list(integer())), integer()]))
+
+      assert typeerror!(
+               [condition],
+               (
+                 arg = if condition, do: "foo", else: [?f, ?o, ?o]
+                 mod = if condition, do: String, else: List
+                 mod.to_integer(arg)
+               )
+             )
+             |> strip_ansi() == ~l"""
+             incompatible types given to List.to_integer/1:
+
+                 mod.to_integer(arg)
+                 #=> invoked as List.to_integer/1
+
+             given types:
+
+                 binary() or non_empty_list(integer())
+
+             but expected one of:
+
+                 non_empty_list(integer())
+
+             where "arg" was given the type:
+
+                 # type: binary() or non_empty_list(integer())
+                 # from: types_test.ex:LINE-5
+                 arg =
+                   if condition do
+                     "foo"
+                   else
+                     ~c"foo"
+                   end
+
+             where "mod" was given the type:
+
+                 # type: List or String
+                 # from: types_test.ex:LINE-4
+                 mod =
+                   if condition do
+                     String
+                   else
+                     List
+                   end
+             """
+    end
+
+    test "calling a function with conditional variables excluside to the application" do
+      assert typecheck!(
+               [condition, arg],
+               (
+                 mod = if condition, do: Integer, else: Float
+
+                 mod.parse(
+                   (
+                     query = "+" <> arg
+                     String.trim_trailing(query)
+                   )
+                 )
+               )
+             ) == dynamic()
+    end
+  end
+
+  describe "remote capture" do
+    test "strong" do
+      assert typecheck!(&String.to_unsafe_atom/1) == fun([binary()], atom())
+
+      assert typecheck!(&:erlang.element/2) ==
+               fun([integer(), opt_difference(open_tuple([]), tuple([]))], dynamic())
+    end
+
+    test "unknown" do
+      assert typecheck!(&Module.Types.ExprTest.__ex_unit__/1) == dynamic(fun(1))
+      assert typecheck!([x], &x.something/1) == dynamic(fun(1))
+    end
+
+    test "capture a function with non atoms" do
+      assert typeerror!([<<x::integer>>], &x.foo_bar/2) ==
+               ~l"""
+               expected a module (an atom) when invoking foo_bar/2 in expression:
+
+                   &x.foo_bar/2
+
+               but got type:
+
+                   integer()
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   <<x::integer>>
+               """
+    end
+  end
+
+  describe "binaries" do
+    test "inference" do
+      assert typecheck!(
+               [x, y],
+               (
+                 <<x::float-size(y)>>
+                 {x, y}
+               )
+             ) == dynamic(tuple([opt_union(float(), integer()), integer()]))
+    end
+
+    test "warnings" do
+      assert typeerror!([<<x::binary-size(2)>>], <<x::float>>) ==
+               ~l"""
+               incompatible types in binary construction:
+
+                   <<x::float>>
+
+               got type:
+
+                   binary()
+
+               but expected type:
+
+                   float() or integer()
+
+               where "x" was given the type:
+
+                   # type: binary()
+                   # from: types_test.ex:LINE-1
+                   <<x::binary-size(2)>>
+               """
+
+      assert typeerror!([<<x::binary>>], <<x>>) ==
+               ~l"""
+               incompatible types in binary construction:
+
+                   <<x>>
+
+               got type:
+
+                   binary()
+
+               but expected type:
+
+                   integer()
+
+               where "x" was given the type:
+
+                   # type: binary()
+                   # from: types_test.ex:LINE-1
+                   <<x::binary>>
+
+               #{hints(:inferred_bitstring_spec)}
+               """
+
+      assert typeerror!([<<x>>], <<x::binary>>) ==
+               ~l"""
+               incompatible types in binary construction:
+
+                   <<x::binary>>
+
+               got type:
+
+                   integer()
+
+               but expected type:
+
+                   binary()
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   <<x>>
+
+               #{hints(:inferred_bitstring_spec)}
+               """
+    end
+
+    test "size ok" do
+      assert typecheck!([<<x, y>>, z], <<z::size(x - y)>>) == bitstring()
+      assert typedyn!([<<x, y>>, z], <<z::size(x - y)>>) == dynamic(bitstring())
+    end
+
+    test "size error" do
+      assert typeerror!([<<x::binary>>, y], <<y::size(x)>>) ==
+               ~l"""
+               expected an integer in binary size:
+
+                   size(x)
+
+               got type:
+
+                   binary()
+
+               where "x" was given the type:
+
+                   # type: binary()
+                   # from: types_test.ex:LINE-1
+                   <<x::binary>>
+               """
+    end
+  end
+
+  describe "tuples" do
+    test "creating tuples" do
+      assert typecheck!({:ok, 123}) == tuple([atom([:ok]), integer()])
+      assert typecheck!([x], {:ok, x}) == dynamic(tuple([atom([:ok]), term()]))
+    end
+
+    test "inference" do
+      assert typecheck!(
+               [x, y],
+               (
+                 {:ok, :error} = {x, y}
+                 {x, y}
+               )
+             ) == dynamic(tuple([atom([:ok]), atom([:error])]))
+    end
+
+    test "elem/2 with literal index" do
+      assert typecheck!(elem({:ok, 123}, 0)) == atom([:ok])
+      assert typecheck!(elem({:ok, 123}, 1)) == integer()
+      assert typecheck!(:erlang.element(1, {:ok, 123})) == atom([:ok])
+      assert typecheck!(:erlang.element(2, {:ok, 123})) == integer()
+      assert typecheck!([x], elem({:ok, x}, 0)) == dynamic(atom([:ok]))
+      assert typecheck!([x], elem({:ok, x}, 1)) == dynamic(term())
+
+      assert typeerror!([<<x::float>>], elem(x, 0)) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.elem/2:
+
+                   elem(x, 0)
+
+               given types:
+
+                   float(), integer()
+
+               but expected one of:
+
+                   {term(), ...}, integer()
+
+               where "x" was given the type:
+
+                   # type: float()
+                   # from: types_test.ex:LINE-1
+                   <<x::float>>
+               """
+
+      assert typeerror!(elem({}, 0)) ==
+               ~l"""
+               expected a tuple with at least 1 element in Kernel.elem/2:
+
+                   elem({}, 0)
+
+               the given type does not have the given index:
+
+                   {}
+               """
+
+      assert typeerror!(elem({:ok, 123}, 2)) ==
+               ~l"""
+               expected a tuple with at least 3 elements in Kernel.elem/2:
+
+                   elem({:ok, 123}, 2)
+
+               the given type does not have the given index:
+
+                   {:ok, integer()}
+               """
+
+      assert typeerror!(elem({1, 2}, -1)) ==
+               ~l"""
+               expected a non-negative integer as index in Kernel.elem/2:
+
+                   elem({1, 2}, -1)
+
+               got the index:
+
+                   -1
+               """
+    end
+
+    test "elem/2" do
+      assert typecheck!([index], elem({:ok, 123}, index)) ==
+               opt_union(atom([:ok]), integer())
+
+      assert typecheck!([index], :erlang.element(index, {:ok, 123})) ==
+               opt_union(atom([:ok]), integer())
+
+      assert typeerror!([index], elem({}, index)) =~
+               "incompatible types given to Kernel.elem/2"
+
+      assert typeerror!([index], :erlang.element(index, <<>>)) =~
+               "incompatible types given to :erlang.element/2"
+    end
+
+    test "Tuple.insert_at/3" do
+      assert typecheck!(Tuple.insert_at({}, 0, "foo")) == tuple([binary()])
+
+      assert typecheck!(Tuple.insert_at({:ok, 123}, 0, "foo")) ==
+               tuple([binary(), atom([:ok]), integer()])
+
+      assert typecheck!(Tuple.insert_at({:ok, 123}, 1, "foo")) ==
+               tuple([atom([:ok]), binary(), integer()])
+
+      assert typecheck!(:erlang.insert_element(2, {:ok, 123}, "foo")) ==
+               tuple([atom([:ok]), binary(), integer()])
+
+      assert typecheck!(Tuple.insert_at({:ok, 123}, 2, "foo")) ==
+               tuple([atom([:ok]), integer(), binary()])
+
+      assert typeerror!(
+               [x],
+               (
+                 value = if :rand.uniform() > 0.5, do: :inserted, else: x
+                 tuple = Tuple.insert_at({:ok}, 1, value)
+                 Integer.to_string(elem(tuple, 1))
+               )
+             )
+             |> strip_ansi() =~ "incompatible types given to Integer.to_string/1"
+
+      assert typeerror!([<<x::float>>], Tuple.insert_at(x, 0, "foo")) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Tuple.insert_at/3:
+
+                   Tuple.insert_at(x, 0, "foo")
+
+               given types:
+
+                   float(), integer(), binary()
+
+               but expected one of:
+
+                   {...}, integer(), term()
+
+               where "x" was given the type:
+
+                   # type: float()
+                   # from: types_test.ex:LINE-1
+                   <<x::float>>
+               """
+
+      assert typeerror!(Tuple.insert_at({:ok, 123}, 3, "foo")) ==
+               ~l"""
+               expected a tuple with at least 3 elements in Tuple.insert_at/3:
+
+                   Tuple.insert_at({:ok, 123}, 3, "foo")
+
+               the given type does not have the given index:
+
+                   {:ok, integer()}
+               """
+
+      assert typeerror!(Tuple.insert_at({1, 2}, -1, :x)) ==
+               ~l"""
+               expected a non-negative integer as index in Tuple.insert_at/3:
+
+                   Tuple.insert_at({1, 2}, -1, :x)
+
+               got the index:
+
+                   -1
+               """
+    end
+
+    test "Tuple.delete_at/2" do
+      assert typecheck!(Tuple.delete_at({:ok, 123}, 0)) == tuple([integer()])
+      assert typecheck!(Tuple.delete_at({:ok, 123}, 1)) == tuple([atom([:ok])])
+      assert typecheck!(:erlang.delete_element(2, {:ok, 123})) == tuple([atom([:ok])])
+      assert typecheck!([x], Tuple.delete_at({:ok, x}, 0)) == dynamic(tuple([term()]))
+      assert typecheck!([x], Tuple.delete_at({:ok, x}, 1)) == dynamic(tuple([atom([:ok])]))
+
+      assert typeerror!([<<x::float>>], Tuple.delete_at(x, 0)) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Tuple.delete_at/2:
+
+                   Tuple.delete_at(x, 0)
+
+               given types:
+
+                   float(), integer()
+
+               but expected one of:
+
+                   {term(), ...}, integer()
+
+               where "x" was given the type:
+
+                   # type: float()
+                   # from: types_test.ex:LINE-1
+                   <<x::float>>
+               """
+
+      assert typeerror!(Tuple.delete_at({:ok, 123}, 2)) ==
+               ~l"""
+               expected a tuple with at least 3 elements in Tuple.delete_at/2:
+
+                   Tuple.delete_at({:ok, 123}, 2)
+
+               the given type does not have the given index:
+
+                   {:ok, integer()}
+               """
+
+      assert typeerror!(Tuple.delete_at({1, 2}, -1)) ==
+               ~l"""
+               expected a non-negative integer as index in Tuple.delete_at/2:
+
+                   Tuple.delete_at({1, 2}, -1)
+
+               got the index:
+
+                   -1
+               """
+    end
+
+    test "put_elem/3" do
+      assert typecheck!(put_elem({:ok, 123}, 0, "foo")) == tuple([binary(), integer()])
+      assert typecheck!(put_elem({:ok, 123}, 1, "foo")) == tuple([atom([:ok]), binary()])
+      assert typecheck!(:erlang.setelement(1, {:ok, 123}, "foo")) == tuple([binary(), integer()])
+
+      assert typecheck!(:erlang.setelement(2, {:ok, 123}, "foo")) ==
+               tuple([atom([:ok]), binary()])
+
+      assert typecheck!([x], put_elem({:ok, x}, 0, "foo")) ==
+               dynamic(tuple([binary(), term()]))
+
+      assert typecheck!([x], put_elem({:ok, x}, 1, "foo")) ==
+               dynamic(tuple([atom([:ok]), binary()]))
+
+      assert typeerror!([<<x::float>>], put_elem(x, 0, "foo")) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.put_elem/3:
+
+                   put_elem(x, 0, "foo")
+
+               given types:
+
+                   float(), integer(), binary()
+
+               but expected one of:
+
+                   {term(), ...}, integer(), term()
+
+               where "x" was given the type:
+
+                   # type: float()
+                   # from: types_test.ex:LINE-1
+                   <<x::float>>
+               """
+
+      assert typeerror!(put_elem({:ok, 123}, 2, "foo")) ==
+               ~l"""
+               expected a tuple with at least 3 elements in Kernel.put_elem/3:
+
+                   put_elem({:ok, 123}, 2, "foo")
+
+               the given type does not have the given index:
+
+                   {:ok, integer()}
+               """
+
+      assert typeerror!([x], put_elem({:ok, x}, 2, "foo")) |> strip_ansi() ==
+               ~l"""
+               expected a tuple with at least 3 elements in Kernel.put_elem/3:
+
+                   put_elem({:ok, x}, 2, "foo")
+
+               the given type does not have the given index:
+
+                   dynamic({:ok, term()})
+
+               where "x" was given the type:
+
+                   # type: dynamic()
+                   # from: types_test.ex:LINE-1
+                   x
+               """
+
+      assert typeerror!(put_elem({1, 2}, -1, :x)) ==
+               ~l"""
+               expected a non-negative integer as index in Kernel.put_elem/3:
+
+                   put_elem({1, 2}, -1, :x)
+
+               got the index:
+
+                   -1
+               """
+    end
+
+    test "Tuple.duplicate/2" do
+      assert typecheck!(Tuple.duplicate(123, 0)) == tuple([])
+      assert typecheck!(Tuple.duplicate(123, 1)) == tuple([integer()])
+      assert typecheck!(Tuple.duplicate(123, 2)) == tuple([integer(), integer()])
+      assert typecheck!(:erlang.make_tuple(2, 123)) == tuple([integer(), integer()])
+      assert typecheck!([x], Tuple.duplicate(x, 2)) == dynamic(tuple([term(), term()]))
+    end
+  end
+
+  describe "maps" do
+    test "creating maps as records" do
+      assert typecheck!(%{foo: :bar}) == closed_map(foo: {atom([:bar]), false})
+      assert typecheck!([x], %{key: x}) == dynamic(closed_map(key: {term(), false}))
+    end
+
+    test "creating maps as records with dynamic keys" do
+      assert typecheck!(
+               (
+                 foo = :foo
+                 %{foo => :first, foo => :second}
+               )
+             ) == closed_map(foo: {atom([:second]), false})
+
+      assert typecheck!(
+               (
+                 foo_or_bar =
+                   cond do
+                     :rand.uniform() > 0.5 -> :foo
+                     true -> :bar
+                   end
+
+                 %{foo_or_bar => :first, foo_or_bar => :second}
+               )
+             )
+             |> equal?(
+               closed_map(foo: {atom([:second]), false})
+               |> opt_union(closed_map(bar: {atom([:second]), false}))
+               |> opt_union(
+                 closed_map(foo: {atom([:first]), false}, bar: {atom([:second]), false})
+               )
+               |> opt_union(
+                 closed_map(bar: {atom([:first]), false}, foo: {atom([:second]), false})
+               )
+             )
+    end
+
+    test "creating maps as dictionaries" do
+      assert typecheck!(%{123 => 456}) == closed_map([{domain_key(:integer), integer()}])
+
+      # Since key cannot override :foo based on position, we preserve it
+      assert typecheck!([key], %{key => 456, foo: :bar}) ==
+               dynamic(
+                 closed_map([{to_domain_keys(:term), integer()}, foo: {atom([:bar]), false}])
+               )
+
+      # Since key can override :foo based on position, we union it
+      assert typecheck!([key], %{:foo => :bar, key => :baz}) ==
+               dynamic(
+                 closed_map([
+                   {to_domain_keys(:term), atom([:baz])},
+                   foo: {atom([:bar, :baz]), false}
+                 ])
+               )
+
+      # Since key cannot override :foo based on domain, we preserve it
+      assert typecheck!(
+               [arg],
+               (
+                 key = String.to_integer(arg)
+                 %{:foo => :bar, key => :baz}
+               )
+             ) ==
+               closed_map([{domain_key(:integer), atom([:baz])}, foo: {atom([:bar]), false}])
+
+      # Multiple keys are fully overridden for simplicity
+      assert typecheck!(
+               [arg],
+               (
+                 foo_or_bar = if String.starts_with?(arg, "0"), do: :foo, else: :bar
+                 key = String.to_integer(arg)
+                 %{foo_or_bar => :old, key => :new}
+               )
+             ) ==
+               opt_union(
+                 closed_map([{domain_key(:integer), atom([:new])}, foo: {atom([:old]), false}]),
+                 closed_map([{domain_key(:integer), atom([:new])}, bar: {atom([:old]), false}])
+               )
+    end
+
+    test "updating maps as records" do
+      assert typecheck!([x], %{x | x: :zero}) ==
+               dynamic(open_map(x: {atom([:zero]), false}))
+
+      assert typecheck!([x], %{%{x | x: :zero} | y: :one}) ==
+               dynamic(open_map(x: {atom([:zero]), false}, y: {atom([:one]), false}))
+
+      assert typecheck!(
+               (
+                 foo_or_bar =
+                   cond do
+                     :rand.uniform() > 0.5 -> :key1
+                     true -> :key2
+                   end
+
+                 x = %{key1: :one, key2: :two}
+                 %{x | foo_or_bar => :one!, foo_or_bar => :two!}
+               )
+             )
+             |> equal?(
+               closed_map(key1: {atom([:one]), false}, key2: {atom([:two!]), false})
+               |> opt_union(
+                 closed_map(key1: {atom([:two!]), false}, key2: {atom([:one!]), false})
+               )
+               |> opt_union(
+                 closed_map(key1: {atom([:one!]), false}, key2: {atom([:two!]), false})
+               )
+               |> opt_union(closed_map(key1: {atom([:two!]), false}, key2: {atom([:two]), false}))
+             )
+
+      assert typeerror!([x = :foo], %{x | x: :zero}) == ~l"""
+             expected a map within map update syntax:
+
+                 %{x | x: :zero}
+
+             but got type:
+
+                 dynamic(:foo)
+
+             where "x" was given the type:
+
+                 # type: dynamic(:foo)
+                 # from: types_test.ex:LINE
+                 x = :foo
+             """
+
+      assert typeerror!(
+               (
+                 x = %{}
+                 %{x | x: :zero}
+               )
+             ) == ~l"""
+             expected a map with key :x in map update syntax:
+
+                 %{x | x: :zero}
+
+             but got type:
+
+                 empty_map()
+
+             where "x" was given the type:
+
+                 # type: empty_map()
+                 # from: types_test.ex:LINE-3
+                 x = %{}
+             """
+
+      # Assert we check all possible combinations
+      assert typeerror!(
+               (
+                 foo_or_bar =
+                   cond do
+                     :rand.uniform() > 0.5 -> :foo
+                     true -> :bar
+                   end
+
+                 x = %{foo: :baz}
+                 %{x | foo_or_bar => :bat}
+               )
+             ) == ~l"""
+             expected a map with key :bar in map update syntax:
+
+                 %{x | foo_or_bar => :bat}
+
+             but got type:
+
+                 %{foo: :baz}
+
+             where "foo_or_bar" was given the type:
+
+                 # type: :bar or :foo
+                 # from: types_test.ex:LINE-9
+                 foo_or_bar =
+                   cond do
+                     ...
+                   end
+
+             where "x" was given the type:
+
+                 # type: %{foo: :baz}
+                 # from: types_test.ex:LINE-3
+                 x = %{foo: :baz}
+             """
+
+      # The goal of this assertion is to verify we assert keys,
+      # even if they may be overridden later.
+      assert typeerror!(
+               [key],
+               (
+                 x = %{key: :value}
+                 %{x | :foo => :baz, key => :bat}
+               )
+             ) == ~l"""
+             expected a map with key :foo in map update syntax:
+
+                 %{x | :foo => :baz, key => :bat}
+
+             but got type:
+
+                 %{key: :value}
+
+             where "key" was given the type:
+
+                 # type: dynamic()
+                 # from: types_test.ex:LINE-5
+                 key
+
+             where "x" was given the type:
+
+                 # type: %{key: :value}
+                 # from: types_test.ex:LINE-3
+                 x = %{key: :value}
+             """
+    end
+
+    test "updating maps as dictionaries" do
+      assert typecheck!(
+               [key],
+               (
+                 x = %{foo: :bar}
+                 %{x | key => :baz}
+               )
+             ) == closed_map(foo: {atom([:bar, :baz]), false})
+
+      # Override based on position
+      assert typecheck!(
+               [key],
+               (
+                 x = %{foo: :bar, baz: :bat}
+                 %{x | key => :old, foo: :new}
+               )
+             ) == closed_map(foo: {atom([:new]), false}, baz: {atom([:old, :bat]), false})
+
+      assert typeerror!(
+               [key],
+               (
+                 x = %{String.to_integer(key) => :old}
+                 %{x | String.to_unsafe_atom(key) => :new}
+               )
+             ) == ~l"""
+             expected a map with key of type atom() in map update syntax:
+
+                 %{x | String.to_unsafe_atom(key) => :new}
+
+             but got type:
+
+                 %{integer() => :old}
+
+             where "key" was given the type:
+
+                 # type: binary()
+                 # from: types_test.ex:LINE-3
+                 String.to_integer(key)
+
+             where "x" was given the type:
+
+                 # type: %{integer() => :old}
+                 # from: types_test.ex:LINE-3
+                 x = %{String.to_integer(key) => :old}
+             """
+
+      assert typeerror!(
+               [key],
+               (
+                 x = %{key: :old}
+                 %{x | String.to_unsafe_atom(key) => :new}
+               )
+             ) == ~l"""
+             expected a map with key of type atom() in map update syntax:
+
+                 %{x | String.to_unsafe_atom(key) => :new}
+
+             but got type:
+
+                 %{key: :old}
+
+             where "key" was given the type:
+
+                 # type: binary()
+                 # from: types_test.ex:LINE-2
+                 String.to_unsafe_atom(key)
+
+             where "x" was given the type:
+
+                 # type: %{key: :old}
+                 # from: types_test.ex:LINE-3
+                 x = %{key: :old}
+             """
+    end
+
+    test "updating maps with mixed record/dictionary keys" do
+      # Static keys
+      assert typecheck!(
+               [map],
+               (
+                 key = if :rand.uniform() > 0.5, do: "key", else: :key
+                 {%{map | key => :value}, map}
+               )
+             ) ==
+               dynamic(tuple([open_map(), open_map()]))
+
+      # Dynamic keys
+      assert typecheck!([map, key], key in ["key", :key], {%{map | key => :value}, map}) ==
+               dynamic(tuple([open_map(), open_map()]))
+    end
+
+    test "inferred maps" do
+      # Singleton keys must exist but its old value is unconstrained
+      assert typecheck!(
+               [x],
+               (
+                 %{a: 1, b: 2} = %{x | a: 1}
+                 x
+               )
+             ) ==
+               dynamic(open_map(a: {term(), false}, b: {integer(), false}))
+
+      assert typecheck!(
+               [x],
+               (
+                 %{a: 1, b: 2} = %{x | a: 1, b: 2}
+                 x
+               )
+             ) ==
+               dynamic(open_map(a: {term(), false}, b: {term(), false}))
+
+      # Non-singleton domain keys
+      assert typecheck!(
+               [x],
+               (
+                 key = if :rand.uniform() > 0.5, do: :a, else: :b
+                 map = %{a: 1, b: 2, c: 3}
+                 ^map = %{x | key => 0}
+                 x
+               )
+             ) ==
+               dynamic(open_map())
+    end
+
+    test "nested map" do
+      assert typecheck!([x = %{}], x.foo.bar) == dynamic()
+    end
+
+    test "accessing a field on not a map" do
+      assert typeerror!([<<x::integer>>], x.foo_bar) ==
+               ~l"""
+               expected a map or struct when accessing .foo_bar in expression:
+
+                   x.foo_bar
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   <<x::integer>>
+
+               #{hints(:dot)}
+               """
+    end
+  end
+
+  describe "structs" do
+    test "creating structs" do
+      assert typecheck!(%Point{}) ==
+               closed_map(
+                 __struct__: {atom([Point]), false},
+                 x: {atom([nil]), false},
+                 y: {atom([nil]), false},
+                 z: {integer(), false}
+               )
+
+      assert typecheck!(%Point{x: :zero}) ==
+               closed_map(
+                 __struct__: {atom([Point]), false},
+                 x: {atom([:zero]), false},
+                 y: {atom([nil]), false},
+                 z: {integer(), false}
+               )
+    end
+
+    test "updating unknown struct" do
+      {_, [diagnostic]} = typediag!([x], %UNKNOWN.URI{x | foo: 123})
+      assert diagnostic.severity == :warning
+
+      assert diagnostic.message ==
+               "struct UNKNOWN.URI is undefined (module UNKNOWN.URI is not available or is yet to be defined)"
+
+      {_, [diagnostic]} = typediag!([x], %Enumerable{x | foo: 123})
+      assert diagnostic.severity == :warning
+
+      assert diagnostic.message ==
+               "struct Enumerable is undefined (there is such module but it does not define a struct)"
+    end
+
+    test "updating field in unknown struct" do
+      assert typeerror!(
+               [x],
+               (
+                 %UNKNOWN.URI{x | foo: y = 123}
+                 y
+               )
+             ) =~
+               "struct UNKNOWN.URI is undefined (module UNKNOWN.URI is not available or is yet to be defined)"
+    end
+
+    test "updating unknown field" do
+      {_, [diagnostic]} = typediag!([%URI{} = x], %URI{x | unknown: 123})
+      assert diagnostic.severity == :warning
+      assert diagnostic.message == "unknown key :unknown for struct URI"
+    end
+
+    test "updating structs" do
+      integer_date_type =
+        dynamic(
+          closed_map(
+            __struct__: {atom([Date]), false},
+            day: {integer(), false},
+            calendar: {atom(), false},
+            month: {term(), false},
+            year: {term(), false}
+          )
+        )
+
+      # When we know the type
+      assert typecheck!([], %Date{Date.new!(1, 1, 1) | day: 31}) ==
+               integer_date_type
+
+      assert typecheck!([], %Date{%Date{Date.new!(1, 1, 1) | day: 13} | day: 31}) ==
+               integer_date_type
+
+      # When we don't know the type of var
+      assert typeerror!([x], %Date{x | day: 31}) == ~l"""
+             a struct for Date is expected on struct update:
+
+                 %Date{x | day: 31}
+
+             but got type:
+
+                 dynamic()
+
+             where "x" was given the type:
+
+                 # type: dynamic()
+                 # from: types_test.ex:LINE
+                 x
+
+             when defining the variable "x", you must also pattern match on "%Date{}"
+             """
+
+      # When we don't know the type of capture
+      assert typeerror!([], &%Date{&1 | day: 31}) =~ ~l"""
+             a struct for Date is expected on struct update:
+
+                 %Date{&1 | day: 31}
+
+             but got type:
+
+                 dynamic()
+
+             instead of using &1, you must define an anonymous function, define a variable and pattern match on "%Date{}"
+             """
+
+      # When we don't know the type of expression
+      assert typeerror!([], %Date{SomeMod.fun() | day: 31}) =~ """
+             a struct for Date is expected on struct update:
+
+                 %Date{SomeMod.fun() | day: 31}
+
+             but got type:
+
+                 dynamic()
+
+             you must assign "SomeMod.fun()" to variable and pattern match on "%Date{}"
+             """
+    end
+
+    test "accessing an unknown field on struct with diagnostic" do
+      {type, [diagnostic]} = typediag!(%Point{}.foo_bar)
+      assert type == dynamic()
+      assert diagnostic.span == {__ENV__.line - 2, 56}
+
+      assert diagnostic.message == ~l"""
+             unknown key .foo_bar in expression:
+
+                 %Point{x: nil, y: nil, z: 0}.foo_bar
+
+             the given type does not have the given key:
+
+                 %Point{x: nil, y: nil, z: integer()}
+             """
+    end
+
+    test "accessing an unknown field on struct in a var with diagnostic" do
+      {type, [diagnostic]} = typediag!([x = %URI{}], x.foo_bar)
+      assert type == dynamic()
+      assert diagnostic.span == {__ENV__.line - 2, 63}
+
+      assert diagnostic.message == ~l"""
+             unknown key .foo_bar in expression:
+
+                 x.foo_bar
+
+             the given type does not have the given key:
+
+                 dynamic(%URI{
+                   scheme: term(),
+                   authority: term(),
+                   userinfo: term(),
+                   host: term(),
+                   port: term(),
+                   path: term(),
+                   query: term(),
+                   fragment: term()
+                 })
+
+             where "x" was given the type:
+
+                 # type: dynamic(%URI{})
+                 # from: types_test.ex:LINE-4:43
+                 x = %URI{}
+             """
+
+      assert [%{type: :variable, name: :x}] = diagnostic.details.typing_traces
+    end
+
+    test "inspect struct definition" do
+      assert typeerror!(
+               (
+                 p = %Point{x: 123}
+                 Integer.to_string(p)
+               )
+             )
+             |> strip_ansi() == ~l"""
+             incompatible types given to Integer.to_string/1:
+
+                 Integer.to_string(p)
+
+             given types:
+
+                 %Point{x: integer(), y: nil, z: integer()}
+
+             but expected one of:
+
+                 integer()
+
+             where "p" was given the type:
+
+                 # type: %Point{x: integer(), y: nil, z: integer()}
+                 # from: types_test.ex:LINE-4
+                 p = %Point{..., x: 123}
+             """
+    end
+
+    test "macros on known types do not warn" do
+      assert typecheck!([x = %Point{}], is_struct(x)) == atom([true])
+      assert typecheck!([x = %ArgumentError{}], is_exception(x)) == atom([true])
+
+      assert typecheck!(
+               (
+                 x = %{}
+                 is_non_struct_map(x)
+               )
+             ) == atom([true])
+
+      assert typecheck!(
+               (
+                 x = %{}
+                 is_struct(x)
+               )
+             ) == atom([false])
+
+      assert typecheck!([x = 123], is_struct(x)) == atom([false])
+      assert typecheck!([x = %Point{}], is_exception(x)) == atom([false])
+      assert typecheck!([x = %Point{}], is_non_struct_map(x)) == atom([false])
+    end
+  end
+
+  describe "comparison" do
+    test "in static mode" do
+      assert typecheck!([x = 123, y = 456.0], x < y) == boolean()
+      assert typecheck!([x = 123, y = 456.0], x == y) == boolean()
+    end
+
+    test "preserves static components across gradual self-intersections" do
+      assert typecheck!(
+               [x],
+               (
+                 # y :: :foo or dynamic()
+                 y = if :rand.uniform() > 0.5, do: :foo, else: x
+                 # y's type intersected with itself
+                 y = y
+
+                 y
+               )
+             ) == opt_union(atom([:foo]), dynamic())
+    end
+
+    test "in dynamic mode" do
+      assert typedyn!([x = 123, y = 456.0], x < y) == dynamic(boolean())
+      assert typedyn!([x = 123, y = 456.0], x == y) == dynamic(boolean())
+      assert typedyn!([x = 123, y = 456], x == y) == dynamic(boolean())
+    end
+
+    test "using literals" do
+      assert typecheck!(:foo == :bar) == boolean()
+    end
+
+    test "min/max" do
+      assert typecheck!(min(123, 456.0)) == opt_union(integer(), float())
+      # min/max uses parametric types, which will carry dynamic regardless of being a strong arrow
+      assert typecheck!([x = 123, y = 456.0], min(x, y)) == dynamic(opt_union(integer(), float()))
+    end
+
+    test "min/max does not refine discarded arguments from the expected type" do
+      assert typecheck!(
+               [x],
+               (
+                 :erlang.binary_part(:erlang.max(x, ""), 0, 0)
+                 x
+               )
+             ) == dynamic()
+
+      assert typecheck!(
+               [x],
+               (
+                 :erlang.binary_part(
+                   :erlang.max(v = if(is_integer(x), do: x, else: "x"), ""),
+                   0,
+                   0
+                 )
+
+                 v
+               )
+             ) == opt_union(binary(), dynamic(opt_union(integer(), binary())))
+
+      assert typecheck!(
+               [x],
+               (
+                 div(:erlang.min(v = if(is_binary(x), do: x, else: 1), 0), 1)
+                 v
+               )
+             ) == opt_union(integer(), dynamic(opt_union(integer(), binary())))
+    end
+
+    test "warns when comparison is constant" do
+      assert typeerror!([x = :foo, y = 321], min(x, y)) ==
+               ~l"""
+               comparison between distinct types found:
+
+                   min(x, y)
+
+               given types:
+
+                   min(dynamic(:foo), integer())
+
+               where "x" was given the type:
+
+                   # type: dynamic(:foo)
+                   # from: types_test.ex:LINE-1
+                   x = :foo
+
+               where "y" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   y = 321
+
+               While Elixir can compare across all types, you are comparing across types \
+               which are always disjoint, and the result is either always true or always false
+               """
+
+      assert typeerror!([x = 123, y = 456.0], x === y) ==
+               ~l"""
+               comparison between distinct types found:
+
+                   x === y
+
+               given types:
+
+                   integer() === float()
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   x = 123
+
+               where "y" was given the type:
+
+                   # type: float()
+                   # from: types_test.ex:LINE-1
+                   y = 456.0
+
+               While Elixir can compare across all types, you are comparing across types \
+               which are always disjoint, and the result is either always true or always false
+               """
+    end
+
+    test "warns on comparison with struct across dynamic call" do
+      assert typeerror!([x = %Point{}, y = %Point{}, mod = Kernel], mod.<=(x, y)) ==
+               ~l"""
+               comparison with structs found:
+
+                   mod.<=(x, y)
+
+               given types:
+
+                   dynamic(%Point{}) <= dynamic(%Point{})
+
+               where "mod" was given the type:
+
+                   # type: dynamic(Kernel)
+                   # from: types_test.ex:LINE-1
+                   mod = Kernel
+
+               where "x" was given the type:
+
+                   # type: dynamic(%Point{})
+                   # from: types_test.ex:LINE-1
+                   x = %Point{}
+
+               where "y" was given the type:
+
+                   # type: dynamic(%Point{})
+                   # from: types_test.ex:LINE-1
+                   y = %Point{}
+
+               Comparison operators (>, <, >=, <=, min, and max) perform structural and not semantic comparison. Comparing with a struct won't give meaningful results. Structs that can be compared typically define a compare/2 function within their modules that can be used for semantic comparison.
+               """
+
+      assert typeerror!(
+               [x = %Point{}, mod = Kernel, condition],
+               (
+                 y = if condition, do: 456, else: %Point{}
+                 mod.<=(x, y)
+               )
+             ) =~ "comparison with structs found:"
+
+      assert typeerror!(
+               [mod = Kernel, condition],
+               (
+                 x = if condition, do: 123, else: %Point{}
+                 y = if condition, do: 456, else: %Point{}
+                 mod.<=(x, y)
+               )
+             ) =~ "comparison with structs found:"
+
+      assert typecheck!(
+               [x = %Date{}, y, mod = Kernel],
+               mod.>(x, y)
+             ) == boolean()
+
+      assert typecheck!(
+               [x = 123, mod = Kernel, condition],
+               (
+                 y = if condition, do: 456, else: %Point{}
+                 mod.<=(x, y)
+               )
+             ) == boolean()
+    end
+  end
+
+  describe ":erlang rewrites" do
+    test "Kernel.not/1" do
+      assert typecheck!([x], not is_list(x)) == boolean()
+    end
+
+    test "Kernel.+/2" do
+      assert typeerror!([x = :foo, y = 123], x + y) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Kernel.+/2:
+
+                   x + y
+
+               given types:
+
+                   dynamic(:foo), integer()
+
+               but expected one of:
+
+                   #1
+                   integer(), integer()
+
+                   #2
+                   integer(), float()
+
+                   #3
+                   float(), integer()
+
+                   #4
+                   float(), float()
+
+               where "x" was given the type:
+
+                   # type: dynamic(:foo)
+                   # from: types_test.ex:LINE-1
+                   x = :foo
+
+               where "y" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   y = 123
+               """
+
+      assert typewarn!(
+               [x],
+               cond do
+                 if(x, do: true, else: 1) -> :if
+                 x -> :x
+               end
+             ) ==
+               {atom([:if, :x]),
+                ~l"""
+                this clause in cond will always match:
+
+                    if x do
+                      true
+                    else
+                      1
+                    end
+
+                since it has type:
+
+                    true or integer()
+
+                where "x" was given the type:
+
+                    # type: dynamic()
+                    # from: types_test.ex:LINE-7
+                    x
+                """}
+    end
+
+    test "Integer.to_string/1" do
+      assert typecheck!([x = 123], Integer.to_string(x)) == binary()
+
+      assert typeerror!([x = :foo], Integer.to_string(x)) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Integer.to_string/1:
+
+                   Integer.to_string(x)
+
+               given types:
+
+                   dynamic(:foo)
+
+               but expected one of:
+
+                   integer()
+
+               where "x" was given the type:
+
+                   # type: dynamic(:foo)
+                   # from: types_test.ex:LINE-1
+                   x = :foo
+               """
+    end
+
+    test "Bitwise.bnot/1" do
+      assert typecheck!([x = 123], Bitwise.bnot(x)) == integer()
+
+      assert typeerror!([x = :foo], Bitwise.bnot(x)) |> strip_ansi() ==
+               ~l"""
+               incompatible types given to Bitwise.bnot/1:
+
+                   Bitwise.bnot(x)
+
+               given types:
+
+                   dynamic(:foo)
+
+               but expected one of:
+
+                   integer()
+
+               where "x" was given the type:
+
+                   # type: dynamic(:foo)
+                   # from: types_test.ex:LINE-1
+                   x = :foo
+               """
+    end
+
+    test "Kernel.in/2" do
+      assert typecheck!(
+               [x],
+               x in []
+             ) == atom([false])
+
+      assert typecheck!(
+               [x],
+               (
+                 true = x in [:foo, 1, :bar, 2.0, :baz]
+                 x
+               )
+             ) ==
+               dynamic(opt_union(atom([:foo, :bar, :baz]), opt_union(integer(), float())))
+
+      assert typecheck!(
+               [x],
+               (
+                 false = x in [:foo, 1, :bar, 2.0, :baz]
+                 x
+               )
+             ) ==
+               dynamic(opt_negation(atom([:foo, :bar, :baz])))
+
+      assert typecheck!(
+               [x],
+               (
+                 true = x not in [:foo, 1, :bar, 2.0, :baz]
+                 x
+               )
+             ) ==
+               dynamic(opt_negation(atom([:foo, :bar, :baz])))
+
+      assert typecheck!(
+               [x],
+               (
+                 false = x not in [:foo, 1, :bar, 2.0, :baz]
+                 x
+               )
+             ) ==
+               dynamic(opt_union(atom([:foo, :bar, :baz]), opt_union(integer(), float())))
+
+      assert typeerror!([x = :ok], true = x in [:foo, 1.0, :baz]) =~ ~l"""
+             comparison between distinct types found:
+
+                 x in [:foo, 1.0, :baz]
+
+             given types:
+
+                 dynamic(:ok) in list(:baz or :foo or float())
+
+             where "x" was given the type:
+
+                 # type: dynamic(:ok)
+                 # from: types_test.ex:LINE
+                 x = :ok
+             """
+
+      assert typeerror!(
+               [x],
+               (
+                 true = x in [:foo, :bar]
+                 :baz = x
+               )
+             ) == ~l"""
+             the following pattern will never match:
+
+                 :baz = x
+
+             because the right-hand side has type:
+
+                 dynamic(:bar or :foo)
+
+             where "x" was given the type:
+
+                 # type: dynamic(:bar or :foo)
+                 # from: types_test.ex:LINE-3
+                 x in [:foo, :bar]
+             """
+    end
+
+    test "String.to_existing_atom/2" do
+      assert typecheck!(
+               [x],
+               String.to_existing_atom(x, [:foo, :bar])
+             ) == atom([:foo, :bar])
+
+      assert typecheck!(
+               [x],
+               (
+                 values = [:foo, :bar]
+                 String.to_existing_atom(x, values)
+               )
+             ) == atom([:foo, :bar])
+
+      assert typecheck!(
+               [x, values],
+               String.to_existing_atom(x, values)
+             ) == dynamic(atom())
+
+      assert typecheck!(
+               [value],
+               String.to_existing_atom("foo", Enum.map(value, & &1))
+             ) == dynamic(atom())
+
+      assert typeerror!(
+               [condition, value],
+               String.to_existing_atom("foo", if(condition, do: value, else: []))
+             ) =~ "incompatible types given to String.to_existing_atom/2"
+
+      assert typeerror!(
+               [x],
+               String.to_existing_atom(:not_a_string, x)
+             ) =~ "incompatible types given to String.to_existing_atom/2"
+
+      assert typeerror!(
+               [x],
+               String.to_existing_atom(x, [:foo, "not atoms"])
+             ) =~ "incompatible types given to String.to_existing_atom/2"
+
+      assert typeerror!(
+               [x],
+               String.to_existing_atom(x, [])
+             ) =~ "incompatible types given to String.to_existing_atom/2"
+    end
+
+    test "List.to_existing_atom/2" do
+      assert typecheck!(
+               [x],
+               List.to_existing_atom(x, [:foo, :bar])
+             ) == atom([:foo, :bar])
+
+      assert typecheck!(
+               [x],
+               (
+                 values = [:foo, :bar]
+                 List.to_existing_atom(x, values)
+               )
+             ) == atom([:foo, :bar])
+
+      assert typecheck!(
+               [x, values],
+               List.to_existing_atom(x, values)
+             ) == dynamic(atom())
+
+      assert typeerror!(
+               [x],
+               List.to_existing_atom(:not_a_charlist, x)
+             ) =~ "incompatible types given to List.to_existing_atom/2"
+
+      assert typeerror!(
+               [x],
+               List.to_existing_atom(x, [:foo, "not atoms"])
+             ) =~ "incompatible types given to List.to_existing_atom/2"
+
+      assert typeerror!(
+               [x],
+               List.to_existing_atom(x, [])
+             ) =~ "incompatible types given to List.to_existing_atom/2"
+    end
+  end
+
+  describe "case" do
+    test "does not type check literals" do
+      assert typecheck!(
+               case :dev do
+                 :dev -> :ok
+                 :prod -> :error
+               end
+             ) == atom([:ok, :error])
+    end
+
+    test "resets branches" do
+      assert typecheck!(
+               [x],
+               (
+                 case :rand.uniform() do
+                   y when y < 0.5 -> x.foo
+                   y when y > 0.5 -> x.bar()
+                 end
+
+                 x
+               )
+             ) == dynamic()
+    end
+
+    test "returns unions of all clauses" do
+      assert typecheck!(
+               [x],
+               case x do
+                 :ok -> :ok
+                 :error -> :error
+               end
+             ) == atom([:ok, :error])
+
+      assert typedyn!(
+               [x],
+               case x do
+                 :ok -> :ok
+                 :error -> :error
+               end
+             ) == dynamic(atom([:ok, :error]))
+    end
+
+    defmacrop generated(op) do
+      Macro.update_meta(op, &([generated: true] ++ &1))
+    end
+
+    test "ignores always failing guards" do
+      assert typecheck!(
+               case System.get_env("foo") do
+                 x when generated(x == false) or byte_size(x) >= 0 -> :binary
+                 _ -> nil
+               end
+             ) == atom([nil, :binary])
+
+      assert typecheck!(
+               case System.get_env("foo") do
+                 x when generated(x == false) or x == nil -> nil
+                 _ -> :binary
+               end
+             ) == atom([nil, :binary])
+    end
+
+    test "computes types based on previous branches" do
+      assert typecheck!(
+               [condition],
+               case condition do
+                 x when is_binary(x) -> {:binary, x}
+                 x when is_bitstring(x) -> {:bitstring, x}
+               end
+             ) ==
+               dynamic(
+                 opt_union(
+                   tuple([atom([:binary]), binary()]),
+                   tuple([atom([:bitstring]), bitstring_no_binary()])
+                 )
+               )
+
+      assert typecheck!(
+               [condition],
+               case condition do
+                 x = %{} when x != %{} -> :non_empty_map
+                 %{} -> :maybe_empty_map
+               end
+             ) ==
+               atom([:non_empty_map, :maybe_empty_map])
+    end
+
+    test "consider external variables as not precise" do
+      assert typecheck!(
+               [x],
+               (
+                 res =
+                   case System.get_env("foo") do
+                     nil when x == :foo -> {:first, x}
+                     rest -> {:second, rest}
+                   end
+
+                 {x, res}
+               )
+             ) ==
+               dynamic(
+                 tuple([
+                   term(),
+                   opt_union(
+                     tuple([atom([:first]), atom([:foo])]),
+                     tuple([atom([:second]), opt_union(binary(), atom([nil]))])
+                   )
+                 ])
+               )
+    end
+
+    test "refine types when there are dead branches (conditional)" do
+      assert typecheck!(
+               [x],
+               (
+                 if is_integer(x) do
+                   raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic(opt_negation(integer()))
+
+      assert typecheck!(
+               [x],
+               (
+                 if x == :foo do
+                   raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic(opt_negation(atom([:foo])))
+
+      assert typecheck!(
+               [x],
+               (
+                 if is_map(x) or is_integer(x) do
+                   raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic(opt_negation(opt_union(open_map(), integer())))
+
+      # When it is not precise enough, we don't filter
+      assert typecheck!(
+               [x],
+               (
+                 if x == "foo" do
+                   raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic()
+    end
+
+    test "refine types when there are dead branches (case)" do
+      assert typecheck!(
+               [x, key],
+               (
+                 case x do
+                   %{^key => value} -> {:ok, value}
+                   %{} -> raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic(open_map())
+
+      assert typecheck!(
+               [x],
+               (
+                 case x do
+                   %{foo: _} -> :ok
+                   %{} -> raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic(open_map(foo: {term(), false}))
+
+      assert typecheck!(
+               [x, key],
+               (
+                 case x do
+                   %{foo: _} -> :ok
+                   %{^key => value} -> {:value, value}
+                   %{} -> raise "bad"
+                 end
+
+                 x
+               )
+             ) == dynamic(open_map())
+    end
+
+    test "refine types when it is dynamic" do
+      assert typecheck!(
+               [x],
+               (
+                 case x do
+                   {} -> :tuple
+                   %{} -> :empty_list
+                 end
+
+                 x
+               )
+             ) == dynamic()
+
+      assert typedyn!(
+               [x],
+               (
+                 case x do
+                   {} -> :tuple
+                   %{} -> :empty_list
+                 end
+
+                 x
+               )
+             ) == dynamic(opt_union(open_map(), tuple([])))
+    end
+
+    test "warns on redundant clauses" do
+      assert typewarn!(
+               [x],
+               case System.get_env(x) do
+                 nil -> 1
+                 b when is_binary(b) -> 2
+                 other -> other
+               end
+             )
+             |> elem(1) =~ ~l"""
+             the following clause cannot match because the previous clauses already matched all possible values:
+
+                 other ->
+
+             it attempts to match on the result of:
+
+                 System.get_env(x)
+
+             which has the already matched type:
+
+                 dynamic(nil or binary())
+             """
+
+      assert typewarn!(
+               [x],
+               case String.to_unsafe_atom(x) do
+                 :ok -> 1
+                 :ok -> 2
+               end
+             )
+             |> elem(1) == ~l"""
+             the following clause is redundant:
+
+                 :ok ->
+
+             previous clauses have already matched on the following types:
+
+                 :ok
+             """
+
+      assert typewarn!(
+               [a, b],
+               case {a, b} do
+                 {x, y} when is_integer(x) and is_integer(y) -> 1
+                 {x, y} when is_integer(x) and is_integer(y) -> 2
+               end
+             )
+             |> elem(1) =~ ~l"""
+             the following clause is redundant:
+
+                 {x, y} when is_integer(x) and is_integer(y) ->
+
+             previous clauses have already matched on the following types:
+
+                 {integer(), integer()}
+             """
+    end
+
+    test "considers singleton-typed pins precise" do
+      assert typewarn!(
+               [x],
+               (
+                 y = :ok
+
+                 case x do
+                   ^y -> :matched
+                   :ok -> :redundant
+                   _ -> :other
+                 end
+               )
+             )
+             |> elem(1) == ~l"""
+             the following clause is redundant:
+
+                 :ok ->
+
+             previous clauses have already matched on the following types:
+
+                 :ok
+             """
+
+      assert typewarn!(
+               [x, y],
+               case y do
+                 :ok ->
+                   case x do
+                     ^y -> :matched
+                     :ok -> :redundant
+                     _ -> :other
+                   end
+
+                 _ ->
+                   :other
+               end
+             )
+             |> elem(1) =~ "the following clause is redundant"
+    end
+
+    test "subtracts singleton-typed pins from later clauses" do
+      assert typecheck!(
+               [x],
+               (
+                 y = :ok
+
+                 case x do
+                   ^y -> raise "matched"
+                   _ -> :other
+                 end
+
+                 x
+               )
+             ) == dynamic(opt_negation(atom([:ok])))
+    end
+
+    test "does not consider non-singleton-typed pins precise" do
+      assert typecheck!(
+               [x = :ok],
+               (
+                 y = Enum.random([:ok, :error])
+
+                 case x do
+                   ^y -> :matched
+                   :ok -> :needed
+                 end
+               )
+             ) == atom([:matched, :needed])
+
+      assert typecheck!(
+               [x],
+               (
+                 y = 123
+
+                 case x do
+                   ^y -> :matched
+                   z when is_integer(z) -> :integer
+                   _ -> :other
+                 end
+               )
+             ) == atom([:matched, :integer, :other])
+    end
+
+    test "reports error from clause that will never match" do
+      assert typeerror!(
+               [x],
+               case Atom.to_string(x) do
+                 :error -> :error
+                 x -> x
+               end
+             ) == ~l"""
+             the following clause will never match:
+
+                 :error ->
+
+             because it attempts to match on the result of:
+
+                 Atom.to_string(x)
+
+             which has type:
+
+                 binary()
+             """
+    end
+
+    test "reports errors from multiple clauses" do
+      {type, [_, _]} =
+        typediag!(
+          [x],
+          case Atom.to_string(x) do
+            :ok -> :ok
+            :error -> :error
+          end
+        )
+
+      assert type == none()
+    end
+  end
+
+  describe "conditionals" do
+    test "if does not report on literals" do
+      assert typecheck!(
+               if true do
+                 :ok
+               end
+             ) == atom([:ok, nil])
+    end
+
+    test "refines expression type" do
+      assert typecheck!(
+               if x = System.get_env("HELLO") do
+                 {:ok, x}
+               else
+                 {:error, x}
+               end
+             ) ==
+               dynamic(
+                 opt_union(
+                   tuple([atom([:ok]), binary()]),
+                   tuple([atom([:error]), atom([nil])])
+                 )
+               )
+    end
+
+    test "refines static expression type from predicates" do
+      assert typecheck!(
+               [bin?],
+               (
+                 x =
+                   if bin? do
+                     "foo"
+                   else
+                     1
+                   end
+
+                 if is_binary(x) do
+                   String.length(x)
+                 else
+                   x + 1
+                 end
+               )
+             )
+             |> equal?(opt_union(dynamic(), integer()))
+
+      assert typeerror!(
+               [bin?, int?, bool?],
+               (
+                 x =
+                   if bin? do
+                     "foo"
+                   else
+                     if int? do
+                       1
+                     else
+                       if bool? do
+                         true
+                       else
+                         false
+                       end
+                     end
+                   end
+
+                 if is_binary(x) do
+                   String.length(x)
+                 else
+                   x + 1
+                 end
+               )
+             )
+             |> strip_ansi() =~ ~l"""
+             incompatible types given to Kernel.+/2:
+
+                 x + 1
+
+             given types:
+
+                 boolean() or integer(), integer()
+
+             but expected one of:
+
+                 #1
+                 integer(), integer()
+
+                 #2
+                 integer(), float()
+
+                 #3
+                 float(), integer()
+
+                 #4
+                 float(), float()
+
+             where "x" was given the types:
+
+                 # type: binary() or boolean() or integer()
+             """
+    end
+
+    test "refines nested expression type" do
+      assert typecheck!(
+               case (if x = System.get_env("HELLO") do
+                       :do
+                     else
+                       :else
+                     end) do
+                 :do -> {:ok, x}
+                 :else -> {:error, x}
+               end
+             ) ==
+               dynamic(
+                 opt_union(
+                   tuple([atom([:ok]), binary()]),
+                   tuple([atom([:error]), atom([nil])])
+                 )
+               )
+    end
+
+    test "discards warnings from refinements" do
+      assert {_, [_]} =
+               typediag!(
+                 if x = System.unknown_function_get_env("HELLO") do
+                   {:ok, x}
+                 else
+                   {:error, x}
+                 end
+               )
+    end
+
+    test "and/or does not report on literals" do
+      assert typecheck!(false and true) == boolean()
+      assert typecheck!(false or true) == atom([true])
+    end
+
+    test "and reports violations" do
+      assert typeerror!([x = 123], x and true) =~ """
+             the following conditional expression will always fail:
+
+                 x
+
+             because it evaluates to:
+
+                 integer()
+             """
+
+      assert typeerror!([x = true], x and true) =~ """
+             the following conditional expression will always succeed:
+
+                 x
+
+             because it evaluates to:
+
+                 dynamic(true)
+             """
+
+      assert typeerror!([x = false], x and true) =~ """
+             the following conditional expression will never succeed:
+
+                 x
+
+             because it evaluates to:
+
+                 dynamic(false)
+             """
+    end
+
+    test "or reports violations" do
+      assert typeerror!([x = 123], x or true) =~ """
+             the following conditional expression will always fail:
+
+                 x
+
+             because it evaluates to:
+
+                 integer()
+             """
+
+      assert typeerror!([x = true], x or true) =~ """
+             the following conditional expression will always succeed:
+
+                 x
+
+             because it evaluates to:
+
+                 dynamic(true)
+             """
+
+      assert typeerror!([x = false], x or true) =~ """
+             the following conditional expression will never succeed:
+
+                 x
+
+             because it evaluates to:
+
+                 dynamic(false)
+             """
+    end
+
+    test "|| reports violations" do
+      assert typeerror!([x = 123], x || true) =~ """
+             the right-hand side of || will never execute:
+
+                 x || ...
+
+             because the left-hand side always evaluates to:
+
+                 integer()
+             """
+
+      assert typeerror!([x = 123], System.get_env("foo") || x || true) =~ """
+             the right-hand side of || (shown as ... below) will never execute:
+
+                 System.get_env("foo") || x || ...
+
+             because the left-hand side always evaluates to:
+
+                 dynamic(binary() or integer())
+
+             """
+
+      assert typewarn!([x = false], x || true) |> elem(1) =~ """
+             the right-hand side of || will always execute:
+
+                 x || ...
+
+             because the left-hand side always evaluates to:
+
+                 dynamic(false)
+             """
+    end
+
+    test "! reports violations" do
+      assert typeerror!([x = 123], !x) =~ ~l"""
+             the following conditional expression:
+
+                 !x
+
+             will always evaluate to false because its inner expression has type:
+
+                 integer()
+
+             where "x" was given the type:
+
+                 # type: integer()
+                 # from: types_test.ex:LINE
+                 x = 123
+             """
+
+      assert typewarn!([x = nil], !x) |> elem(1) =~ ~l"""
+             the following conditional expression:
+
+                 !x
+
+             will always evaluate to true because its inner expression has type:
+
+                 dynamic(nil)
+             """
+
+      assert typeerror!([x = 123], !!x) =~ ~l"""
+             the following conditional expression:
+
+                 !!x
+
+             will always evaluate to true because its inner expression has type:
+
+                 integer()
+
+             where "x" was given the type:
+
+                 # type: integer()
+                 # from: types_test.ex:LINE
+                 x = 123
+             """
+
+      assert typewarn!([x = nil], !!x) |> elem(1) =~ ~l"""
+             the following conditional expression:
+
+                 !!x
+
+             will always evaluate to false because its inner expression has type:
+
+                 dynamic(nil)
+             """
+    end
+  end
+
+  describe "receive" do
+    test "returns unions of all clauses" do
+      assert typecheck!(
+               receive do
+                 :ok -> :ok
+                 :error -> :error
+               after
+                 0 -> :timeout
+               end
+             ) == atom([:ok, :error, :timeout])
+
+      assert typedyn!(
+               receive do
+                 :ok -> :ok
+                 :error -> :error
+               after
+                 0 -> :timeout
+               end
+             ) == dynamic(atom([:ok, :error, :timeout]))
+    end
+
+    test "infers type for timeout" do
+      assert typecheck!(
+               [x],
+               receive do
+               after
+                 x -> x
+               end
+             ) == dynamic(opt_union(integer(), atom([:infinity])))
+    end
+
+    test "resets branches" do
+      assert typecheck!(
+               [x, timeout = :infinity],
+               (
+                 receive do
+                   y when y > 0.5 -> x.foo
+                   _ -> x.bar()
+                 after
+                   timeout -> <<^x::integer>> = :crypto.strong_rand_bytes(1)
+                 end
+
+                 x
+               )
+             ) == dynamic()
+    end
+
+    test "computes difference across clauses" do
+      assert typecheck!(
+               receive do
+                 x when is_binary(x) -> :ok
+                 y -> {:other, y}
+               end
+             ) == opt_union(atom([:ok]), dynamic(tuple([atom([:other]), opt_negation(binary())])))
+    end
+
+    test "warns on redundant clauses" do
+      assert typewarn!(
+               receive do
+                 x when is_binary(x) -> x
+                 "foo" -> "bar"
+               end
+             )
+             |> elem(1) == """
+             the following clause is redundant:
+
+                 "foo" ->
+
+             previous clauses have already matched on the following types:
+
+                 binary()
+             """
+    end
+
+    test "errors on bad timeout" do
+      assert typeerror!(
+               [x = :timeout],
+               receive do
+               after
+                 x -> :ok
+               end
+             ) == ~l"""
+             expected "after" timeout given to receive to be an integer:
+
+                 x
+
+             but got type:
+
+                 dynamic(:timeout)
+
+             where "x" was given the type:
+
+                 # type: dynamic(:timeout)
+                 # from: types_test.ex:LINE-5
+                 x = :timeout
+             """
+
+      # Check for compatibility, not subtyping
+      assert typeerror!(
+               [<<x::integer, y::float>>],
+               receive do
+               after
+                 if(:rand.uniform(), do: x, else: y) -> :ok
+               end
+             ) =~ "expected "
+    after
+      " timeout given to receive to be an integer"
+    end
+  end
+
+  describe "try" do
+    test "returns unions of all clauses" do
+      assert typecheck!(
+               try do
+                 :do
+               rescue
+                 _ -> :rescue
+               catch
+                 :implicit_caught -> :caught1
+                 :throw, :explicit_caught -> :caught2
+               after
+                 :not_used
+               end
+             ) == atom([:do, :caught1, :caught2, :rescue])
+
+      assert typecheck!(
+               [x],
+               try do
+                 x
+               rescue
+                 _ -> :rescue
+               catch
+                 :implicit_caught -> :caught1
+                 :throw, :explicit_caught -> :caught2
+               after
+                 :not_used
+               else
+                 :match -> :else1
+                 _ -> :else2
+               end
+             ) == atom([:caught1, :caught2, :rescue, :else1, :else2])
+    end
+
+    test "resets branches (except after)" do
+      assert typecheck!(
+               [x],
+               (
+                 try do
+                   <<^x::float>> = :crypto.strong_rand_bytes(8)
+                 rescue
+                   ArgumentError -> x.foo
+                 catch
+                   _, _ -> x.bar()
+                 after
+                   <<^x::integer>> = :crypto.strong_rand_bytes(8)
+                 end
+
+                 x
+               )
+             ) == dynamic(integer())
+    end
+
+    test "catch: computes difference across clauses" do
+      assert typecheck!(
+               try do
+                 flunk("whatever")
+               catch
+                 x when is_binary(x) -> :ok
+                 y -> {:other, y}
+               end
+             ) == opt_union(atom([:ok]), dynamic(tuple([atom([:other]), opt_negation(binary())])))
+    end
+
+    test "catch: warns on redundant clauses" do
+      assert typewarn!(
+               try do
+                 flunk("whatever")
+               catch
+                 x when is_binary(x) -> x
+                 "foo" -> "bar"
+               end
+             )
+             |> elem(1) == """
+             the following clause is redundant:
+
+                 :throw, "foo" ->
+
+             previous clauses have already matched on the following types:
+
+                 :throw, binary()
+             """
+    end
+
+    test "else: computes difference across clauses" do
+      assert typecheck!(
+               try do
+                 Process.get(:x)
+               rescue
+                 _ -> :unused
+               else
+                 x when is_binary(x) -> :ok
+                 y -> {:other, y}
+               end
+             ) ==
+               opt_union(
+                 atom([:ok, :unused]),
+                 dynamic(tuple([atom([:other]), opt_negation(binary())]))
+               )
+    end
+
+    test "else: warns on redundant clauses" do
+      assert typewarn!(
+               try do
+                 Process.get(:x)
+               rescue
+                 _ -> :unused
+               else
+                 x when is_binary(x) -> x
+                 "foo" -> "bar"
+               end
+             )
+             |> elem(1) == """
+             the following clause is redundant:
+
+                 "foo" ->
+
+             previous clauses have already matched on the following types:
+
+                 binary()
+             """
+    end
+
+    test "else: reports error from clause that will never match" do
+      assert typeerror!(
+               [x],
+               try do
+                 Atom.to_string(x)
+               rescue
+                 _ -> :ok
+               else
+                 :error -> :error
+                 x -> x
+               end
+             ) == ~l"""
+             the following clause will never match:
+
+                 :error ->
+
+             it is expected to match on type:
+
+                 binary()
+             """
+    end
+
+    test "rescue: defines unions of exceptions" do
+      assert typecheck!(
+               try do
+                 raise "oops"
+               rescue
+                 e in [RuntimeError, ArgumentError] ->
+                   e
+               end
+             ) ==
+               dynamic(
+                 opt_union(
+                   closed_map(
+                     __struct__: {atom([ArgumentError]), false},
+                     __exception__: {term(), false},
+                     message: {term(), false}
+                   ),
+                   closed_map(
+                     __struct__: {atom([RuntimeError]), false},
+                     __exception__: {term(), false},
+                     message: {term(), false}
+                   )
+                 )
+               )
+    end
+
+    test "rescue: defines an open map of two fields in anonymous rescue" do
+      assert typecheck!(
+               try do
+                 raise "oops"
+               rescue
+                 e -> e
+               end
+             ) ==
+               open_map(
+                 __struct__: {atom(), false},
+                 __exception__: {term(), false}
+               )
+    end
+
+    test "rescue: generates custom traces" do
+      assert typeerror!(
+               try do
+                 raise "oops"
+               rescue
+                 e -> Integer.to_string(e)
+               end
+             )
+             |> strip_ansi() == ~l"""
+             incompatible types given to Integer.to_string/1:
+
+                 Integer.to_string(e)
+
+             given types:
+
+                 %{..., __exception__: term(), __struct__: atom()}
+
+             but expected one of:
+
+                 integer()
+
+             where "e" was given the type:
+
+                 # type: %{..., __exception__: term(), __struct__: atom()}
+                 # from: types_test.ex
+                 rescue e
+
+             hint: when you rescue without specifying exception names, the variable is assigned a type of a struct but all of its fields are unknown. If you are trying to access an exception's :message key, either specify the exception names or use `Exception.message/1`.
+             """
+
+      # Collect errors across clauses
+      assert {_, [_, _]} =
+               typediag!(
+                 try do
+                   raise "oops"
+                 rescue
+                   e in ArgumentError -> Integer.to_string(e)
+                   e in RuntimeError -> Integer.to_string(e)
+                 end
+               )
+    end
+
+    test "rescue: errors on undefined exceptions" do
+      assert typeerror!(
+               try do
+                 :ok
+               rescue
+                 e in UnknownError -> e
+               end
+             ) ==
+               "struct UnknownError is undefined (module UnknownError is not available or is yet to be defined)"
+
+      assert typeerror!(
+               try do
+                 :ok
+               rescue
+                 e in Enumerable -> e
+               end
+             ) ==
+               "struct Enumerable is undefined (there is such module but it does not define a struct)"
+    end
+
+    test "rescue: matches on stacktrace" do
+      assert typecheck!(
+               try do
+                 raise "oops"
+               rescue
+                 _ ->
+                   case __STACKTRACE__ do
+                     [{_, _, _, [{:line, line} | _]} | _] -> line + 1
+                     _ -> 0
+                   end
+               end
+             ) == integer()
+
+      assert typecheck!(
+               try do
+                 raise "oops"
+               rescue
+                 _ ->
+                   case __STACKTRACE__ do
+                     [{_, _, _, [{:file, file} | _]} | _] -> file
+                     _ -> "unknown"
+                   end
+               end
+             ) == opt_union(list(integer()), binary())
+
+      assert typecheck!(
+               try do
+                 raise "oops"
+               rescue
+                 _ ->
+                   case __STACKTRACE__ do
+                     [{_, _, _, [{:error_info, error_info} | _]} | _] -> map_size(error_info)
+                     _ -> 0
+                   end
+               end
+             ) == integer()
+
+      assert typecheck!(
+               try do
+                 raise "oops"
+               rescue
+                 _ ->
+                   case __STACKTRACE__ do
+                     [{_, _, _, [{:column, column} | _]} | _] -> column
+                     _ -> 0
+                   end
+               end
+             ) == term()
+
+      assert typeerror!(
+               try do
+                 :ok
+               rescue
+                 _ ->
+                   [{_, _, args_or_arity, _} | _] = __STACKTRACE__
+                   args_or_arity.fun()
+               end
+             ) =~ ~l"""
+             expected a module (an atom) when invoking fun/0 in expression:
+
+                 args_or_arity.fun()
+
+             where "args_or_arity" was given the type:
+
+                 # type: integer() or list(term())
+                 # from: types_test.ex:LINE-3
+                 [{_, _, args_or_arity, _} | _] = __STACKTRACE__
+             """
+    end
+  end
+
+  describe "cond" do
+    test "always true" do
+      assert typecheck!(
+               cond do
+                 true -> :ok
+               end
+             ) == atom([:ok])
+
+      assert typecheck!(
+               [x, y],
+               cond do
+                 y -> :y
+                 x -> :x
+               end
+             ) == atom([:x, :y])
+
+      assert typedyn!(
+               [x, y],
+               cond do
+                 y -> :y
+                 x -> :x
+               end
+             ) == dynamic(atom([:x, :y]))
+
+      assert typewarn!(
+               [x, y = {:foo, :bar}],
+               cond do
+                 y -> :y
+                 x -> :x
+               end
+             ) ==
+               {atom([:x, :y]),
+                ~l"""
+                this clause in cond will always match:
+
+                    y
+
+                since it has type:
+
+                    dynamic({:foo, :bar})
+
+                where "y" was given the type:
+
+                    # type: dynamic({:foo, :bar})
+                    # from: types_test.ex:LINE-7
+                    y = {:foo, :bar}
+                """}
+    end
+
+    test "always false" do
+      assert typewarn!(
+               [x, y = false],
+               cond do
+                 y -> :y
+                 x -> :x
+               end
+             ) ==
+               {atom([:x, :y]),
+                ~l"""
+                this clause in cond will never match:
+
+                    y
+
+                since it has type:
+
+                    dynamic(false)
+
+                where "y" was given the type:
+
+                    # type: dynamic(false)
+                    # from: types_test.ex:LINE-7
+                    y = false
+                """}
+    end
+
+    test "refines types (2 clauses)" do
+      assert typecheck!(
+               [x],
+               cond do
+                 is_binary(x) -> {:first, x}
+                 true -> {:second, x}
+               end
+             ) ==
+               dynamic(
+                 opt_union(
+                   tuple([atom([:first]), binary()]),
+                   tuple([atom([:second]), opt_negation(binary())])
+                 )
+               )
+
+      # Negated types do not leak through
+      assert typecheck!(
+               [x],
+               (
+                 cond do
+                   is_binary(x) -> {:first, x}
+                   true -> {:second, x}
+                 end
+
+                 x
+               )
+             ) == dynamic()
+
+      # Unless one of them raise
+      assert typecheck!(
+               [x],
+               (
+                 cond do
+                   is_binary(x) -> raise "oops"
+                   true -> :ok
+                 end
+
+                 x
+               )
+             ) == dynamic(opt_negation(binary()))
+
+      assert typecheck!(
+               [x],
+               (
+                 cond do
+                   is_binary(x) -> :ok
+                   true -> raise "oops"
+                 end
+
+                 x
+               )
+             ) == dynamic(binary())
+    end
+
+    test "refines types (3+ clauses)" do
+      assert typecheck!(
+               [x],
+               cond do
+                 is_binary(x) -> {:first, x}
+                 is_atom(x) -> {:second, x}
+                 true -> {:third, x}
+               end
+             ) ==
+               dynamic(
+                 tuple([atom([:first]), binary()])
+                 |> opt_union(tuple([atom([:second]), atom()]))
+                 |> opt_union(tuple([atom([:third]), opt_negation(opt_union(binary(), atom()))]))
+               )
+
+      # Negated types do not leak through
+      assert typecheck!(
+               [x],
+               (
+                 cond do
+                   is_binary(x) -> {:first, x}
+                   is_atom(x) -> {:second, x}
+                   true -> {:third, x}
+                 end
+
+                 x
+               )
+             ) == dynamic()
+    end
+
+    test "resets branches" do
+      assert typecheck!(
+               [x],
+               (
+                 cond do
+                   :rand.uniform() > 0.5 -> x.foo
+                   true -> x.bar()
+                 end
+
+                 x
+               )
+             ) == dynamic()
+    end
+
+    test "case nested in cond" do
+      # Test with one clause
+      assert typecheck!(
+               [value],
+               cond do
+                 (case float? = is_float(value) do
+                    false -> is_integer(value)
+                    true -> true
+                  end) ->
+                   float?
+               end
+             ) == boolean()
+
+      # Test with two clauses
+      assert typecheck!(
+               [value],
+               cond do
+                 (case float? = is_float(value) do
+                    false -> is_integer(value)
+                    true -> true
+                  end) ->
+                   float?
+
+                 true ->
+                   :otherwise
+               end
+             ) == opt_union(boolean(), atom([:otherwise]))
+
+      # Test with multiple clauses
+      assert typecheck!(
+               [value],
+               cond do
+                 is_binary(value) ->
+                   :binary
+
+                 is_atom(value) ->
+                   :atom
+
+                 (case float? = is_float(value) do
+                    false -> is_integer(value)
+                    true -> true
+                  end) ->
+                   float?
+               end
+             ) == opt_union(boolean(), atom([:binary, :atom]))
+    end
+  end
+
+  describe "comprehensions" do
+    test "bitstring generators" do
+      assert typeerror!([<<x>>], for(<<y <- x>>, do: y)) ==
+               ~l"""
+               expected the right side of <- in a binary generator to be a binary (or bitstring):
+
+                   x
+
+               but got type:
+
+                   integer()
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-1
+                   <<x>>
+
+               #{hints(:inferred_bitstring_spec)}
+               """
+
+      # Check for compatibility, not subtyping
+      assert typeerror!(
+               [<<x::integer, y::binary>>],
+               for(<<i <- if(:rand.uniform() > 0.5, do: x, else: y)>>, do: i)
+             ) =~
+               ~l"""
+               expected the right side of <- in a binary generator to be a binary (or bitstring):
+
+                   if :rand.uniform() > 0.5 do
+                     x
+                   else
+                     y
+                   end
+
+               but got type:
+
+                   binary() or integer()
+
+               where "x" was given the type:
+
+                   # type: integer()
+                   # from: types_test.ex:LINE-3
+                   <<x::integer, ...>>
+
+               where "y" was given the type:
+
+                   # type: binary()
+                   # from: types_test.ex:LINE-3
+                   <<..., y::binary>>
+               """
+    end
+
+    test "infers bitstring generators" do
+      assert typecheck!(
+               [x],
+               (
+                 for <<_ <- x>>, do: :ok
+                 x
+               )
+             ) == dynamic(bitstring())
+    end
+
+    test ":into lists" do
+      assert typecheck!([binary], for(<<x <- binary>>, do: x)) == list(integer())
+      assert typecheck!([binary], for(<<x <- binary>>, do: x, into: [])) == list(integer())
+
+      assert typecheck!([enum], for(x <- enum, do: x)) ==
+               opt_union(list(dynamic()), empty_list())
+
+      assert typecheck!([enum], for(x <- enum, do: x, into: [])) ==
+               opt_union(list(dynamic()), empty_list())
+    end
+
+    test ":into binaries" do
+      assert typecheck!([binary], for(<<x <- binary>>, do: <<x>>, into: "")) |> equal?(binary())
+      assert typecheck!([binary, other], for(<<x <- binary>>, do: x, into: other)) == dynamic()
+
+      assert typecheck!([enum], for(x <- enum, do: <<x>>, into: "")) |> equal?(binary())
+      assert typecheck!([enum, other], for(x <- enum, do: x, into: other)) == dynamic()
+    end
+
+    test ":into unions" do
+      assert typecheck!(
+               [binary],
+               (
+                 into = if :rand.uniform() > 0.5, do: [], else: "0"
+                 for(<<x::4-binary <- binary>>, do: x, into: into)
+               )
+             ) == opt_union(binary(), list(binary()))
+
+      assert typecheck!(
+               [binary, empty_list = []],
+               (
+                 into = if :rand.uniform() > 0.5, do: empty_list, else: "0"
+                 for(<<x::2 <- binary>>, do: <<x::4>>, into: into)
+               )
+             ) ==
+               dynamic(
+                 opt_union(opt_union(bitstring(), empty_list()), list(bitstring_no_binary()))
+               )
+    end
+
+    test ":into bitstrings" do
+      assert typecheck!([items], for(_ <- items, into: <<0::4>>, do: <<1::4>>)) == bitstring()
+
+      assert typecheck!(
+               [items],
+               (
+                 bits = for _ <- items, into: <<0::4>>, do: <<1::4>>
+
+                 case bits do
+                   x when is_binary(x) -> :binary
+                   _ -> :bits
+                 end
+               )
+             ) == atom([:binary, :bits])
+    end
+
+    test ":into inference" do
+      assert typecheck!(
+               [x, y],
+               (
+                 List.to_integer([_ | _] = for(_ <- x, do: y))
+                 y
+               )
+             ) == dynamic(integer())
+
+      assert typecheck!(
+               [x, y],
+               (
+                 for(<<_ <- x>>, do: y, into: "")
+                 y
+               )
+             ) == dynamic(bitstring())
+    end
+
+    test ":into incompatibility" do
+      assert typeerror!([binary], for(<<x <- binary>>, do: x, into: "")) =~ ~l"""
+             expected the body of a for-comprehension with into: binary() (or bitstring()) to be a binary (or bitstring):
+
+                 x
+
+             but got type:
+
+                 integer()
+
+             where "x" was given the type:
+
+                 # type: integer()
+                 # from: types_test.ex:LINE
+                 <<x>>
+             """
+    end
+
+    test ":into with non-returning collectable" do
+      assert typecheck!([list], for(x <- list, into: raise("oops"), do: x)) == none()
+    end
+
+    test ":reduce checks" do
+      assert typecheck!(
+               [list],
+               for _ <- list, reduce: :ok do
+                 :ok -> 1
+                 _ -> 2.0
+               end
+             ) == opt_union(atom([:ok]), opt_union(integer(), float()))
+    end
+
+    test ":reduce inference" do
+      assert typecheck!(
+               [list, x],
+               (
+                 123 =
+                   for _ <- list, reduce: x do
+                     x -> x
+                   end
+
+                 x
+               )
+             ) == dynamic(integer())
+    end
+
+    test ":reduce warns on redundant clauses" do
+      assert typewarn!(
+               [list, x],
+               for _ <- list, reduce: x do
+                 x when is_binary(x) -> x
+                 "foo" -> "bar"
+               end
+             )
+             |> elem(1) == """
+             the following clause is redundant:
+
+                 "foo" ->
+
+             previous clauses have already matched on the following types:
+
+                 binary()
+             """
+    end
+  end
+
+  describe "with" do
+    test "computes non-matched types" do
+      assert typecheck!(
+               [x],
+               with y when is_binary(y) <- System.get_env(x) do
+                 {:ok, y}
+               end
+             ) == dynamic(opt_union(tuple([atom([:ok]), binary()]), atom([nil])))
+
+      assert typecheck!(
+               [x],
+               with "not precise" <- System.get_env(x) do
+                 :not_precise
+               end
+             ) ==
+               dynamic(opt_union(binary(), atom([nil, :not_precise])))
+               |> opt_union(atom([:not_precise]))
+
+      assert typecheck!(
+               [x],
+               with :ok <- System.get_env(x) && :ok do
+                 {:ok, x}
+               end
+             ) ==
+               dynamic(opt_union(tuple([atom([:ok]), binary()]), atom([nil])))
+
+      assert typecheck!(
+               [x],
+               with {:ok, "not precise"} <- if(y = System.get_env(x), do: {:ok, y}) do
+                 {:ok, x}
+               end
+             ) ==
+               dynamic(opt_union(tuple([atom([:ok]), binary()]), atom([nil])))
+               |> opt_union(atom([nil]))
+    end
+
+    test "warns on non-matching generators" do
+      assert typeerror!(
+               [x],
+               with :ok <- System.get_env(x) do
+                 x
+               end
+             ) =~ """
+             the following pattern will never match:
+
+                 :ok <- System.get_env(x)
+
+             because the right-hand side has type:
+
+                 dynamic(nil or binary())
+             """
+    end
+
+    test "warns on non-matching clauses in else" do
+      assert typeerror!(
+               [x],
+               with y when is_binary(y) <- System.get_env(x) do
+                 x
+               else
+                 :ok -> :ok
+               end
+             ) == ~l"""
+             the following clause will never match:
+
+                 :ok ->
+
+             it is expected to match on type:
+
+                 dynamic(nil)
+             """
+    end
+
+    test "warns on redundant clauses in else" do
+      assert typewarn!(
+               [x],
+               with false <- x do
+                 x
+               else
+                 x when is_binary(x) -> x
+                 "foo" -> "bar"
+               end
+             )
+             |> elem(1) == ~l"""
+             the following clause is redundant:
+
+                 "foo" ->
+
+             previous clauses have already matched on the following types:
+
+                 binary()
+             """
+    end
+  end
+
+  describe "info" do
+    test "__info__/1" do
+      assert typecheck!(GenServer.__info__(:functions)) == list(tuple([atom(), integer()]))
+
+      assert typewarn!(:string.__info__(:functions)) ==
+               {dynamic(), ":string.__info__/1 is undefined or private"}
+
+      assert typecheck!([x], x.__info__(:functions)) == list(tuple([atom(), integer()]))
+
+      assert typeerror!([x], x.__info__(:whatever)) |> strip_ansi() =~ """
+             incompatible types given to __info__/1:
+
+                 x.__info__(:whatever)
+
+             given types:
+
+                 :whatever
+             """
+    end
+
+    test "__info__/1 for struct information" do
+      assert typecheck!(GenServer.__info__(:struct)) == atom([nil])
+
+      assert typecheck!(URI.__info__(:struct)) ==
+               list(
+                 closed_map(
+                   default: {term(), true},
+                   field: {atom(), false},
+                   required: {boolean(), true}
+                 )
+               )
+
+      assert typecheck!([x], x.__info__(:struct)) ==
+               list(
+                 closed_map(
+                   default: {term(), true},
+                   field: {atom(), false},
+                   required: {boolean(), true}
+                 )
+               )
+               |> opt_union(atom([nil]))
+    end
+
+    test "behaviour_info/1" do
+      assert typecheck!([x], x.behaviour_info(:callbacks)) == list(tuple([atom(), integer()]))
+
+      assert typecheck!(GenServer.behaviour_info(:callbacks)) == list(tuple([atom(), integer()]))
+
+      assert typewarn!(String.behaviour_info(:callbacks)) ==
+               {dynamic(), "String.behaviour_info/1 is undefined or private"}
+    end
+
+    test "module_info/1" do
+      assert typecheck!([x], x.module_info(:exports)) == list(tuple([atom(), integer()]))
+      assert typecheck!(GenServer.module_info(:exports)) == list(tuple([atom(), integer()]))
+    end
+
+    test "module_info/0" do
+      assert typecheck!([x], x.module_info()) |> subtype?(list(tuple([atom(), term()])))
+      assert typecheck!(GenServer.module_info()) |> subtype?(list(tuple([atom(), term()])))
+    end
+  end
+
+  describe "regressions" do
+    test "clauses within multi-module apply" do
+      assert typecheck!(
+               [value, format, debug?],
+               (
+                 module =
+                   case format do
+                     ".integer" -> Integer
+                     ".float" -> Float
+                   end
+
+                 value
+                 |> then(
+                   if debug? do
+                     &IO.inspect/1
+                   else
+                     &Function.identity/1
+                   end
+                 )
+                 |> module.to_string()
+               )
+             ) == dynamic() or binary()
+    end
+  end
+end

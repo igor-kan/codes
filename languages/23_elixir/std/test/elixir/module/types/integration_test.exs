@@ -1,0 +1,2055 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2021 The Elixir Team
+# SPDX-FileCopyrightText: 2012 Plataformatec
+
+Code.require_file("type_helper.exs", __DIR__)
+
+defmodule Module.Types.IntegrationTest do
+  use ExUnit.Case
+
+  import ExUnit.CaptureIO
+  import Module.Types.Descr
+
+  defp builtin_protocols do
+    [
+      Collectable,
+      Enumerable,
+      IEx.Info,
+      Inspect,
+      JSON.Encoder,
+      List.Chars,
+      String.Chars
+    ]
+  end
+
+  test "built-in protocols" do
+    builtin_protocols =
+      for app <- ~w[eex elixir ex_unit iex logger mix]a,
+          Application.ensure_loaded(app),
+          module <- Application.spec(app, :modules),
+          Code.ensure_loaded(module),
+          function_exported?(module, :__protocol__, 1),
+          do: module
+
+    # If this test fails, update:
+    # * lib/elixir/scripts/elixir_docs.ex
+    assert Enum.sort(builtin_protocols) == builtin_protocols()
+  end
+
+  setup_all do
+    Application.put_env(:elixir, :ansi_enabled, false)
+
+    on_exit(fn ->
+      Application.put_env(:elixir, :ansi_enabled, true)
+    end)
+  end
+
+  describe "ExCk chunk" do
+    test "writes exports" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          defp a, do: :ok
+          defmacrop b, do: a()
+          def c, do: b()
+          defmacro d, do: b()
+          @deprecated "oops"
+          def e, do: :ok
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          @callback f() :: :ok
+        end
+        """,
+        "c.ex" => """
+        defmodule C do
+          @macrocallback g() :: :ok
+        end
+        """
+      }
+
+      modules = compile_modules(files)
+
+      assert [
+               {{:c, 0}, %{}},
+               {{:e, 0}, %{deprecated: "oops", sig: {:infer, _, _}}}
+             ] = read_chunk(modules[A]).exports
+
+      assert read_chunk(modules[B]).exports == [
+               {{:behaviour_info, 1}, %{sig: :none}}
+             ]
+
+      assert read_chunk(modules[C]).exports == [
+               {{:behaviour_info, 1}, %{sig: :none}}
+             ]
+    end
+
+    test "writes exports for implementations" do
+      files = %{
+        "pi.ex" => """
+        defprotocol Itself do
+          @fallback_to_any true
+          def itself(data)
+        end
+
+        defimpl Itself,
+          for: [
+            Atom,
+            BitString,
+            Float,
+            Function,
+            Integer,
+            List,
+            Map,
+            Port,
+            PID,
+            Reference,
+            Tuple,
+            Any,
+            Range,
+            Unknown,
+            GenServer
+          ] do
+          def itself(data), do: data
+          def this_wont_warn(:ok), do: :ok
+        end
+        """
+      }
+
+      {modules, stderr} = with_io(:stderr, fn -> compile_modules(files) end)
+
+      assert stderr =~
+               "you are implementing a protocol for Unknown but said module is not available"
+
+      assert stderr =~
+               "you are implementing a protocol for GenServer but said module does not provide a struct"
+
+      refute stderr =~ "this_wont_warn"
+
+      itself_arg = fn mod ->
+        {_, %{sig: {:infer, nil, [{[domain], return}]}}} =
+          List.keyfind(read_chunk(modules[mod]).exports, {:itself, 1}, 0)
+
+        assert equal?(dynamic(domain), return)
+        return
+      end
+
+      assert itself_arg.(Itself.Atom) == dynamic(atom())
+      assert itself_arg.(Itself.BitString) == dynamic(bitstring())
+      assert itself_arg.(Itself.Float) == dynamic(float())
+      assert itself_arg.(Itself.Function) == dynamic(fun())
+      assert itself_arg.(Itself.Integer) == dynamic(integer())
+
+      assert itself_arg.(Itself.List) ==
+               dynamic(opt_union(empty_list(), non_empty_list(term(), term())))
+
+      assert itself_arg.(Itself.Map) ==
+               dynamic(open_map(__struct__: {opt_negation(atom()), true}))
+
+      assert itself_arg.(Itself.Port) == dynamic(port())
+      assert itself_arg.(Itself.PID) == dynamic(pid())
+      assert itself_arg.(Itself.Reference) == dynamic(reference())
+      assert itself_arg.(Itself.Tuple) == dynamic(tuple())
+      assert itself_arg.(Itself.Any) == dynamic(term())
+
+      assert itself_arg.(Itself.Range) ==
+               dynamic(
+                 closed_map(
+                   __struct__: {atom([Range]), false},
+                   first: {term(), false},
+                   last: {term(), false},
+                   step: {term(), false}
+                 )
+               )
+
+      assert itself_arg.(Itself.Unknown) ==
+               dynamic(open_map(__struct__: {atom([Unknown]), false}))
+
+      assert itself_arg.(Itself.GenServer) ==
+               dynamic(open_map(__struct__: {atom([GenServer]), false}))
+    end
+
+    test "ignores additional callbacks on implementations" do
+      files = %{
+        "p.ex" => """
+        defmodule InjectCallback do
+          defmacro __before_compile__(_env) do
+            quote do
+              @callback extra() :: term()
+            end
+          end
+        end
+
+        defprotocol Injected do
+          @before_compile InjectCallback
+          def f(x)
+        end
+
+        defimpl Injected, for: Atom do
+          def f(_), do: :ok
+          def extra(), do: :extra
+        end
+
+        defprotocol Explicit do
+          @callback extra() :: term()
+          def f(x)
+        end
+
+        defimpl Explicit, for: Atom do
+          def f(_), do: :ok
+          def extra(), do: :extra
+        end
+        """
+      }
+
+      assert capture_compile_warnings(files, []) == """
+                 warning: cannot define @callback extra/0 inside protocol, use def/1 to outline your protocol definition
+                 │
+              20 │   @callback extra() :: term()
+                 │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                 │
+                 └─ p.ex:20: Explicit (module)
+
+             """
+    end
+  end
+
+  describe "type checking" do
+    test "inferred remote calls" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def fun(:ok), do: :doki
+          def fun(:error), do: :bad
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          def badarg do
+            A.fun(:unknown)
+          end
+
+          def badmatch do
+            :doki = A.fun(:error)
+          end
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: incompatible types given to A.fun/1:
+
+                A.fun(:unknown)
+        """,
+        """
+            but expected one of:
+
+                #1
+                :ok
+
+                #2
+                :error
+        """,
+        """
+            warning: the following pattern will never match:
+
+                :doki = A.fun(:error)
+
+            because the right-hand side has type:
+
+                dynamic(:bad)
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "redundant clauses" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def foo(x, _) when is_integer(x), do: :one
+          def foo(_, y) when is_integer(y), do: :two
+          def foo(x, y) when is_integer(x) and is_integer(y), do: :three
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: the following clause is redundant:
+
+                def foo(x, y) when is_integer(x) and is_integer(y)
+
+            it has type:
+
+                integer(), integer()
+
+            previous clauses have already matched on the following types:
+
+                integer(), term()
+                term(), integer()
+
+            │
+          4 │   def foo(x, y) when is_integer(x) and is_integer(y), do: :three
+            │       ~
+            │
+            └─ a.ex:4:7: A.foo/2
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "captures with impossible clauses" do
+      files = %{
+        "impossible_clauses.ex" => """
+        defmodule ImpossibleClauses do
+          def anonymous, do: fn x = 1 = :a -> x end
+          def local_capture, do: &local/1
+
+          defp local(x = 1 = :a), do: x
+          def remote(x = 1 = :a), do: x
+        end
+        """,
+        "remote_capture.ex" => """
+        defmodule ImpossibleRemoteCapture do
+          def capture, do: &ImpossibleClauses.remote/1
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: the following pattern will never match:
+
+                x = 1 = :a
+
+            type warning found at:
+            │
+          2 │   def anonymous, do: fn x = 1 = :a -> x end
+            │                           ~
+            │
+            └─ impossible_clauses.ex:2:27: ImpossibleClauses.anonymous/0
+        """,
+        """
+            warning: the 1st pattern in clause will never match:
+
+                x = 1 = :a
+
+            type warning found at:
+            │
+          5 │   defp local(x = 1 = :a), do: x
+            │                ~
+            │
+            └─ impossible_clauses.ex:5:16: ImpossibleClauses.local/1
+        """,
+        """
+            warning: the 1st pattern in clause will never match:
+
+                x = 1 = :a
+
+            type warning found at:
+            │
+          6 │   def remote(x = 1 = :a), do: x
+            │                ~
+            │
+            └─ impossible_clauses.ex:6:16: ImpossibleClauses.remote/1
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "mismatched locals" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def error(), do: private(raise "oops")
+          def public(x), do: private(List.to_tuple(x))
+          defp private(:ok), do: nil
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: incompatible types given to private/1:
+
+                private(raise RuntimeError.exception("oops"))
+
+        """,
+        "the 1st argument is empty (often represented as none())",
+        """
+            type warning found at:
+            │
+          2 │   def error(), do: private(raise "oops")
+            │                    ~
+            │
+            └─ a.ex:2:20: A.error/0
+        """,
+        """
+            warning: incompatible types given to private/1:
+
+                private(List.to_tuple(x))
+        """,
+        """
+            type warning found at:
+            │
+          3 │   def public(x), do: private(List.to_tuple(x))
+            │                      ~
+            │
+            └─ a.ex:3:22: A.public/1
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "warning location respects file metadata in clauses" do
+      files = %{
+        "bug.ex" => """
+        defmodule Bug do
+          def render(x)
+
+          @file "template.heex"
+          def render(x) do
+            label = describe(x)
+            _ = label == :only
+            x
+          end
+
+          defp describe(_), do: "page"
+        end
+        """
+      }
+
+      warnings = [
+        """
+        warning: comparison between distinct types found:
+
+            label == :only
+        """,
+        "binary() == :only",
+        "# type: binary()",
+        "# from: template.heex:6:11",
+        "└─ template.heex:7:15: Bug.render/1"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "unused private clauses" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def public(x) do
+            private(List.to_tuple(x))
+          end
+
+          defp private(nil), do: nil
+          defp private("foo"), do: "foo"
+          defp private({:ok, ok}), do: ok
+          defp private({:error, error}), do: error
+          defp private("bar"), do: "bar"
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: this clause of defp private/1 is never used (or it will always fail/warn when invoked)
+            │
+          6 │   defp private(nil), do: nil
+            │        ~
+            │
+            └─ a.ex:6:8: A.private/1
+        """,
+        """
+            warning: this clause of defp private/1 is never used (or it will always fail/warn when invoked)
+            │
+          7 │   defp private("foo"), do: "foo"
+            │        ~
+            │
+            └─ a.ex:7:8: A.private/1
+        """,
+        """
+            warning: this clause of defp private/1 is never used (or it will always fail/warn when invoked)
+            │
+         10 │   defp private("bar"), do: "bar"
+            │        ~
+            │
+            └─ a.ex:10:8: A.private/1
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "unused overridable private clauses" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          use B
+          def public(x), do: private(x)
+          defp private(x), do: super(List.to_tuple(x))
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          defmacro __using__(_) do
+            quote do
+              defp private({:ok, ok}), do: ok
+              defp private(:error), do: :error
+              defoverridable private: 1
+            end
+          end
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "unused private clauses without warnings" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          use B
+
+          # Not all clauses are invoked, but do not warn since they are generated
+          def public1(x), do: generated(List.to_tuple(x))
+
+          # Avoid false positives caused by inference
+          def public2(x), do: (:ok = raising_private(x))
+
+          defp raising_private(true), do: :ok
+          defp raising_private(false), do: raise "oops"
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          defmacro __using__(_) do
+            quote generated: true do
+              defp generated({:ok, ok}), do: ok
+              defp generated(:error), do: :error
+            end
+          end
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "mismatched implementation" do
+      files = %{
+        "a.ex" => """
+        defprotocol Itself do
+          def itself(data)
+        end
+
+        defimpl Itself, for: Range do
+          def itself(nil), do: nil
+          def itself(%Range{} = range), do: range
+          def itself(%Range{}), do: raise "oops"
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: the 1st pattern in clause will never match:
+
+                nil
+
+            because it is expected to receive type:
+
+                dynamic(%Range{})
+
+            hint: defimpl for Range requires its callbacks to match exclusively on %Range{}
+
+            type warning found at:
+            │
+          6 │   def itself(nil), do: nil
+            │   ~~~~~~~~~~~~~~~~~~~~~~~~
+            │
+            └─ a.ex:6: Itself.Range.itself/1
+        """,
+        """
+            warning: the following clause is redundant:
+
+                def itself(%Range{})
+
+            it has type:
+
+                %Range{}
+
+            previous clauses have already matched on the following types:
+
+                %Range{}
+
+            │
+          8 │   def itself(%Range{}), do: raise "oops"
+            │       ~
+            │
+            └─ a.ex:8:7: Itself.Range.itself/1
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    @tag :require_ast
+    test "no implementation" do
+      files = %{
+        "a.ex" => """
+        defprotocol NoImplProtocol do
+          def callback(data)
+        end
+        """,
+        "b.ex" => """
+        defmodule NoImplProtocol.Caller do
+          def run do
+            NoImplProtocol.callback(:hello)
+          end
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: incompatible types given to NoImplProtocol.callback/1:
+
+                NoImplProtocol.callback(:hello)
+
+            given types:
+
+                -:hello-
+
+            but the NoImplProtocol protocol was not yet implemented for any type and therefore will always fail.
+
+            This message will disappear once you define an implementation. If the protocol is part of a library, you may define a dummy implementation for development/test.
+
+            type warning found at:
+            │
+          3 │     NoImplProtocol.callback(:hello)
+            │                    ~
+            │
+            └─ b.ex:3:20: NoImplProtocol.Caller.run/0
+        """
+      ]
+
+      assert_warnings(files, warnings, consolidate_protocols: true)
+    end
+
+    @tag :require_ast
+    test "String.Chars protocol dispatch" do
+      files = %{
+        "a.ex" => """
+        defmodule FooBar do
+          def example1(_.._//_ = data), do: to_string(data)
+          def example2(_.._//_ = data), do: "hello \#{data} world"
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: incompatible types given to String.Chars.to_string/1:
+
+                to_string(data)
+
+            given types:
+
+                -dynamic(%Range{})-
+
+            but expected a type that implements the String.Chars protocol.
+            You either passed the wrong value or you must:
+
+            1. convert the given value to a string explicitly
+               (use inspect/1 if you want to convert any data structure to a string)
+            2. implement the String.Chars protocol
+
+            where "data" was given the type:
+
+                # type: dynamic(%Range{})
+                # from: a.ex:2:24
+                _.._//_ = data
+
+            hint: the String.Chars protocol is implemented for the following types:
+
+                dynamic(
+                  %Date{} or %DateTime{} or %NaiveDateTime{} or %Time{} or %URI{} or %Version{} or
+                    %Version.Requirement{}
+                ) or atom() or bitstring() or empty_list() or float() or integer() or
+                  non_empty_list(term(), term())
+        """,
+        """
+            warning: incompatible value given to string interpolation:
+
+                data
+
+            it has type:
+
+                -dynamic(%Range{})-
+
+            but expected a type that implements the String.Chars protocol.
+            You either passed the wrong value or you must:
+
+            1. convert the given value to a string explicitly
+               (use inspect/1 if you want to convert any data structure to a string)
+            2. implement the String.Chars protocol
+
+            where "data" was given the type:
+
+                # type: dynamic(%Range{})
+                # from: a.ex:3:24
+                _.._//_ = data
+        """
+      ]
+
+      assert_warnings(files, warnings, consolidate_protocols: true)
+    end
+
+    @tag :require_ast
+    test "Enumerable protocol dispatch" do
+      files = %{
+        "a.ex" => """
+        defmodule FooBar do
+          def example1(%Date{} = date), do: for(x <- date, do: x)
+          def example2(), do: for(i <- [1, 2, 3], into: Date.utc_today(), do: i * 2)
+          def example3(), do: for(i <- [1, 2, 3], into: 456, do: i * 2)
+        end
+        """
+      }
+
+      warnings = [
+        """
+            warning: incompatible value given to for-comprehension:
+
+                x <- date
+
+            it has type:
+
+                -dynamic(%Date{})-
+
+            but expected a type that implements the Enumerable protocol.
+            You either passed the wrong value or you must:
+
+            1. convert the given value to an Enumerable explicitly
+            2. implement the Enumerable protocol
+
+            where "date" was given the type:
+
+                # type: dynamic(%Date{})
+                # from: a.ex:2:24
+                %Date{} = date
+
+            hint: the Enumerable protocol is implemented for the following types:
+
+                dynamic(
+                  %Date.Range{} or %File.Stream{} or %GenEvent.Stream{} or %HashDict{} or %HashSet{} or
+                    %IO.Stream{} or %MapSet{} or %Range{} or %Stream{}
+                ) or empty_list() or fun() or non_empty_list(term(), term()) or non_struct_map()
+        """,
+        """
+            warning: incompatible value given to :into option in for-comprehension:
+
+                into: Date.utc_today()
+
+            it has type:
+
+                -dynamic(%Date{year: integer(), month: integer(), day: integer(), calendar: Calendar.ISO})-
+
+            but expected a type that implements the Collectable protocol.
+            You either passed the wrong value or you forgot to implement the protocol.
+
+            hint: the Collectable protocol is implemented for the following types:
+
+                dynamic(%File.Stream{} or %HashDict{} or %HashSet{} or %IO.Stream{} or %MapSet{}) or bitstring() or
+                  empty_list() or non_empty_list(term(), term()) or non_struct_map()
+        """,
+        """
+            warning: incompatible value given to :into option in for-comprehension:
+
+                into: 456
+
+            it has type:
+
+                -integer()-
+
+            but expected a type that implements the Collectable protocol.
+            You either passed the wrong value or you forgot to implement the protocol.
+
+            hint: the Collectable protocol is implemented for the following types:
+
+                dynamic(%File.Stream{} or %HashDict{} or %HashSet{} or %IO.Stream{} or %MapSet{}) or bitstring() or
+                  empty_list() or non_empty_list(term(), term()) or non_struct_map()
+        """
+      ]
+
+      assert_warnings(files, warnings, consolidate_protocols: true)
+    end
+
+    test "incompatible default argument" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def ok(x = :ok \\\\ nil) do
+            x
+          end
+        end
+        """
+      }
+
+      warnings = [
+        ~S"""
+            warning: incompatible types given as default arguments to ok/1:
+
+                -nil-
+
+            but expected one of:
+
+                :ok
+
+            type warning found at:
+            │
+          2 │   def ok(x = :ok \\ nil) do
+            │                  ~
+            │
+            └─ a.ex:2:18: A.ok/0
+        """
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "returns diagnostics with source and file" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @file "generated.ex"
+          def fun(arg) do
+            :ok = List.to_tuple(arg)
+          end
+        end
+        """
+      }
+
+      {_modules, warnings} = with_compile_warnings(files)
+
+      assert [
+               %{
+                 message: "the following pattern will never match" <> _,
+                 file: file,
+                 source: source
+               }
+             ] = warnings.runtime_warnings
+
+      assert String.ends_with?(source, "a.ex")
+      assert Path.type(source) == :absolute
+      assert String.ends_with?(file, "generated.ex")
+      assert Path.type(file) == :absolute
+    after
+      purge(A)
+    end
+
+    test "does not crash on redefined module with newly added struct" do
+      Code.compile_string("""
+      defmodule RedefinedNestedStruct.Inner do
+        def foo(), do: :nothing
+      end
+      """)
+
+      files = %{
+        "redefined.ex" => """
+        defmodule RedefinedNestedStruct.Inner do
+          defstruct [:value]
+
+          def foo(), do: %__MODULE__{value: 1}
+        end
+        """
+      }
+
+      in_tmp(fn ->
+        paths = generate_files(files)
+
+        {result, _stderr} =
+          with_io(:stderr, fn ->
+            Kernel.ParallelCompiler.compile_to_path(paths, ".", return_diagnostics: true)
+          end)
+
+        assert {:error, errors, %{compile_warnings: warnings, runtime_warnings: []}} = result
+
+        assert [%{message: "struct RedefinedNestedStruct.Inner is undefined " <> _}] = errors
+
+        assert Enum.any?(
+                 warnings,
+                 &(&1.message =~ "redefining module RedefinedNestedStruct.Inner")
+               )
+      end)
+    after
+      purge(RedefinedNestedStruct.Inner)
+    end
+
+    @tag :require_ast
+    test "regressions" do
+      files = %{
+        # do not emit false positives from defguard
+        "a.ex" => """
+        defmodule A do
+          defguard is_non_nil_arity_function(fun, arity)
+                   when arity != nil and is_function(fun, arity)
+
+          def check(fun, args) do
+            is_non_nil_arity_function(fun, length(args))
+          end
+        end
+        """,
+        # do not parse binary segments as variables
+        "b.ex" => """
+        defmodule B do
+          def decode(byte) do
+            case byte do
+              enc when enc in [<<0x00>>, <<0x01>>] -> :ok
+            end
+          end
+        end
+        """,
+        # String.Chars protocol dispatch on improper lists
+        "c.ex" => """
+        defmodule C do
+          def example, do: to_string([?a, ?b | "!"])
+        end
+        """
+      }
+
+      assert_no_warnings(files, consolidate_protocols: true)
+    end
+  end
+
+  describe "performance regressions" do
+    test "redundant clause checking on structs with many fields" do
+      files = %{
+        "big_struct.ex" => """
+        defmodule BigStruct do
+          defstruct [:f1, :f2, :f3, :f4, :f5, :f6, :f7, :f8, :f9, :f10,
+                     :f11, :f12, :f13, :f14, :f15, :f16, :f17, :f18, :f19, :f20,
+                     :f21, :f22, :f23, :f24, :f25, :f26, :f27, :f28, :f29, :f30,
+                     :f31, :f32, :f33, :value, :schema]
+          def cast(%__MODULE__{value: nil, schema: %{k1: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k2: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k3: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k4: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k5: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k6: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k7: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k8: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k9: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k10: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k11: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k12: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k13: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k14: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k15: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k16: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k17: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k18: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k19: _}}), do: :ok
+          def cast(%__MODULE__{value: nil, schema: %{k20: _}}), do: :ok
+          # This different clause avoids optimizations from kick in many cases
+          def cast(%__MODULE__{schema: %{target_key: x}}), do: x
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "redundant clause checking with nested open maps" do
+      files = %{
+        "nested_maps.ex" => """
+        defmodule NestedMapsIssue do
+          def foo(%{a: nil, b: %{c: true}}), do: :ok
+          def foo(%{a: nil, b: %{c: false}}), do: :ok
+          def foo(%{a: nil, b: %{d: x}}) when is_list(x), do: :ok
+          def foo(%{a: nil, b: %{e: x}}) when is_list(x), do: :ok
+          def foo(%{a: nil, b: %{f: x}}) when is_list(x), do: :ok
+          def foo(%{a: nil}), do: :ok
+          def foo(%{b: %{g: :one, h: x}}) when is_map(x), do: :ok
+          def foo(%{b: %{g: _, i: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{g: _, j: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{g: _, k: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{g: :one}}), do: :ok
+          def foo(%{b: %{g: :two}}), do: :ok
+          def foo(%{b: %{g: :three}}), do: :ok
+          def foo(%{b: %{g: :four}}), do: :ok
+          def foo(%{b: %{g: :five}}), do: :ok
+          def foo(%{b: %{g: :six}}), do: :ok
+          def foo(%{b: %{l: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{m: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{n: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{o: x}}) when is_list(x), do: :ok
+          def foo(%{b: %{p: x, q: y}}) when is_number(x) and is_number(y), do: :ok
+          def foo(%{b: %{p: x}}) when is_number(x), do: :ok
+          def foo(%{b: %{q: x}}) when is_number(x), do: :ok
+          def foo(%{b: %{r: x}}) when is_integer(x), do: :ok
+          def foo(%{b: %{s: x}}) when is_integer(x), do: :ok
+          def foo(%{b: %{t: x}}) when is_binary(x), do: :ok
+          def foo(%{b: %{u: x}}) when is_atom(x), do: :ok
+          def foo(%{b: %{v: x}}) when is_integer(x), do: :ok
+          def foo(%{b: %{w: x}}) when is_integer(x), do: :ok
+          def foo(_), do: :ok
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "redundant clause checking of mixed open and closed maps (1)" do
+      files = %{
+        "mixed_open_closed_maps.ex" => """
+        defmodule MixedOpenClosedMaps do
+          defmodule S1, do: defstruct([:name])
+          defmodule S2, do: defstruct([:name])
+          defmodule S3, do: defstruct([:name])
+          defmodule S4, do: defstruct([:name])
+          defmodule S5, do: defstruct([:name])
+          defmodule S6, do: defstruct([:name])
+          defmodule S7, do: defstruct([:name])
+          defmodule S8, do: defstruct([:name])
+          defmodule S9, do: defstruct([:name])
+          defmodule S10, do: defstruct([:name])
+          defmodule S11, do: defstruct([:name])
+          defmodule S12, do: defstruct([:name])
+          defmodule S13, do: defstruct([:name])
+          defmodule S14, do: defstruct([:name])
+          defmodule S15, do: defstruct([:name])
+          defmodule S16, do: defstruct([:name])
+          defmodule S17, do: defstruct([:name])
+          defmodule S18, do: defstruct([:name])
+
+          defmodule SValue do
+            defstruct [:value]
+          end
+
+          def render(%S1{}), do: :ok
+          def render(%S2{}), do: :ok
+          def render(%S3{}), do: :ok
+          def render(%S4{}), do: :ok
+          def render(%S5{}), do: :ok
+          def render(%S6{}), do: :ok
+          def render(%S7{}), do: :ok
+          def render(%S8{}), do: :ok
+          def render(%S9{}), do: :ok
+          def render(%S10{}), do: :ok
+          def render(%S11{}), do: :ok
+          def render(%S12{}), do: :ok
+          def render(%S13{}), do: :ok
+          def render(%S14{}), do: :ok
+          def render(%S15{}), do: :ok
+          def render(%S16{}), do: :ok
+          def render(%S17{}), do: :ok
+          def render(%S18{}), do: :ok
+          # Having the closed map and the struct overlap on a key is important
+          def render(%SValue{}), do: :ok
+          def render(%{value: value}), do: value
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "redundant clause checking of mixed open and closed maps (2)" do
+      files = %{
+        "mixed_open_closed_maps.ex" => """
+        defmodule MixedOpenClose.Roles do
+          defstruct engineering_admin: false,
+                    admin: false,
+                    support: false,
+                    service_desk: false,
+                    sales: false
+        end
+
+        defmodule MixedOpenClose.User do
+          defstruct roles: %MixedOpenClose.Roles{}
+        end
+
+        defmodule MixedOpenClose.Policy do
+          alias MixedOpenClose.{User, Roles}
+
+          @admin_actions [
+            :access,
+            :edit,
+            :manage_roles,
+            :global_search,
+            :get_users_with_roles,
+            :deactivate,
+            :reactivate,
+            :confirm_email,
+            :soft_delete
+          ]
+
+          def can?(%User{roles: %Roles{support: true}}, _a, action)
+              when action in [:global_search, :confirm_email, :get_users_with_roles], do: true
+
+          def can?(%User{roles: %Roles{service_desk: true}}, _a, action)
+              when action in [:global_search, :confirm_email], do: true
+
+          def can?(%User{roles: %Roles{sales: true}}, _a, action)
+              when action in [:edit, :confirm_email], do: true
+
+          def can?(%User{roles: roles}, _a, action)
+              when action in @admin_actions and (roles.admin == true or roles.engineering_admin == true),
+              do: true
+
+          def can?(user, %URI{} = uri, action), do: can?(user, uri, action)
+
+          def can?(_a, _b, _c), do: false
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "redundant clause checking of open maps with distinct keys" do
+      files = %{
+        "large_head.ex" => """
+        defmodule GraphResolver do
+          def resolve(%{resource: node, member: vertex} = edge) do
+            graph_id = fetch_id(edge.resource)
+
+            with %{id: id} <- vertex do
+              {node.project_id, node.id, node.parent_id, [id], graph_id}
+            end
+          end
+
+          def fetch_id(%{id: id}) when is_binary(id), do: id
+          def fetch_id(%{account_id: id}) when is_binary(id), do: id
+          def fetch_id(%{account: %{id: id}}) when is_binary(id), do: id
+          def fetch_id(%{team: %{account_id: id}}) when is_binary(id), do: id
+          def fetch_id(%{project: %{account_id: id}}) when is_binary(id), do: id
+          def fetch_id(%{asset: %{account_id: id}}) when is_binary(id), do: id
+
+          def fetch_id(%{collection: %{project_id: id} = collection}) when is_binary(id),
+            do: fetch_id(collection)
+
+          def fetch_id(%{item: %{} = item}), do: fetch_id(item)
+          def fetch_id(%{team_id: id}) when is_binary(id), do: local_id(:team, id)
+          def fetch_id(%{workspace_id: id}) when is_binary(id), do: local_id(:team, id)
+          def fetch_id(%{project_id: id}) when is_binary(id), do: local_id(:project, id)
+          def fetch_id(%{asset_id: id}) when is_binary(id), do: remote_id(id)
+          def fetch_id(%{portal_id: id}) when is_binary(id), do: remote_id(id)
+          def fetch_id(%{codex_id: id}) when is_binary(id), do: remote_id(id)
+          def fetch_id(%{vertex_id: id}) when is_binary(id), do: remote_id(id)
+          def fetch_id(%{edge_id: id}) when is_binary(id), do: remote_id(id)
+          def fetch_id(%{comment_id: id}) when is_binary(id), do: remote_id(id)
+
+          def fetch_id(%struct{id: id}) do
+            case struct do
+              Team -> local_id(:team, id)
+              Project -> local_id(:project, id)
+              Asset -> remote_id(id)
+              Portal -> remote_id(id)
+              Codex -> remote_id(id)
+              CommentAttachment -> remote_id(id)
+              Vertex -> remote_id(id)
+              Edge -> remote_id(id)
+            end
+          end
+
+          defp local_id(type, id) when type in ~w(project team)a do
+            {:local, type, id}
+          end
+
+          defp remote_id(id) do
+            {:remote, id}
+          end
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "pretty printing large tuples with negations" do
+      files = %{
+        "large_tuples.ex" => """
+        defmodule LargeTuplesWithNegations do
+          @abc [:a, :b]
+          defguard g1(t) when tuple_size(t) < 10
+          defguard g2(t, i) when elem(t, i) in @abc
+
+          def main() do
+            foo(Bar)
+          end
+
+          def foo(t) when g1(t) and g2(t, 0) and g2(t, 1) and g2(t, 2),
+            do: {bar(elem(t, 3)), bar(elem(t, 4))}
+
+          def foo(t) when g1(t) and g2(t, 1) and g2(t, 2) and g2(t, 3),
+            do: {bar(elem(t, 4)), bar(elem(t, 5))}
+
+          def foo(t) when g1(t) and g2(t, 2) and g2(t, 3) and g2(t, 4),
+            do: {bar(elem(t, 5)), bar(elem(t, 6))}
+
+          def foo(t) when g1(t) and g2(t, 3) and g2(t, 4) and g2(t, 5),
+            do: {bar(elem(t, 6)), bar(elem(t, 0))}
+
+          def foo(t) when g1(t) and g2(t, 4) and g2(t, 5) and g2(t, 6),
+            do: {bar(elem(t, 0)), bar(elem(t, 1))}
+
+          def foo(t) when g1(t) and g2(t, 5) and g2(t, 6) and g2(t, 0),
+            do: {bar(elem(t, 1)), bar(elem(t, 2))}
+
+          def foo(t) when g1(t) and g2(t, 6) and g2(t, 0) and g2(t, 1),
+            do: {bar(elem(t, 2)), bar(elem(t, 3))}
+
+          def bar(t) when g1(t) and g2(t, 0) and g2(t, 1) and g2(t, 2),
+            do: {baz(elem(t, 3)), baz(elem(t, 4))}
+
+          def bar(t) when g1(t) and g2(t, 1) and g2(t, 2) and g2(t, 3),
+            do: {baz(elem(t, 4)), baz(elem(t, 5))}
+
+          def bar(t) when g1(t) and g2(t, 2) and g2(t, 3) and g2(t, 4),
+            do: {baz(elem(t, 5)), baz(elem(t, 6))}
+
+          def bar(t) when g1(t) and g2(t, 3) and g2(t, 4) and g2(t, 5),
+            do: {baz(elem(t, 6)), baz(elem(t, 0))}
+
+          def bar(t) when g1(t) and g2(t, 4) and g2(t, 5) and g2(t, 6),
+            do: {baz(elem(t, 0)), baz(elem(t, 1))}
+
+          def bar(t) when g1(t) and g2(t, 5) and g2(t, 6) and g2(t, 0),
+            do: {baz(elem(t, 1)), baz(elem(t, 2))}
+
+          def bar(t) when g1(t) and g2(t, 6) and g2(t, 0) and g2(t, 1),
+            do: {baz(elem(t, 2)), baz(elem(t, 3))}
+
+          def baz(t) when g1(t) and elem(t, 0) in @abc and elem(t, 1) in @abc and elem(t, 2) in @abc,
+            do: 0
+
+          def baz(t) when g1(t) and elem(t, 1) in @abc and elem(t, 2) in @abc and elem(t, 3) in @abc,
+            do: 1
+
+          def baz(t) when g1(t) and elem(t, 2) in @abc and elem(t, 3) in @abc and elem(t, 4) in @abc,
+            do: 2
+
+          def baz(t) when g1(t) and elem(t, 3) in @abc and elem(t, 4) in @abc and elem(t, 5) in @abc,
+            do: 3
+
+          def baz(t) when g1(t) and elem(t, 4) in @abc and elem(t, 5) in @abc and elem(t, 6) in @abc,
+            do: 4
+
+          def baz(t) when g1(t) and elem(t, 5) in @abc and elem(t, 6) in @abc and elem(t, 0) in @abc,
+            do: 5
+
+          def baz(t) when g1(t) and elem(t, 6) in @abc and elem(t, 0) in @abc and elem(t, 1) in @abc,
+            do: 6
+        end
+        """
+      }
+
+      assert_warnings(files, ["incompatible types given to foo/1"])
+    end
+  end
+
+  describe "undefined warnings" do
+    test "handles Erlang modules" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: :not_a_module.no_module()
+          def b, do: :lists.no_func()
+        end
+        """
+      }
+
+      warnings = [
+        ":not_a_module.no_module/0 is undefined (module :not_a_module is not available or is yet to be defined)",
+        "a.ex:2:28: A.a/0",
+        ":lists.no_func/0 is undefined or private",
+        "a.ex:3:21: A.b/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "handles built in functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: Kernel.module_info()
+          def b, do: Kernel.module_info(:functions)
+          def c, do: Kernel.__info__(:functions)
+          def d, do: GenServer.behaviour_info(:callbacks)
+          def e, do: Kernel.behaviour_info(:callbacks)
+        end
+        """
+      }
+
+      warnings = [
+        "Kernel.behaviour_info/1 is undefined or private",
+        "a.ex:6:21: A.e/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "handles module body conditionals" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          if function_exported?(List, :flatten, 1) do
+            List.flatten([1, 2, 3])
+          else
+            List.old_flatten([1, 2, 3])
+          end
+
+          if function_exported?(List, :flatten, 1) do
+            def flatten(arg), do: List.flatten(arg)
+          else
+            def flatten(arg), do: List.old_flatten(arg)
+          end
+
+          if function_exported?(List, :flatten, 1) do
+            def flatten2(arg), do: List.old_flatten(arg)
+          else
+            def flatten2(arg), do: List.flatten(arg)
+          end
+        end
+        """
+      }
+
+      warnings = [
+        "List.old_flatten/1 is undefined or private. Did you mean:",
+        "* flatten/1",
+        "* flatten/2",
+        "a.ex:15:33: A.flatten2/1"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports missing functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: A.no_func()
+          def b, do: A.a()
+
+          @file "external_source.ex"
+          def c, do: &A.no_func/1
+        end
+        """
+      }
+
+      warnings = [
+        "A.no_func/0 is undefined or private",
+        "a.ex:2:16: A.a/0",
+        "A.no_func/1 is undefined or private",
+        "external_source.ex:6:17: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports missing functions respecting arity" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: :ok
+          def b, do: A.a(1)
+
+          @file "external_source.ex"
+          def c, do: A.b(1)
+        end
+        """
+      }
+
+      warnings = [
+        "A.a/1 is undefined or private. Did you mean:",
+        "* a/0",
+        "a.ex:3:16: A.b/0",
+        "A.b/1 is undefined or private. Did you mean:",
+        "* b/0",
+        "external_source.ex:6:16: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports missing modules" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: D.no_module()
+
+          @file "external_source.ex"
+          def c, do: E.no_module()
+
+          def i, do: Io.puts "hello"
+        end
+        """
+      }
+
+      warnings = [
+        "D.no_module/0 is undefined (module D is not available or is yet to be defined)",
+        "a.ex:2:16: A.a/0",
+        "E.no_module/0 is undefined (module E is not available or is yet to be defined)",
+        "external_source.ex:5:16: A.c/0",
+        "Io.puts/1 is undefined (module Io is not available or is yet to be defined)",
+        "a.ex:7:17: A.i/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports missing captures" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: &A.no_func/0
+
+          @file "external_source.ex"
+          def c, do: &A.no_func/1
+        end
+        """
+      }
+
+      warnings = [
+        "A.no_func/0 is undefined or private",
+        "a.ex:2:17: A.a/0",
+        "A.no_func/1 is undefined or private",
+        "external_source.ex:5:17: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "doesn't report missing functions at compile time" do
+      files = %{
+        "a.ex" => """
+        Enum.map([], fn _ -> BadReferencer.no_func4() end)
+
+        if function_exported?(List, :flatten, 1) do
+          List.flatten([1, 2, 3])
+        else
+          List.old_flatten([1, 2, 3])
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "handles multiple modules in one file" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: B.no_func()
+          def b, do: B.a()
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          def a, do: A.no_func()
+          def b, do: A.b()
+        end
+        """
+      }
+
+      warnings = [
+        "B.no_func/0 is undefined or private",
+        "a.ex:2:16: A.a/0",
+        "A.no_func/0 is undefined or private",
+        "b.ex:2:16: B.a/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "groups multiple warnings in one file" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a, do: A.no_func()
+
+          @file "external_source.ex"
+          def b, do: A2.no_func()
+
+          def c, do: A.no_func()
+          def d, do: A2.no_func()
+        end
+        """
+      }
+
+      warnings = [
+        "A2.no_func/0 is undefined (module A2 is not available or is yet to be defined)",
+        "└─ a.ex:8:17: A.d/0",
+        "└─ external_source.ex:5:17: A.b/0",
+        "A.no_func/0 is undefined or private",
+        "└─ a.ex:2:16: A.a/0",
+        "└─ a.ex:7:16: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "hints exclude deprecated functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def to_charlist(a), do: a
+
+          @deprecated "Use String.to_charlist/1 instead"
+          def to_char_list(a), do: a
+
+          def c(a), do: A.to_list(a)
+        end
+        """
+      }
+
+      warnings = [
+        "A.to_list/1 is undefined or private. Did you mean:",
+        "* to_charlist/1",
+        "a.ex:7:19: A.c/1"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "do not warn of module defined in local (runtime) context" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def a() do
+            defmodule B do
+              def b(), do: :ok
+            end
+
+            B.b()
+          end
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+
+    test "warn of unrequired module" do
+      files = %{
+        "ab.ex" => """
+        defmodule A do
+          def a(), do: B.b()
+        end
+
+        defmodule B do
+          defmacro b(), do: :ok
+        end
+        """
+      }
+
+      warnings = [
+        "Be sure to require B if you intend to invoke this macro",
+        "ab.ex:2:18: A.a/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "excludes local no_warn_undefined" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @compile {:no_warn_undefined, [MissingModule, {MissingModule2, :func, 2}]}
+          @compile {:no_warn_undefined, {B, :func, 2}}
+
+          def a, do: MissingModule.func(1)
+          def b, do: MissingModule2.func(1, 2)
+          def c, do: MissingModule2.func(1)
+          def d, do: MissingModule3.func(1, 2)
+          def e, do: B.func(1)
+          def f, do: B.func(1, 2)
+          def g, do: B.func(1, 2, 3)
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          def func(_), do: :ok
+        end
+        """
+      }
+
+      warnings = [
+        "MissingModule2.func/1 is undefined (module MissingModule2 is not available or is yet to be defined)",
+        "a.ex:7:29: A.c/0",
+        "MissingModule3.func/2 is undefined (module MissingModule3 is not available or is yet to be defined)",
+        "a.ex:8:29: A.d/0",
+        "B.func/3 is undefined or private. Did you mean:",
+        "* func/1",
+        "a.ex:11:16: A.g/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "warn of external nested module" do
+      files = %{
+        "a.ex" => """
+        defmodule A.B do
+          def a, do: :ok
+        end
+        defmodule A do
+          alias A.B
+          def a, do: B.a()
+          def b, do: B.a(1)
+          def c, do: B.no_func()
+        end
+        """
+      }
+
+      warnings = [
+        "A.B.a/1 is undefined or private. Did you mean:",
+        "* a/0",
+        " def b, do: B.a(1)",
+        "a.ex:7:16: A.b/0",
+        "A.B.no_func/0 is undefined or private",
+        "def c, do: B.no_func()",
+        "a.ex:8:16: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "warn of compile time context module defined before calls" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          defmodule B do
+            def a, do: :ok
+          end
+          def a, do: B.a()
+          def b, do: B.a(1)
+          def c, do: B.no_func()
+        end
+        """
+      }
+
+      warnings = [
+        "A.B.a/1 is undefined or private. Did you mean:",
+        "* a/0",
+        " def b, do: B.a(1)",
+        "a.ex:6:16: A.b/0",
+        "A.B.no_func/0 is undefined or private",
+        "def c, do: B.no_func()",
+        "a.ex:7:16: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "warn of compile time context module defined after calls and aliased" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          alias A.B
+          def a, do: B.a()
+          def b, do: B.a(1)
+          def c, do: B.no_func()
+          defmodule B do
+            def a, do: :ok
+          end
+        end
+        """
+      }
+
+      warnings = [
+        "A.B.a/1 is undefined or private. Did you mean:",
+        "* a/0",
+        " def b, do: B.a(1)",
+        "a.ex:4:16: A.b/0",
+        "A.B.no_func/0 is undefined or private",
+        "def c, do: B.no_func()",
+        "a.ex:5:16: A.c/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "excludes global no_warn_undefined" do
+      no_warn_undefined = Code.get_compiler_option(:no_warn_undefined)
+
+      try do
+        Code.compiler_options(
+          no_warn_undefined: [MissingModule, {MissingModule2, :func, 2}, {B, :func, 2}]
+        )
+
+        files = %{
+          "a.ex" => """
+          defmodule A do
+            @compile {:no_warn_undefined, [MissingModule, {MissingModule2, :func, 2}]}
+            @compile {:no_warn_undefined, {B, :func, 2}}
+
+            def a, do: MissingModule.func(1)
+            def b, do: MissingModule2.func(1, 2)
+            def c, do: MissingModule2.func(1)
+            def d, do: MissingModule3.func(1, 2)
+            def e, do: B.func(1)
+            def f, do: B.func(1, 2)
+            def g, do: B.func(1, 2, 3)
+          end
+          """,
+          "b.ex" => """
+          defmodule B do
+            def func(_), do: :ok
+          end
+          """
+        }
+
+        warnings = [
+          "MissingModule2.func/1 is undefined (module MissingModule2 is not available or is yet to be defined)",
+          "a.ex:7:29: A.c/0",
+          "MissingModule3.func/2 is undefined (module MissingModule3 is not available or is yet to be defined)",
+          "a.ex:8:29: A.d/0",
+          "B.func/3 is undefined or private. Did you mean:",
+          "* func/1",
+          "a.ex:11:16: A.g/0"
+        ]
+
+        assert_warnings(files, warnings)
+      after
+        Code.compiler_options(no_warn_undefined: no_warn_undefined)
+      end
+    end
+
+    test "global no_warn_undefined :all" do
+      no_warn_undefined = Code.get_compiler_option(:no_warn_undefined)
+
+      try do
+        Code.compiler_options(no_warn_undefined: :all)
+
+        files = %{
+          "a.ex" => """
+          defmodule A do
+            def a, do: MissingModule.func(1)
+          end
+          """
+        }
+
+        assert_no_warnings(files)
+      after
+        Code.compiler_options(no_warn_undefined: no_warn_undefined)
+      end
+    end
+
+    test "global no_warn_undefined :all and local exclude" do
+      no_warn_undefined = Code.get_compiler_option(:no_warn_undefined)
+
+      try do
+        Code.compiler_options(no_warn_undefined: :all)
+
+        files = %{
+          "a.ex" => """
+          defmodule A do
+            @compile {:no_warn_undefined, MissingModule}
+
+            def a, do: MissingModule.func(1)
+            def b, do: MissingModule2.func(1, 2)
+          end
+          """
+        }
+
+        assert_no_warnings(files)
+      after
+        Code.compiler_options(no_warn_undefined: no_warn_undefined)
+      end
+    end
+  end
+
+  describe "after_verify" do
+    test "reports functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @after_verify __MODULE__
+
+          def __after_verify__(__MODULE__) do
+            IO.warn "from after_verify", []
+          end
+        end
+        """
+      }
+
+      warning = [
+        "warning: ",
+        "from after_verify"
+      ]
+
+      assert_warnings(files, warning)
+    end
+  end
+
+  describe "deprecated" do
+    test "reports functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @deprecated "oops"
+          def a, do: A.a()
+        end
+        """
+      }
+
+      warnings = [
+        "A.a/0 is deprecated. oops",
+        "a.ex:3:16: A.a/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports imported functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @deprecated "oops"
+          def a, do: :ok
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          import A
+          def b, do: a()
+        end
+        """
+      }
+
+      warnings = [
+        "A.a/0 is deprecated. oops",
+        "b.ex:3:14: B.b/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports structs" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @deprecated "oops"
+          defstruct [:x, :y]
+          def match(%A{}), do: :ok
+          def build(:ok), do: %A{}
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          def match(%A{}), do: :ok
+          def build(:ok), do: %A{}
+        end
+        """
+      }
+
+      warnings = [
+        "A.__struct__/0 is deprecated. oops",
+        "└─ a.ex:4:13: A.match/1",
+        "└─ a.ex:5:23: A.build/1",
+        "A.__struct__/0 is deprecated. oops",
+        "└─ b.ex:2:13: B.match/1",
+        "└─ b.ex:3:23: B.build/1"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports module body" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @deprecated "oops"
+          def a, do: :ok
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          require A
+          A.a()
+        end
+        """
+      }
+
+      warnings = [
+        "A.a/0 is deprecated. oops",
+        "b.ex:3:5: B (module)"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports macro" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @deprecated "oops"
+          defmacro a, do: :ok
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          require A
+          def b, do: A.a()
+        end
+        """
+      }
+
+      warnings = [
+        "A.a/0 is deprecated. oops",
+        "b.ex:3:16: B.b/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+
+    test "reports unquote functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @deprecated "oops"
+          def a, do: :ok
+        end
+        """,
+        "b.ex" => """
+        defmodule B do
+          def b, do: unquote(&A.a/0)
+        end
+        """
+      }
+
+      warnings = [
+        "A.a/0 is deprecated. oops",
+        "b.ex: B.b/0"
+      ]
+
+      assert_warnings(files, warnings)
+    end
+  end
+
+  defp assert_warnings(files, expected, opts \\ [])
+
+  defp assert_warnings(files, expected, opts) when is_binary(expected) do
+    assert capture_compile_warnings(files, opts) == expected
+  end
+
+  defp assert_warnings(files, expecteds, opts) when is_list(expecteds) do
+    output = capture_compile_warnings(files, opts)
+
+    Enum.each(expecteds, fn expected ->
+      assert output =~ expected
+    end)
+  end
+
+  defp assert_no_warnings(files, opts \\ []) do
+    assert capture_compile_warnings(files, opts) == ""
+  end
+
+  defp capture_compile_warnings(files, opts) do
+    in_tmp(fn ->
+      paths = generate_files(files)
+      capture_io(:stderr, fn -> compile_to_path(paths, opts) end)
+    end)
+  end
+
+  defp with_compile_warnings(files) do
+    in_tmp(fn ->
+      paths = generate_files(files)
+      with_io(:stderr, fn -> compile_to_path(paths, []) end) |> elem(0)
+    end)
+  end
+
+  defp compile_modules(files) do
+    in_tmp(fn ->
+      paths = generate_files(files)
+      {modules, _warnings} = compile_to_path(paths, [])
+
+      Map.new(modules, fn module ->
+        {^module, binary, _filename} = :code.get_object_code(module)
+        {module, binary}
+      end)
+    end)
+  end
+
+  defp compile_to_path(paths, opts) do
+    if opts[:consolidate_protocols] do
+      Code.prepend_path(".")
+
+      result =
+        compile_to_path_with_after_compile(paths, fn ->
+          if Keyword.get(opts, :consolidate_protocols, false) do
+            paths = [".", Application.app_dir(:elixir, "ebin")]
+            protocols = Protocol.extract_protocols(paths)
+
+            for protocol <- protocols do
+              impls = Protocol.extract_impls(protocol, paths)
+              {:ok, binary} = Protocol.consolidate(protocol, impls)
+              File.write!(Atom.to_string(protocol) <> ".beam", binary)
+              purge(protocol)
+            end
+          end
+        end)
+
+      Code.delete_path(".")
+      Enum.each(builtin_protocols(), &purge/1)
+
+      result
+    else
+      compile_to_path_with_after_compile(paths, fn -> :ok end)
+    end
+  end
+
+  defp compile_to_path_with_after_compile(paths, callback) do
+    {:ok, modules, warnings} =
+      Kernel.ParallelCompiler.compile_to_path(paths, ".",
+        return_diagnostics: true,
+        after_compile: callback
+      )
+
+    for module <- modules do
+      purge(module)
+    end
+
+    {modules, warnings}
+  end
+
+  defp generate_files(files) do
+    for {file, contents} <- files do
+      File.write!(file, contents)
+      file
+    end
+  end
+
+  defp read_chunk(binary) do
+    assert {:ok, {_module, [{~c"ExCk", chunk}]}} = :beam_lib.chunks(binary, [~c"ExCk"])
+    assert {:elixir_checker_v10, map} = :erlang.binary_to_term(chunk)
+    map
+  end
+
+  defp purge(mod) do
+    :code.delete(mod)
+    :code.purge(mod)
+  end
+
+  defp in_tmp(fun) do
+    path = PathHelpers.tmp_path("checker")
+
+    File.rm_rf!(path)
+    File.mkdir_p!(path)
+    File.cd!(path, fun)
+  end
+end
