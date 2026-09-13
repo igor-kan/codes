@@ -1,146 +1,130 @@
-# Computational Polyglot Algorithms (`computational-polyglot-algorithms`)
+# Code & Scripts Database
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Languages](https://img.shields.io/badge/Languages-24%20Polyglot-success.svg)](#supported-languages-matrix)
-[![Mathematics](https://img.shields.io/badge/Domain-Scientific%20%26%20Mathematical-orange.svg)](#quarto-site-algorithms)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Index](https://img.shields.io/badge/Index-Multi--Directory-green.svg)](#file-index--navigation-map)
+[![Runner](https://img.shields.io/badge/Runner-Makefile-lightgrey.svg)](#execution--test-reference)
 
-> **The Definitive Multi-Language Computational & Algorithmic Masterclass.**  
-> Bridging theoretical physics, pure mathematics, corporate finance, and system architecture published on [Igor Kan's Quarto Research Site](https://igor-kan.github.io/quarto-writing/) with authentic, high-performance implementations across **24 major programming languages**.
-
----
-
-## Architectural Philosophy: Language Strengths & Domain Affinities
-
-Programming languages are not merely interchangeable syntax; they embody fundamentally different **computational models**, **memory semantics**, and **type-theoretic guarantees**:
-
-1. **Bare-Metal & Systems (C, C++, Rust, Fortran):** Zero-cost abstractions, deterministic memory allocation, vectorization (SIMD), and mechanical sympathy for high-performance physics, cryptanalysis, and HPC.
-2. **Scientific & Numerical Computing (Python, Julia, MATLAB, R):** First-class array primitives, differential equations, symplectic dynamics, and linear algebraic decomposition.
-3. **Purely Functional & Type-Theoretic (Haskell, OCaml, Scala, Lisp):** Referential transparency, immutable algebraic data types, monadic parsing, and compile-time proofs of correctness.
-4. **Concurrent, Reactive & Actor Systems (Go, Elixir, Kotlin, JavaScript):** Asynchronous event loops, CSP channels, actor message queues, and backpressure pipelines.
-5. **Enterprise & Object-Oriented (Java, C#, Swift, PHP):** Robust generic collections, interface polymorphism, Sequence protocols, and PSR design standards.
-6. **Declarative & Analytical (SQL):** Relational algebra, sliding window functions, and set-theoretic data transformations.
+Repository index and directory navigation guide for stored source files, routines, and scripts.
 
 ---
 
-## 24-Language Algorithmic Matrix
-
-| # | Language | Extension | Category / Paradigm | Implemented Module | Key Algorithmic & Architectural Focus |
-|---|----------|-----------|---------------------|--------------------|---------------------------------------|
-| 1 | **Python** | `.py` | Dynamic / Numerical | `rk45_adaptive.py`, `disjoint_set.py` | Adaptive Runge-Kutta-Fehlberg ODE integrator & Disjoint Set Union (DSU) |
-| 2 | **C** | `.c` | Systems / Procedural | `murmurhash3.c`, `euclid_hpc.c` | High-performance non-cryptographic MurmurHash3 & SIMD binary GCD |
-| 3 | **C++** | `.hpp` | Systems / Generic | `lru_cache.hpp` | Thread-safe generic LRU Cache using STL `std::list` & `std::unordered_map` |
-| 4 | **Java** | `.java` | Enterprise / OOP | `Trie.java` | Prefix tree (Trie) with dictionary word search and prefix autocomplete |
-| 5 | **C#** | `.cs` | Managed / Generic | `PriorityQueue.cs` | Generic binary heap min-priority queue with `IComparable<T>` |
-| 6 | **JavaScript** | `.js` | Web / Asynchronous | `async_pipeline.js` | Concurrency-bounded asynchronous map and batch execution pipeline |
-| 7 | **TypeScript** | `.ts` | Static / Structural | `bloom_filter.ts` | Probabilistic Bloom filter with optimal double-hashing distribution |
-| 8 | **R** | `.R` | Statistical / Vectorized | `pca_decomposition.R` | SVD Principal Component Analysis, variance ratios & scree plots |
-| 9 | **Rust** | `.rs` | Memory-Safe Systems | `ring_buffer.rs`, `avl_tree.rs` | Lock-free atomic ring buffer (SPSC) & self-balancing AVL search tree |
-| 10 | **SQL** | `.sql` | Declarative / Relational | `sliding_window_volatility.sql` | Sliding window analytical functions for 20/50 SMA & annualized volatility |
-| 11 | **Golang** | `.go` | Concurrent / CSP | `worker_pool.go` | Concurrent worker pool with channels, wait groups, and context cancellation |
-| 12 | **PHP** | `.php` | Web / Modern OOP | `EventDispatcher.php` | PSR-14 compliant event dispatcher with priority listeners and sorting |
-| 13 | **Swift** | `.swift` | Systems / Protocol-Oriented | `BinarySearchTree.swift` | Generic BST conforming to Swift's standard `Sequence` protocol |
-| 14 | **Julia** | `.jl` | Technical / Multiple Dispatch | `velocity_verlet.jl` | Symplectic velocity-Verlet integrator preserving Hamiltonian phase space |
-| 15 | **Ruby** | `.rb` | Dynamic / Object-Oriented | `rate_limiter.rb` | Thread-safe token bucket rate limiter with monotonic clock & burst smoothing |
-| 16 | **Kotlin** | `.kt` | Modern JVM / Coroutines | `FlowPipeline.kt` | Coroutines SharedFlow reactive pipeline with backpressure buffer |
-| 17 | **MATLAB** | `.m` | Matrix / Engineering | `kalman_filter.m` | Discrete linear time-invariant Kalman filter with optimal Kalman gain |
-| 18 | **OCaml** | `.ml` | Functional / Type-Inference | `red_black_tree.ml` | Chris Okasaki purely functional red-black tree with 4-case rebalancing |
-| 19 | **Lua** | `.lua` | Embedded / Coroutines | `coroutine_scheduler.lua` | Cooperative multitasking green-thread scheduler using coroutines |
-| 20 | **Common Lisp** | `.lisp` | Symbolic / Multi-Paradigm | `a_star_pathfinding.lisp` | Common Lisp A* heuristic graph pathfinding with Manhattan distance |
-| 21 | **Scala** | `.scala` | Functional / JVM | `ReactivePipeline.scala` | Functional reactive data pipeline with immutable case classes & Futures |
-| 22 | **Haskell** | `.hs` | Purely Functional / Monadic | `MonadicParser.hs` | Hutton-Meijer monadic parser combinator library for arithmetic AST |
-| 23 | **Elixir** | `.ex` | Actor / Fault-Tolerant OTP | `priority_queue_server.ex` | Supervised OTP GenServer priority message queue with `:queue` serialization |
-| 24 | **Fortran** | `.f90` | Scientific / HPC (Fortran 2008) | `conjugate_gradient.f90` | Krylov subspace conjugate gradient iterative linear solver |
-
----
-
-## Quarto Website Synchronized Algorithms
-
-Extracted, expanded, and production-hardened from research articles on the Quarto site:
-* **`quarto_website_code/mathematics/`**:
-  * Euclidean Algorithm, Stein's Binary GCD, Extended Bézout Identity, and 2D Gauss-Lagrange Lattice Reduction.
-  * Multilinear Algebra: Dual Space Pairings, Einstein Summation, Tensor Contractions, SVD Eckart-Young, and Tucker HOSVD.
-  * Finite Geometries: $AG(2, q)$ and $PG(2, q)$ Fano Plane Incidence Matrices, Mutually Orthogonal Latin Squares (MOLS), and Bruck-Ryser-Chowla Number-Theoretic Sieve.
-  * Number Theory: Mersenne Primes and Euclid-Euler Perfect Number Decompositions.
-* **`quarto_website_code/physics/`**:
-  * Levi-Civita Epsilon-Delta Contractions, Metric Determinants, and Curvilinear Coordinate Scales.
-  * Symplectic Hamiltonian Phase-Space Volume Conservation.
-  * Rigid Body 3D Inertia Tensor Diagonalization and Principal Axes of Rotation.
-  * Variational Mechanics Symbolic Euler-Lagrange Equations Generator.
-* **`quarto_website_code/finance/`**:
-  * Corporate Financial Statement Modeling: P&L Waterfall, Working Capital, and Unlevered Free Cash Flow (FCFF).
-  * DuPont 3-Step Return on Equity (ROE) Decomposition.
-  * Weighted Average Cost of Capital (WACC) & Two-Stage Discounted Cash Flow (DCF) Valuation.
-* **`quarto_website_code/computer_science/`**:
-  * Complete Graph $K_4$ Planar Drawing, Fáry's Theorem, and Crossing Numbers.
-  * Mnemonic Phonetic Major System and PAO Cipher Mapping.
-
----
-
-## Repository Structure
+## Directory Navigation
 
 ```
-computational-polyglot-algorithms/
-├── languages/                    # 24 Polyglot language implementations
-│   ├── 01_python/
-│   ├── 02_c/
-│   ├── 03_cpp/
-│   ├── 04_java/
-│   ├── 05_csharp/
-│   ├── 06_javascript/
-│   ├── 07_typescript/
-│   ├── 08_r/
-│   ├── 09_rust/
-│   ├── 10_sql/
-│   ├── 11_golang/
-│   ├── 12_php/
-│   ├── 13_swift/
-│   ├── 14_julia/
-│   ├── 15_ruby/
-│   ├── 16_kotlin/
-│   ├── 17_matlab/
-│   ├── 18_ocaml/
-│   ├── 19_lua/
-│   ├── 20_lisp/
-│   ├── 21_scala/
-│   ├── 22_haskell/
-│   ├── 23_elixir/
-│   └── 24_fortran/
-├── quarto_website_code/          # Research algorithms from Quarto site
-│   ├── mathematics/
-│   ├── physics/
-│   ├── finance/
-│   └── computer_science/
-├── tests/                        # Polyglot verification harnesses
-├── Makefile                      # Universal build and verification runner
-├── LICENSE
-└── README.md
+.
+├── languages/                     # Language-specific source files
+│   ├── 01_python/                 # Python (.py)
+│   ├── 02_c/                      # C (.c)
+│   ├── 03_cpp/                    # C++ (.hpp)
+│   ├── 04_java/                   # Java (.java)
+│   ├── 05_csharp/                 # C# (.cs)
+│   ├── 06_javascript/             # JavaScript (.js)
+│   ├── 07_typescript/             # TypeScript (.ts)
+│   ├── 08_r/                      # R (.R)
+│   ├── 09_rust/                   # Rust (.rs)
+│   ├── 10_sql/                    # SQL (.sql)
+│   ├── 11_golang/                 # Go (.go)
+│   ├── 12_php/                    # PHP (.php)
+│   ├── 13_swift/                  # Swift (.swift)
+│   ├── 14_julia/                  # Julia (.jl)
+│   ├── 15_ruby/                   # Ruby (.rb)
+│   ├── 16_kotlin/                 # Kotlin (.kt)
+│   ├── 17_matlab/                 # MATLAB (.m)
+│   ├── 18_ocaml/                  # OCaml (.ml)
+│   ├── 19_lua/                    # Lua (.lua)
+│   ├── 20_lisp/                   # Common Lisp (.lisp)
+│   ├── 21_scala/                  # Scala (.scala)
+│   ├── 22_haskell/                # Haskell (.hs)
+│   ├── 23_elixir/                 # Elixir (.ex)
+│   └── 24_fortran/                # Fortran (.f90)
+├── scripts/                       # Computational scripts by domain
+│   ├── computer_science/          # Graph and text routines
+│   ├── finance/                   # Valuation and cash flow routines
+│   ├── mathematics/               # Number and matrix routines
+│   └── physics/                   # Mechanics and tensor routines
+├── Makefile                       # Execution and build harness
+├── LICENSE                        # Repository license
+└── README.md                      # Directory navigation index
 ```
 
 ---
 
-## Verification & Testing Suite
+## File Index & Navigation Map
 
-The repository includes a comprehensive master `Makefile` executing smoke tests, builds, and invariant verifications across the polyglot stack:
+### 1. Language Implementations (`languages/`)
+
+| Directory | File | Runtime / Format | Primary Identifier / Symbol |
+|:---|:---|:---|:---|
+| `languages/01_python/` | `rk45_adaptive.py` | Python 3 | `rk45_step`, `solve_ode_rk45` |
+| `languages/01_python/` | `disjoint_set.py` | Python 3 | `DisjointSetUnion` |
+| `languages/02_c/` | `murmurhash3.c` | C (C99/C11) | `murmurhash3_32` |
+| `languages/03_cpp/` | `lru_cache.hpp` | C++ (C++17) | `LRUCache<K, V>` |
+| `languages/04_java/` | `Trie.java` | Java (JDK 17+) | `Trie`, `TrieNode` |
+| `languages/05_csharp/` | `PriorityQueue.cs` | C# (.NET 8) | `PriorityQueue<T>` |
+| `languages/06_javascript/` | `async_pipeline.js` | Node.js / ES2022 | `pMap`, `batchPipeline` |
+| `languages/07_typescript/` | `bloom_filter.ts` | TypeScript 5 | `BloomFilter<T>` |
+| `languages/08_r/` | `pca_decomposition.R` | R | `svd_pca`, `scree_ascii_plot` |
+| `languages/09_rust/` | `ring_buffer.rs` | Rust (Cargo / rustc) | `SpscRingBuffer<T>` |
+| `languages/10_sql/` | `sliding_window_volatility.sql` | SQL (Postgres / ANSI) | `daily_market_quotes`, analytical window |
+| `languages/11_golang/` | `worker_pool.go` | Go 1.21+ | `WorkerPool`, `Process` |
+| `languages/12_php/` | `EventDispatcher.php` | PHP 8.2+ | `EventDispatcher`, `ListenerProvider` |
+| `languages/13_swift/` | `BinarySearchTree.swift` | Swift 5.9+ | `BinarySearchTree<Element>` |
+| `languages/14_julia/` | `velocity_verlet.jl` | Julia 1.9+ | `Particle`, `velocity_verlet_step!` |
+| `languages/15_ruby/` | `rate_limiter.rb` | Ruby 3.2+ | `TokenBucketRateLimiter` |
+| `languages/16_kotlin/` | `FlowPipeline.kt` | Kotlin 1.9+ | `FlowPipeline`, `SharedFlow` |
+| `languages/17_matlab/` | `kalman_filter.m` | MATLAB / Octave | `kalman_filter` |
+| `languages/18_ocaml/` | `red_black_tree.ml` | OCaml 5.x | `MakeSet`, `balance`, `insert` |
+| `languages/19_lua/` | `coroutine_scheduler.lua` | Lua 5.4 / LuaJIT | `Scheduler`, `create_task` |
+| `languages/20_lisp/` | `a_star_pathfinding.lisp` | Common Lisp (SBCL) | `a-star-search`, `reconstruct-path` |
+| `languages/21_scala/` | `ReactivePipeline.scala` | Scala 3 | `ReactivePipeline`, `Future` composition |
+| `languages/22_haskell/` | `MonadicParser.hs` | Haskell (GHC 9.6+) | `Parser a`, `parseAndEval` |
+| `languages/23_elixir/` | `priority_queue_server.ex` | Elixir / OTP | `PriorityQueueServer` |
+| `languages/24_fortran/` | `conjugate_gradient.f90` | Fortran 2008 (gfortran) | `conjugate_gradient_solver` |
+
+### 2. Computational Scripts (`scripts/`)
+
+| Directory | File | Topic / Identifier |
+|:---|:---|:---|
+| `scripts/mathematics/` | `euclidean_algorithms.py` | Euclidean routines, modular inverse, lattice reduction |
+| `scripts/mathematics/` | `finite_geometry_fano.py` | Finite geometry incidence matrices, Latin squares |
+| `scripts/mathematics/` | `multilinear_algebra.py` | Multilinear tensor pairings and contractions |
+| `scripts/mathematics/` | `perfect_numbers_factorization.py` | Prime and factor decompositions |
+| `scripts/mathematics/` | `test_euclid_algorithms.py` | Mathematics verification routines |
+| `scripts/mathematics/` | `test_multilinear_algebra.py` | Tensor verification routines |
+| `scripts/physics/` | `curvilinear_tensors.py` | Metric tensors and coordinate transformations |
+| `scripts/physics/` | `rigid_body_inertia.py` | Matrix moments and tensor diagonalization |
+| `scripts/physics/` | `symbolic_euler_lagrange.py` | Variational derivative routines |
+| `scripts/physics/` | `test_tensor_identities.py` | Physics verification routines |
+| `scripts/finance/` | `corporate_valuation_dcf.py` | Financial statement and cash flow computations |
+| `scripts/finance/` | `dividend_gordon_growth.py` | Equity return and growth factor routines |
+| `scripts/computer_science/` | `k4_planar_graph.py` | Planar graph layout and crossing routines |
+| `scripts/computer_science/` | `major_system_cipher.py` | Phonetic encoding lookup routines |
+
+---
+
+## Execution & Test Reference
+
+Use `make` with target names to run specific scripts and test suites:
 
 ```bash
-# Run all locally available polyglot test suites:
+# Run all configured test targets
 make test
 
-# Or run language-specific verification targets:
-make test-python    # Verifies Adaptive RK45 ODE Integrator and Disjoint Set Union
-make test-c         # Compiles & executes non-cryptographic MurmurHash3
-make test-cpp       # Compiles & executes thread-safe template LRU Cache
-make test-java      # Compiles & runs Trie prefix autocomplete
-make test-rust      # Compiles & tests SPSC Atomic Ring Buffer
-make test-fortran   # Compiles & executes Fortran 2008 Conjugate Gradient solver
-make test-js        # Executes concurrency-bounded async pipeline
-make test-go        # Runs concurrent worker pool with channel synchronization
-make test-lua       # Executes cooperative coroutine green-thread scheduler
-make test-quarto    # Runs full suite of mathematics, physics, finance & CS algorithms
+# Target specific modules
+make test-python    # Run Python scripts
+make test-c         # Build and run C routines
+make test-cpp       # Build and run C++ routines
+make test-java      # Build and run Java routines
+make test-lua       # Run Lua routines
+make test-rust      # Build and run Rust routines
+make test-fortran   # Build and run Fortran routines
+make test-js        # Run JavaScript routines
+make test-go        # Run Go routines
+make test-scripts   # Run computational scripts suite
 ```
 
 ---
 
-## License & Attribution
+## License
 
-Authored by **Igor Kan** (© 2026). Released under the [MIT License](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.
