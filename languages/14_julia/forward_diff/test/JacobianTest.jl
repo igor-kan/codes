@@ -1,0 +1,427 @@
+module JacobianTest
+
+import Calculus
+
+using Test
+using ForwardDiff
+using ForwardDiff: Dual, Tag, JacobianConfig
+using StaticArrays
+using DiffTests
+using LinearAlgebra
+
+include(joinpath(dirname(@__FILE__), "utils.jl"))
+
+struct TestTag end
+struct OuterTestTag end
+ForwardDiff.:≺(::Type{TestTag}, ::Type{OuterTestTag}) = true
+ForwardDiff.:≺(::Type{OuterTestTag}, ::Type{<:Tag}) = true
+
+##################
+# hardcoded test #
+##################
+
+f! = (y, x) -> begin
+    y[1] = x[1] * x[2]
+    y[1] *= sin(x[3]^2)
+    y[2] = y[1] + x[3]
+    y[3] = y[1] / y[2]
+    y[4] = x[3]
+    return nothing
+end
+f = x -> (y = fill(zero(promote_type(eltype(x), Float64)), 4); f!(y, x); return y)
+x = [1, 2, 3]
+v = f(x)
+j = [0.8242369704835132  0.4121184852417566  -10.933563142616123
+     0.8242369704835132  0.4121184852417566  -9.933563142616123
+     0.169076696546684   0.084538348273342   -2.299173530851733
+     0.0                 0.0                 1.0]
+
+for c in (1, 2, 3), tags in ((nothing, nothing),
+                             (Tag(f, eltype(x)), Tag(f!, eltype(x))))
+    println("  ...running hardcoded test with chunk size = $c and tag = $(repr(tags))")
+    cfg = JacobianConfig(f, x, ForwardDiff.Chunk{c}(), tags[1])
+    ycfg = JacobianConfig(f!, fill(0.0, 4), x, ForwardDiff.Chunk{c}(), tags[2])
+
+    @test eltype(cfg)  == Dual{typeof(tags[1]), eltype(x), c}
+    @test eltype(ycfg) == Dual{typeof(tags[2]), eltype(x), c}
+
+    # testing f(x)
+    @test isapprox(j, ForwardDiff.jacobian(f, x, cfg))
+    @test isapprox(j, ForwardDiff.jacobian(f, x))
+
+    out = fill(0.0, 4, 3)
+    ForwardDiff.jacobian!(out, f, x, cfg)
+    @test isapprox(out, j)
+
+    out = fill(0.0, 4, 3)
+    ForwardDiff.jacobian!(out, f, x)
+    @test isapprox(out, j)
+
+    out = DiffResults.JacobianResult(fill(0.0, 4), fill(0.0, 3))
+    ForwardDiff.jacobian!(out, f, x, cfg)
+    @test isapprox(DiffResults.value(out), v)
+    @test isapprox(DiffResults.jacobian(out), j)
+
+    # testing f!(y, x)
+    y = fill(0.0, 4)
+    @test isapprox(j, ForwardDiff.jacobian(f!, y, x, ycfg))
+    @test isapprox(v, y)
+
+    y = fill(0.0, 4)
+    @test isapprox(j, ForwardDiff.jacobian(f!, y, x))
+    @test isapprox(v, y)
+
+    out, y = fill(0.0, 4, 3), fill(0.0, 4)
+    ForwardDiff.jacobian!(out, f!, y, x, ycfg)
+    @test isapprox(out, j)
+    @test isapprox(y, v)
+
+    out, y = fill(0.0, 4, 3), fill(0.0, 4)
+    ForwardDiff.jacobian!(out, f!, y, x)
+    @test isapprox(out, j)
+    @test isapprox(y, v)
+
+    out = DiffResults.JacobianResult(fill(0.0, 4), fill(0.0, 3))
+    y = fill(0.0, 4)
+    ForwardDiff.jacobian!(out, f!, y, x, ycfg)
+    @test DiffResults.value(out) == y
+    @test isapprox(y, v)
+    @test isapprox(DiffResults.jacobian(out), j)
+
+    out = DiffResults.JacobianResult(fill(0.0, 4), fill(0.0, 3))
+    y = fill(0.0, 4)
+    ForwardDiff.jacobian!(out, f!, y, x)
+    @test DiffResults.value(out) == y
+    @test isapprox(y, v)
+    @test isapprox(DiffResults.jacobian(out), j)
+end
+
+cfgx = ForwardDiff.JacobianConfig(sin, x)
+@test_throws ForwardDiff.InvalidTagException ForwardDiff.jacobian(f, x, cfgx)
+@test ForwardDiff.jacobian(f, x, cfgx, Val{false}()) == ForwardDiff.jacobian(f,x)
+
+########################
+# test vs. Calculus.jl #
+########################
+
+for f in DiffTests.ARRAY_TO_ARRAY_FUNCS
+    v = f(X)
+    j = ForwardDiff.jacobian(f, X)
+    @test isapprox(j, Calculus.jacobian(x -> vec(f(x)), X, :forward), atol=1.3FINITEDIFF_ERROR)
+    @testset "$f with chunk size = $c and tag = $(repr(tag))" for c in CHUNK_SIZES, tag in (nothing, Tag)
+        if tag == Tag
+            tag = Tag(f, eltype(X))
+        end
+        cfg = JacobianConfig(f, X, ForwardDiff.Chunk{c}(), tag)
+
+        out = ForwardDiff.jacobian(f, X, cfg)
+        @test isapprox(out, j)
+
+        out = similar(X, length(v), length(X))
+        ForwardDiff.jacobian!(out, f, X, cfg)
+        @test isapprox(out, j)
+
+        out = DiffResults.DiffResult(similar(v, length(v)), similar(v, length(v), length(X)))
+        ForwardDiff.jacobian!(out, f, X, cfg)
+        @test isapprox(DiffResults.value(out), v)
+        @test isapprox(DiffResults.jacobian(out), j)
+    end
+end
+
+for f! in DiffTests.INPLACE_ARRAY_TO_ARRAY_FUNCS
+    v = fill!(similar(Y), 0.0)
+    f!(v, X)
+    j = ForwardDiff.jacobian(f!, fill!(similar(Y), 0.0), X)
+    @test isapprox(j, Calculus.jacobian(x -> (y = fill!(similar(Y), 0.0); f!(y, x); vec(y)), X, :forward), atol=FINITEDIFF_ERROR)
+    @testset "$(f!) with chunk size = $c and tag = $(repr(tag))" for c in CHUNK_SIZES, tag in (nothing, Tag(f!, eltype(X)))
+        ycfg = JacobianConfig(f!, fill!(similar(Y), 0.0), X, ForwardDiff.Chunk{c}(), tag)
+
+        y = fill!(similar(Y), 0.0)
+        out = ForwardDiff.jacobian(f!, y, X, ycfg)
+        @test isapprox(y, v)
+        @test isapprox(out, j)
+
+        y = fill!(similar(Y), 0.0)
+        out = similar(Y, length(Y), length(X))
+        ForwardDiff.jacobian!(out, f!, y, X)
+        @test isapprox(y, v)
+        @test isapprox(out, j)
+
+        y = fill!(similar(Y), 0.0)
+        out = DiffResults.JacobianResult(y, X)
+        ForwardDiff.jacobian!(out, f!, y, X)
+        @test DiffResults.value(out) == y
+        @test isapprox(y, v)
+        @test isapprox(DiffResults.jacobian(out), j)
+
+        y = fill!(similar(Y), 0.0)
+        out = DiffResults.JacobianResult(y, X)
+        ForwardDiff.jacobian!(out, f!, y, X, ycfg)
+        @test DiffResults.value(out) == y
+        @test isapprox(y, v)
+        @test isapprox(DiffResults.jacobian(out), j)
+    end
+end
+
+##########################################
+# test specialized StaticArray codepaths #
+##########################################
+
+@info "testing specialized StaticArray codepaths"
+
+x = rand(3, 3)
+for T in (StaticArrays.SArray, StaticArrays.MArray)
+    sx = T{Tuple{3,3}}(x)
+
+    cfg = ForwardDiff.JacobianConfig(nothing, x)
+    scfg = ForwardDiff.JacobianConfig(nothing, sx)
+
+    _diff(A) = diff(A; dims=1)
+
+    actual = ForwardDiff.jacobian(_diff, x)
+    @test ForwardDiff.jacobian(_diff, sx) == actual
+    @test ForwardDiff.jacobian(_diff, sx, cfg) == actual
+    @test ForwardDiff.jacobian(_diff, sx, scfg) == actual
+    @test ForwardDiff.jacobian(_diff, sx, scfg) isa StaticArray
+    @test ForwardDiff.jacobian(_diff, sx, scfg, Val{false}()) == actual
+    @test ForwardDiff.jacobian(_diff, sx, scfg, Val{false}()) isa StaticArray
+
+    out = similar(x, 6, 9)
+    ForwardDiff.jacobian!(out, _diff, sx)
+    @test out == actual
+
+    out = similar(x, 6, 9)
+    ForwardDiff.jacobian!(out, _diff, sx, cfg)
+    @test out == actual
+
+    out = similar(x, 6, 9)
+    ForwardDiff.jacobian!(out, _diff, sx, scfg)
+    @test out == actual
+
+    result = DiffResults.JacobianResult(similar(x, 6), x)
+    result = ForwardDiff.jacobian!(result, _diff, x)
+
+    result1 = DiffResults.JacobianResult(similar(sx, 6), sx)
+    result2 = DiffResults.JacobianResult(similar(sx, 6), sx)
+    result3 = DiffResults.JacobianResult(similar(sx, 6), sx)
+    result1 = ForwardDiff.jacobian!(result1, _diff, sx)
+    result2 = ForwardDiff.jacobian!(result2, _diff, sx, cfg)
+    result3 = ForwardDiff.jacobian!(result3, _diff, sx, scfg)
+    @test DiffResults.value(result1) == DiffResults.value(result)
+    @test DiffResults.value(result2) == DiffResults.value(result)
+    @test DiffResults.value(result3) == DiffResults.value(result)
+    @test DiffResults.jacobian(result1) == DiffResults.jacobian(result)
+    @test DiffResults.jacobian(result2) == DiffResults.jacobian(result)
+    @test DiffResults.jacobian(result3) == DiffResults.jacobian(result)
+
+    sy = @SVector fill(zero(eltype(sx)), 6)
+    sresult1 = DiffResults.JacobianResult(sy, sx)
+    sresult2 = DiffResults.JacobianResult(sy, sx)
+    sresult3 = DiffResults.JacobianResult(sy, sx)
+    sresult1 = ForwardDiff.jacobian!(sresult1, _diff, sx)
+    sresult2 = ForwardDiff.jacobian!(sresult2, _diff, sx, cfg)
+    sresult3 = ForwardDiff.jacobian!(sresult3, _diff, sx, scfg)
+    @test DiffResults.value(sresult1) == DiffResults.value(result)
+    @test DiffResults.value(sresult2) == DiffResults.value(result)
+    @test DiffResults.value(sresult3) == DiffResults.value(result)
+    @test DiffResults.jacobian(sresult1) == DiffResults.jacobian(result)
+    @test DiffResults.jacobian(sresult2) == DiffResults.jacobian(result)
+    @test DiffResults.jacobian(sresult3) == DiffResults.jacobian(result)
+
+    # make sure this is not a source of type instability
+    @inferred ForwardDiff.JacobianConfig(f, sx)
+end
+
+#########
+# misc. #
+#########
+
+@testset "dimension errors for jacobian" begin
+    @test_throws DimensionMismatch ForwardDiff.jacobian(identity, 2pi) # input
+    @test_throws DimensionMismatch ForwardDiff.jacobian(sum, fill(2pi, 2)) # vector_mode_jacobian
+    @test_throws DimensionMismatch ForwardDiff.jacobian(sum, fill(2pi, 10^6)) # chunk_mode_jacobian
+end
+
+@testset "eigen" begin
+    eigvals_symreal(x) = eigvals(Symmetric(x*x'))
+    eigvals_hermreal(x) = eigvals(Hermitian(x*x'))
+    eigvals_hermcomplex(x) = map(abs2, eigvals(Hermitian(complex.(x*x', x'*x))))
+    eigvals_symtridiag(x) = eigvals(SymTridiagonal(x, x[begin:(end - 1)]))
+
+    eigen_vals_symreal(x) = eigen(Symmetric(x*x')).values
+    eigen_vals_hermreal(x) = eigen(Hermitian(x*x')).values
+    eigen_vals_hermcomplex(x) = map(abs2, eigen(Hermitian(complex.(x*x', x'*x))).values)
+    eigen_vals_symtridiag(x) = eigen(SymTridiagonal(x, x[begin:(end - 1)])).values
+
+    eigen_vec1_symreal(x) = eigen(Symmetric(x*x')).vectors[:,1]
+    eigen_vec1_hermreal(x) = eigen(Hermitian(x*x')).vectors[:,1]
+    eigen_vec1_hermcomplex(x) = map(abs2, eigen(Hermitian(complex.(x*x', x'*x))).vectors[:,1])
+    eigen_vec1_symtridiag(x) = eigen(SymTridiagonal(x, x[begin:(end - 1)])).vectors[:,1]
+    
+    # Note: SymTridiagonal is not supported for StaticArrays
+    x0 = [1.0, 2.0]
+    for T in (Int, Float32, Float64), A in (Array, SArray, MArray)
+        if A <: StaticArrays.StaticArray
+            x = A{Tuple{2},T}(x0)
+            JT = A{Tuple{2,2},float(T)}
+        else
+            x = A{T,1}(x0)
+            JT = A{float(T),2}
+        end
+
+        # analytic solutions
+        @test ForwardDiff.jacobian(eigvals_symreal, x) ≈ [0 0; 2 4]
+        @test ForwardDiff.jacobian(eigvals_hermreal, x) ≈ [0 0; 2 4]
+        if !(x isa StaticArrays.StaticArray)
+           @test ForwardDiff.jacobian(eigvals_symtridiag, x) ≈ [(1 - 3/sqrt(5))/2 (1 - 1/sqrt(5))/2 ; (1 + 3/sqrt(5))/2 (1 + 1/sqrt(5))/2]
+        end
+
+        # eigen + eigvals
+        for ev in (
+            eigvals_symreal, eigvals_hermreal, eigvals_hermcomplex, eigvals_symtridiag,
+            eigen_vals_symreal, eigen_vals_hermreal, eigen_vals_hermcomplex, eigen_vals_symtridiag,            
+            eigen_vec1_symreal, eigen_vec1_hermreal, eigen_vec1_hermcomplex, eigen_vec1_symtridiag,
+        )
+            if x isa StaticArrays.StaticArray &&
+                (ev === eigvals_symtridiag || ev === eigen_vals_symtridiag || ev === eigen_vec1_symtridiag)
+                continue
+            end
+
+            # Chunk size can only be inferred for static arrays
+            if x isa StaticArrays.StaticArray
+                @test @inferred(ForwardDiff.jacobian(ev, x)) isa JT
+            else
+                @test ForwardDiff.jacobian(ev, x) isa JT
+            end
+            cfg = ForwardDiff.JacobianConfig(ev, x)
+            @test @inferred(ForwardDiff.jacobian(ev, x, cfg)) isa JT
+
+            @test ForwardDiff.jacobian(ev, x) ≈ Calculus.finite_difference_jacobian(ev, float.(x0))
+        end
+
+        # consistency of eigen and eigvals
+        for (eigvals, eigen_vals) in (
+            (eigvals_symreal, eigen_vals_symreal),
+            (eigvals_hermreal, eigen_vals_hermreal),
+            (eigvals_hermcomplex, eigen_vals_hermcomplex),
+            (eigvals_symtridiag, eigen_vals_symtridiag),
+        )
+            if x isa StaticArrays.StaticArray && eigvals === eigvals_symtridiag
+                continue
+            end
+            @test ForwardDiff.jacobian(eigvals, x) ≈ ForwardDiff.jacobian(eigen_vals, x)
+        end
+    end
+
+    # The matrices above are all of the form `x*x'` and hence symmetric, so `:U` and `:L` wrap the
+    # same matrix. Here the raw storage is deliberately not symmetric/Hermitian: the values and the
+    # partials both have to be read from the triangle that `uplo` selects.
+    @testset "uplo = :$uplo" for uplo in (:U, :L)
+        # `2*x[1]+x[2]^2` rather than something proportional to the off-diagonal entry, so that the
+        # eigenvector direction actually depends on `x` and the eigenvector test is not vacuous
+        raw_real(x) = [x[1] x[2]; 3*x[2] 2*x[1]+x[2]^2]
+        raw_complex(x) = complex.(raw_real(x), [0 x[1]; -2*x[2] 0])
+        x0 = [1.0, 2.0]
+
+        @testset "$name" for (name, wrap) in (
+            ("Symmetric{<:Real}", x -> Symmetric(raw_real(x), uplo)),
+            ("Hermitian{<:Real}", x -> Hermitian(raw_real(x), uplo)),
+            ("Hermitian{<:Complex}", x -> Hermitian(raw_complex(x), uplo)),
+        )
+            for ev in (x -> eigvals(wrap(x)),
+                       x -> eigen(wrap(x)).values,
+                       x -> map(abs2, eigen(wrap(x)).vectors[:, 1]))
+                @test ForwardDiff.jacobian(ev, x0) ≈ Calculus.finite_difference_jacobian(ev, x0)
+            end
+        end
+    end
+end
+
+@testset "type stability" begin
+    g!(dy, y) = dy[1] = y[1]
+    @inferred ForwardDiff.jacobian(g!, [1.0], [0.0])
+
+    @testset "issue 639" begin
+        f(x) = SA[x[1]^2+x[2]^2, x[2]^2+x[3]^2]
+        x = SA[1.0, 2.0, 3.0]
+        y = f(x)
+        imdr = DiffResults.JacobianResult(y, x)
+        @inferred ForwardDiff.jacobian!(imdr, f, x)
+    end
+
+    @testset "pr 735" begin
+        f(x) = x .^ 2 ./ 2
+        function withjacobian(x)
+            res = DiffResults.JacobianResult(x)
+            res = ForwardDiff.jacobian!(res, f, x)
+            return DiffResults.value(res), DiffResults.jacobian(res)
+        end
+        @inferred withjacobian(SA[1.0, 2.0])
+    end
+end
+
+# issues #436, #740
+@testset "BigFloat" begin
+    # Unassigned entries in the output
+    x = BigFloat.(1:9)
+    for chunksize in (1, 2, 9)
+        y = similar(x)
+        @test all(i -> !isassigned(y, i), eachindex(y))
+        cfg = ForwardDiff.JacobianConfig(copyto!, y, x, ForwardDiff.Chunk{chunksize}())
+        res = ForwardDiff.jacobian(copyto!, y, x, cfg)
+        @test y == x
+        @test res isa Matrix{BigFloat}
+        @test res == I
+    end
+
+    # Unassigned (but unused) entry in the input and unassigned entries in the output. `hole` is
+    # varied so the unassigned entry lands in a middle chunk as well as in the last one: only the
+    # former reaches the `Base._unsetindex!` branch of the windowed seeding path, since the last
+    # chunk is never cleared.
+    @testset "unassigned input entry at $hole" for hole in (5, 10)
+        x = Vector{BigFloat}(undef, 10)
+        for i in eachindex(x)
+            i == hole || (x[i] = BigFloat(i))
+        end
+        used = [i for i in eachindex(x) if i != hole]
+        f = (y, x) -> (for (k, i) in enumerate(used); y[k] = x[i]; end; y)
+        for chunksize in (1, 2, 10)
+            y = similar(x, 9)
+            @test all(i -> !isassigned(y, i), eachindex(y))
+            cfg = ForwardDiff.JacobianConfig(f, y, x, ForwardDiff.Chunk{chunksize}())
+            res = ForwardDiff.jacobian(f, y, x, cfg)
+            @test y == x[used]
+            @test res isa Matrix{BigFloat}
+            @test res[:, used] == I
+            @test all(iszero, res[:, hole])
+        end
+    end
+end
+
+# issue #769
+@testset "functions with `Dual` output" begin
+    x = [Dual{OuterTestTag}(Dual{TestTag}(1.3, 2.1), Dual{TestTag}(0.3, -2.4))]
+    f(x) = map(ForwardDiff.value, x)
+    der = ForwardDiff.derivative(ForwardDiff.value, only(x))
+
+    # Vector mode
+    jac = ForwardDiff.jacobian(f, x)
+    @test jac isa Matrix{typeof(der)}
+    @test jac == [der;;]
+    jac = ForwardDiff.jacobian(f, SVector{1}(x))
+    @test jac isa SMatrix{1,1,typeof(der)}
+    @test jac == SMatrix{1,1}(der)
+
+    # Chunk mode
+    y = repeat(x, 3)
+    cfg = ForwardDiff.JacobianConfig(f, y, ForwardDiff.Chunk{2}())
+    jac = ForwardDiff.jacobian(f, y, cfg)
+    @test jac isa Matrix{typeof(der)}
+    @test jac == Diagonal([der, der, der])
+    cfg = ForwardDiff.JacobianConfig(f, SVector{3}(y), ForwardDiff.Chunk{2}())
+    jac = ForwardDiff.jacobian(f, SVector{3}(y), cfg)
+    @test jac isa SMatrix{3,3,typeof(der)}
+    @test jac == Diagonal([der, der, der])
+end
+
+end # module

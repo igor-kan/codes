@@ -1,0 +1,258 @@
+EnumX.@enumx DefaultSolverChoice begin
+    Tsit5 = 1
+    Vern7 = 2
+    Rosenbrock23 = 3
+    Rodas5P = 4
+    FBDF = 5
+    KrylovFBDF = 6
+end
+
+const NUM_NONSTIFF = 2
+const NUM_STIFF = 4
+const LOW_TOL = 1.0e-6
+const MED_TOL = 1.0e-2
+const EXTREME_TOL = 1.0e-9
+const SMALLSIZE = 50
+const MEDIUMSIZE = 500
+const STABILITY_SIZES = (alg_stability_size(Tsit5()), alg_stability_size(Vern7()))
+const DEFAULTBETA2S = (
+    beta2_default(Tsit5()), beta2_default(Vern7()), beta2_default(Rosenbrock23()),
+    beta2_default(Rodas5P()), beta2_default(FBDF()), beta2_default(FBDF()),
+)
+const DEFAULTBETA1S = (
+    beta1_default(Tsit5(), DEFAULTBETA2S[1]), beta1_default(Vern7(), DEFAULTBETA2S[2]),
+    beta1_default(Rosenbrock23(), DEFAULTBETA2S[3]), beta1_default(
+        Rodas5P(), DEFAULTBETA2S[4]
+    ),
+    beta1_default(FBDF(), DEFAULTBETA2S[5]), beta1_default(FBDF(), DEFAULTBETA2S[6]),
+)
+
+callbacks_exists(integrator) = !isempty(integrator.opts.callbacks)
+current_nonstiff(current) = ifelse(current <= NUM_NONSTIFF, current, current - NUM_STIFF)
+
+"""
+    DefaultODEAlgorithm(; lazy = Val{true}(), stiffalgfirst = false, kwargs...)
+
+Construct the automatic default ODE algorithm used when `solve` is called without
+an explicit algorithm for an ODE problem.
+
+`DefaultODEAlgorithm` starts with explicit nonstiff methods and switches to stiff
+methods when stiffness is detected. It chooses among `Tsit5`, `Vern7`,
+`Rosenbrock23`, `Rodas5P`, and `FBDF`, using Krylov-based `FBDF` for larger stiff
+systems.
+
+# Keywords
+
+  - `lazy`: controls lazy tableau construction for `Vern7`.
+  - `stiffalgfirst`: start on the stiff solver branch when `true`.
+  - `kwargs...`: forwarded to the stiff solver constructors.
+
+# Examples
+
+```julia
+using OrdinaryDiffEqDefault
+using SciMLBase: ODEProblem, solve
+
+function f!(du, u, p, t)
+    du[1] = -u[1]
+    return
+end
+
+prob = ODEProblem(f!, [1.0], (0.0, 1.0))
+sol = solve(prob, DefaultODEAlgorithm(); reltol = 1.0e-6, abstol = 1.0e-8)
+```
+"""
+function DefaultODEAlgorithm(; lazy = Val{true}(), stiffalgfirst = false, kwargs...)
+    nonstiff = (Tsit5(), Vern7(; lazy))
+    stiff = (
+        Rosenbrock23(; kwargs...), Rodas5P(; kwargs...), FBDF(; kwargs...),
+        FBDF(; linsolve = LinearSolve.KrylovJL_GMRES(), kwargs...),
+    )
+    return AutoAlgSwitch(nonstiff, stiff; stiffalgfirst)
+end
+
+function isdefaultalg(
+        alg::CompositeAlgorithm{
+            <:Any, <:Tuple{Tsit5, Vern7, Rosenbrock23, Rodas5P, FBDF, FBDF},
+        }
+    )
+    return true
+end
+
+SciMLBase.supports_solve_rng(::SciMLBase.AbstractODEProblem, ::Nothing) = true
+SciMLBase.supports_solve_rng(::SciMLBase.AbstractDAEProblem, ::Nothing) = true
+
+DiffEqBase.prepare_alg(::Nothing, u0, p, ::ODEProblem) =
+    DefaultODEAlgorithm(autodiff = AutoFiniteDiff())
+DiffEqBase.prepare_alg(::Nothing, u0, p, ::DAEProblem) =
+    DFBDF(autodiff = AutoFiniteDiff())
+
+function SciMLBase.__init(prob::ODEProblem, ::Nothing, args...; kwargs...)
+    return SciMLBase.__init(
+        prob, DefaultODEAlgorithm(autodiff = AutoFiniteDiff()),
+        args...; wrap = Val(false), kwargs...
+    )
+end
+function SciMLBase.__solve(prob::ODEProblem, ::Nothing, args...; kwargs...)
+    return SciMLBase.__solve(
+        prob, DefaultODEAlgorithm(autodiff = AutoFiniteDiff()),
+        args...; wrap = Val(false), kwargs...
+    )
+end
+
+function SciMLBase.__init(prob::DAEProblem, ::Nothing, args...; kwargs...)
+    return SciMLBase.__init(
+        prob, DFBDF(autodiff = AutoFiniteDiff()),
+        args...; wrap = Val(false), kwargs...
+    )
+end
+function SciMLBase.__solve(prob::DAEProblem, ::Nothing, args...; kwargs...)
+    return SciMLBase.__solve(
+        prob, DFBDF(autodiff = AutoFiniteDiff()),
+        args...; wrap = Val(false), kwargs...
+    )
+end
+
+function is_stiff(integrator, alg, ntol, stol, is_stiffalg, current)
+    eigen_est, dt = integrator.eigen_est, integrator.dt
+    stiffness = abs(
+        eigen_est * dt /
+            STABILITY_SIZES[nonstiffchoice(integrator.opts.reltol)]
+    ) # `abs` here is just for safety
+    tol = is_stiffalg ? stol : ntol
+    os = oneunit(stiffness)
+    # NaN-safe form: a NaN spectral-radius estimate (e.g. 0/0 from a
+    # non-smooth RHS that collapses adjacent stage states to the same value)
+    # means the explicit Hairer-style estimator is degenerate. Treat that as
+    # "stiff" so AutoSwitch falls back to an implicit method instead of
+    # getting stuck on the explicit branch. Matches the form used by
+    # `OrdinaryDiffEqCore.is_stiff`.
+    bool = !(stiffness <= os * tol)
+
+    if !bool
+        integrator.alg.choice_function.successive_switches += 1
+    else
+        integrator.alg.choice_function.successive_switches = 0
+    end
+
+    integrator.do_error_check = (
+        integrator.alg.choice_function.successive_switches >
+            integrator.alg.choice_function.switch_max || !bool
+    ) ||
+        is_stiffalg
+    return bool
+end
+
+function nonstiffchoice(reltol)
+    x = if reltol < LOW_TOL
+        DefaultSolverChoice.Vern7
+    else
+        DefaultSolverChoice.Tsit5
+    end
+    return Int(x)
+end
+
+function stiffchoice(reltol, len, mass_matrix)
+    x = if len > MEDIUMSIZE
+        DefaultSolverChoice.KrylovFBDF
+    elseif len > SMALLSIZE
+        DefaultSolverChoice.FBDF
+    else
+        if reltol < LOW_TOL || !_is_identity_massmatrix(mass_matrix)
+            DefaultSolverChoice.Rodas5P
+        else
+            DefaultSolverChoice.Rosenbrock23
+        end
+    end
+    return Int(x)
+end
+
+function default_autoswitch(AS::AutoSwitchCache, integrator)
+    len = length(integrator.u)
+    reltol = integrator.opts.reltol
+
+    # Choose the starting method
+    if AS.current == 0
+        choice = if AS.stiffalgfirst || !_is_identity_massmatrix(integrator.f.mass_matrix)
+            stiffchoice(reltol, len, integrator.f.mass_matrix)
+        else
+            nonstiffchoice(reltol)
+        end
+        AS.current = choice
+        return AS.current
+    end
+
+    dt = integrator.dt
+    # Successive stiffness test positives are counted by a positive integer,
+    # and successive stiffness test negatives are counted by a negative integer
+    AS.count = is_stiff(
+            integrator, AS.nonstiffalg, AS.nonstifftol, AS.stifftol,
+            AS.is_stiffalg, AS.current
+        ) ?
+        AS.count < 0 ? 1 : AS.count + 1 :
+        AS.count > 0 ? -1 : AS.count - 1
+    if !_is_identity_massmatrix(integrator.f.mass_matrix)
+        #don't change anything
+    elseif (!AS.is_stiffalg && AS.count > AS.maxstiffstep)
+        integrator.dt = dt * AS.dtfac
+        AS.is_stiffalg = true
+        AS.current = stiffchoice(reltol, len, integrator.f.mass_matrix)
+    elseif (AS.is_stiffalg && AS.count < -AS.maxnonstiffstep)
+        integrator.dt = dt / AS.dtfac
+        AS.is_stiffalg = false
+        AS.current = nonstiffchoice(reltol)
+    end
+    return AS.current
+end
+
+# hack for the default alg
+function is_mass_matrix_alg(
+        alg::CompositeAlgorithm{
+            <:Any, <:Tuple{Tsit5, Vern7, Rosenbrock23, Rodas5P, FBDF, FBDF},
+        }
+    )
+    return true
+end
+
+"""
+    DefaultImplicitODEAlgorithm(; lazy = Val{true}(), stol = 0, ntol = Inf, kwargs...)
+
+Construct the default ODE algorithm with the stiff branch selected first.
+
+This is useful when a problem is expected to be stiff but can still benefit from
+automatic switching. The nonstiff branch contains `Tsit5` and `Vern7`; the stiff
+branch contains `Rosenbrock23`, `Rodas5P`, and `FBDF` variants.
+
+# Keywords
+
+  - `lazy`: controls lazy tableau construction for `Vern7`.
+  - `stol`: stiffness-detection tolerance passed as `stifftol`.
+  - `ntol`: nonstiff-detection tolerance passed as `nonstifftol`.
+  - `kwargs...`: forwarded to the stiff solver constructors.
+
+# Examples
+
+```julia
+using OrdinaryDiffEqDefault
+using SciMLBase: ODEProblem, solve
+
+function f!(du, u, p, t)
+    du[1] = -1000u[1]
+    return
+end
+
+prob = ODEProblem(f!, [1.0], (0.0, 1.0))
+sol = solve(prob, DefaultImplicitODEAlgorithm(); reltol = 1.0e-8, abstol = 1.0e-10)
+```
+"""
+function DefaultImplicitODEAlgorithm(; lazy = Val{true}(), stol = 0, ntol = Inf, kwargs...)
+    nonstiff = (Tsit5(), Vern7(; lazy))
+    stiff = (
+        Rosenbrock23(; kwargs...), Rodas5P(; kwargs...),
+        FBDF(; kwargs...),
+        FBDF(; linsolve = LinearSolve.KrylovJL_GMRES(), kwargs...),
+    )
+    return AutoAlgSwitch(
+        nonstiff, stiff; stiffalgfirst = true, stifftol = stol, nonstifftol = ntol
+    )
+end

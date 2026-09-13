@@ -1,0 +1,277 @@
+REF1 = """
+Hochbruck, Marlis, and Alexander Ostermann. “Exponential Integrators.” Acta
+  Numerica 19 (2010): 209–286. doi:10.1017/S0962492910000048.
+"""
+
+function _resolve_step_limiter_keyword(step_limiter, kwargs)
+    kwargs_nt = values(kwargs)
+    old_kw = Symbol("step_limiter!")
+    if haskey(kwargs_nt, old_kw)
+        if step_limiter === trivial_limiter!
+            step_limiter = get(kwargs_nt, old_kw, trivial_limiter!)
+        end
+    end
+    extra_kwargs = Base.structdiff(kwargs_nt, NamedTuple{(old_kw,)})
+    if !isempty(extra_kwargs)
+        throw(ArgumentError("Unsupported keyword argument(s): $(keys(extra_kwargs))"))
+    end
+    return step_limiter
+end
+
+for (Alg, Description, Ref) in [
+        (:LawsonEuler, "First order exponential Euler scheme (fixed timestepping)", REF1),
+        (:NorsettEuler, "First order exponential-RK scheme. Alias: `ETD1`", REF1),
+        (:ETDRK2, "2nd order exponential-RK scheme.", REF1),
+        (:ETDRK3, "3rd order exponential-RK scheme.", REF1),
+        (:ETDRK4, "4th order exponential-RK scheme (fixed timestepping)", REF1),
+        (:HochOst4, "4th order exponential-RK scheme with stiff order 4.", REF1),
+        (:Friedli, "4th order (stiff order 3) exponential-RK scheme.", REF1),
+    ]
+    @eval begin
+        @doc generic_solver_docstring(
+            $Description,
+            $(string(Alg)),
+            "Semilinear ODE solver",
+            $Ref,
+            """
+            - `krylov`: Determines whether Krylov approximation or operator caching is used, the latter only available for semilinear problems.
+                `krylov=true` is much faster for larger systems and is thus recommended whenever there are >100 ODEs.
+            - `m`: Controls the size of Krylov subspace.
+            - `iop`: If not zero, determines the length of the incomplete orthogonalization procedure (IOP).
+                    Note that if the linear operator/Jacobian is hermitian, then the Lanczos algorithm will always be used and the IOP setting is ignored.
+            """,
+            """
+            krylov = false,
+            m = 30,
+            iop = 0,
+            """
+        )
+        struct $Alg{StepLimiter, AD, CJ} <:
+            OrdinaryDiffEqExponentialAlgorithm
+            step_limiter!::StepLimiter
+            krylov::Bool
+            m::Int
+            iop::Int
+            autodiff::AD
+
+            concrete_jac::CJ
+        end
+        $Alg(krylov::Bool, m::Int, iop::Int, autodiff, concrete_jac) = $Alg(
+            trivial_limiter!, krylov, m, iop, autodiff, concrete_jac
+        )
+    end
+    @eval function $Alg(;
+            krylov = false, m = 30, iop = 0, autodiff = AutoForwardDiff(),
+            concrete_jac = nothing, step_limiter = trivial_limiter!, kwargs...
+        )
+        autodiff = _fixup_ad(autodiff)
+        step_limiter = _resolve_step_limiter_keyword(step_limiter, kwargs)
+
+        return $Alg(
+            step_limiter,
+            krylov,
+            m,
+            iop,
+            autodiff,
+            _unwrap_val(concrete_jac)
+
+        )
+    end
+end
+
+"""
+    ETD1(;
+        krylov = false, m = 30, iop = 0, autodiff = AutoForwardDiff(),
+        concrete_jac = nothing, step_limiter = trivial_limiter!
+    )
+
+**ETD1: First Order Exponential Time Differencing (Semilinear ODE Solver)**
+
+Alias for [`NorsettEuler`](@ref): `ETD1 === NorsettEuler`. `ETD1` is the name this
+method carries in the exponential time differencing literature, `NorsettEuler` the
+name from the exponential-Runge-Kutta literature.
+
+The linear part of a semilinear problem `u' = Au + f(u,t)` is integrated exactly with
+the matrix exponential, and the nonlinear part with a first order quadrature.
+
+## Method Properties
+
+  - **Order**: 1
+  - **Time stepping**: Fixed
+  - **Problem type**: Semilinear ODEs (`SplitODEProblem`, or a supplied Jacobian)
+
+## Keyword Arguments
+
+Identical to [`NorsettEuler`](@ref); `krylov`, `m`, and `iop` control whether and how
+the matrix exponential actions are approximated in a Krylov subspace.
+
+## References
+
+  - Hochbruck, Marlis, and Alexander Ostermann. "Exponential Integrators." Acta
+    Numerica 19 (2010): 209–286. doi:10.1017/S0962492910000048.
+"""
+const ETD1 = NorsettEuler # alias
+
+REF2 = """
+Hochbruck, M., & Ostermann, A. (2010). Exponential integrators. Acta Numerica, 19, 209-286. (https://doi.org/10.1017/S0962492910000048)
+"""
+
+for (Alg, Description, Ref) in [
+        (:Exprb32, "3rd order adaptive Exponential-Rosenbrock scheme.", REF2),
+        (:Exprb43, "4th order adaptive Exponential-Rosenbrock scheme.", REF2),
+    ]
+    @eval begin
+        @doc generic_solver_docstring(
+            $Description,
+            $(string(Alg)),
+            "Semilinear ODE solver",
+            $Ref,
+            """
+            - `m`: Controls the size of Krylov subspace.
+            - `iop`: If not zero, determines the length of the incomplete orthogonalization procedure (IOP).
+                Note that if the linear operator/Jacobian is hermitian, then the Lanczos algorithm will always be used and the IOP setting is ignored.
+            """,
+            """
+            m = 30,
+            iop = 0,
+            """
+        )
+        struct $Alg{StepLimiter, AD, CJ} <:
+            OrdinaryDiffEqAdaptiveExponentialAlgorithm
+            step_limiter!::StepLimiter
+            m::Int
+            iop::Int
+            autodiff::AD
+
+            concrete_jac::CJ
+        end
+        $Alg(m::Int, iop::Int, autodiff, concrete_jac) = $Alg(
+            trivial_limiter!, m, iop, autodiff, concrete_jac
+        )
+    end
+    @eval function $Alg(;
+            m = 30, iop = 0, autodiff = AutoForwardDiff(),
+            concrete_jac = nothing, step_limiter = trivial_limiter!, kwargs...
+        )
+        autodiff = _fixup_ad(autodiff)
+        step_limiter = _resolve_step_limiter_keyword(step_limiter, kwargs)
+
+        return $Alg(
+            step_limiter,
+            m,
+            iop,
+            autodiff,
+            _unwrap_val(concrete_jac)
+
+        )
+    end
+end
+
+REF3 = """
+Hochbruck, M., Lubich, C., & Selhofer, H. (1998). Exponential integrators for large systems of differential equations. SIAM Journal on Scientific Computing, 19(5), 1552-1574. (https://doi.org/10.1137/S1064827595295337)
+"""
+
+REF4 = """
+Rainwater, G., & Tokman, M. (2016). A new approach to constructing efficient stiffly accurate EPIRK methods. Journal of Computational Physics, 323, 283-309. (https://doi.org/10.1016/j.jcp.2016.07.026)
+"""
+REF5 = """
+Tokman, M., Loffeld, J., & Tranquilli, P. (2012). New Adaptive Exponential Propagation Iterative Methods of Runge--Kutta Type. SIAM Journal on Scientific Computing, 34(5), A2650-A2669. (https://doi.org/10.1137/110849961)
+"""
+
+for (Alg, Description, Ref) in [
+        (
+            :Exp4,
+            "4th order EPIRK scheme. Integrates the linear part of the semilinear problem `u' = Au + f(u,t)` exactly via the matrix exponential.",
+            REF3,
+        )
+        (
+            :EPIRK4s3A,
+            "4th order EPIRK scheme with stiff order 4, i.e. its order is retained uniformly in the stiffness of the linear part.",
+            REF4,
+        )
+        (
+            :EPIRK4s3B,
+            "4th order EPIRK scheme with stiff order 4. A companion of `EPIRK4s3A` from the same family, differing in the choice of free coefficients.",
+            REF4,
+        )
+        (
+            :EPIRK5s3,
+            "5th order “horizontal” EPIRK scheme with stiff order 5. Broken.",
+            REF4,
+        )
+        (
+            :EXPRB53s3,
+            "5th order EPIRK scheme with stiff order 5, built in the exponential Rosenbrock (EXPRB) form with three stages.",
+            REF4,
+        )
+        (
+            :EPIRK5P1,
+            "5th order EPIRK scheme from the adaptive-Krylov EPIRK family of Tokman, Loffeld and Tranquilli.",
+            REF5,
+        )
+        (
+            :EPIRK5P2,
+            "5th order EPIRK scheme, a companion of `EPIRK5P1` from the same family using a different set of coefficients.",
+            REF5,
+        )
+    ]
+    # NOTE: `@doc <expr>` must be immediately followed by the documented expression;
+    # a blank line in between silently detaches the docstring.
+    @eval begin
+        @doc generic_solver_docstring(
+            $Description,
+            $(string(Alg)),
+            "Semilinear ODE solver",
+            $Ref,
+            """
+            - `adaptive_krylov`: Determines if the adaptive Krylov algorithm with timestepping of Neisen & Wright is used.
+            - `m`: Controls the size of Krylov subspace.
+            - `iop`: If not zero, determines the length of the incomplete orthogonalization procedure (IOP).
+                Note that if the linear operator/Jacobian is hermitian, then the Lanczos algorithm will always be used and the IOP setting is ignored.
+            """,
+            """
+            adaptive_krylov = true,
+            m = 30,
+            iop = 0,
+            """
+        )
+        struct $Alg{StepLimiter, AD, CJ} <:
+            OrdinaryDiffEqExponentialAlgorithm
+            step_limiter!::StepLimiter
+            adaptive_krylov::Bool
+            m::Int
+            iop::Int
+            autodiff::AD
+
+            concrete_jac::CJ
+        end
+        $Alg(adaptive_krylov::Bool, m::Int, iop::Int, autodiff, concrete_jac) = $Alg(
+            trivial_limiter!, adaptive_krylov, m, iop, autodiff, concrete_jac
+        )
+    end
+    @eval function $Alg(;
+            adaptive_krylov = true, m = 30, iop = 0, autodiff = AutoForwardDiff(),
+            concrete_jac = nothing, step_limiter = trivial_limiter!, kwargs...
+        )
+        autodiff = _fixup_ad(autodiff)
+        step_limiter = _resolve_step_limiter_keyword(step_limiter, kwargs)
+
+        return $Alg(
+            step_limiter,
+            adaptive_krylov,
+            m,
+            iop,
+            autodiff,
+            _unwrap_val(concrete_jac)
+
+        )
+    end
+end
+
+"""
+ETD2: Exponential Runge-Kutta Method
+Second order Exponential Time Differencing method (in development).
+"""
+Base.@kwdef struct ETD2{StepLimiter} <: OrdinaryDiffEqExponentialAlgorithm
+    step_limiter!::StepLimiter = trivial_limiter!
+end

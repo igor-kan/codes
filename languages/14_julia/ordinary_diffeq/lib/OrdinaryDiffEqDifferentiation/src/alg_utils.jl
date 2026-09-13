@@ -1,0 +1,172 @@
+function alg_autodiff(alg::OrdinaryDiffEqAlgorithm)
+    error("This algorithm does not have an autodifferentiation option defined.")
+end
+alg_autodiff(alg::OrdinaryDiffEqAdaptiveImplicitAlgorithm) = alg.autodiff
+alg_autodiff(alg::DAEAlgorithm) = alg.autodiff
+alg_autodiff(alg::OrdinaryDiffEqImplicitAlgorithm) = alg.autodiff
+alg_autodiff(alg::CompositeAlgorithm) = alg_autodiff(alg.algs[end])
+function alg_autodiff(
+        alg::Union{
+            OrdinaryDiffEqExponentialAlgorithm,
+            OrdinaryDiffEqAdaptiveExponentialAlgorithm,
+        }
+    )
+    hasfield(typeof(alg), :autodiff) || return AutoForwardDiff()
+    return alg.autodiff
+end
+
+Base.@pure function determine_chunksize(u, alg::SciMLBase.AbstractDEAlgorithm)
+    determine_chunksize(u, get_chunksize(alg))
+end
+Base.@pure function determine_chunksize(u, CS)
+    if CS != 0
+        return CS
+    else
+        return ForwardDiff.pickchunksize(length(u))
+    end
+end
+
+function DiffEqBase.prepare_alg(
+        alg::Union{
+            OrdinaryDiffEqAdaptiveImplicitAlgorithm,
+            OrdinaryDiffEqImplicitAlgorithm,
+            DAEAlgorithm,
+            OrdinaryDiffEqExponentialAlgorithm,
+            OrdinaryDiffEqAdaptiveExponentialAlgorithm,
+        },
+        u0::AbstractArray{T},
+        p, prob
+    ) where {T}
+    prepped_AD = prepare_ADType(alg_autodiff(alg), prob, u0, p, Val{true}())
+
+    sparse_prepped_AD = prepare_user_sparsity(prepped_AD, prob)
+
+    # if u0 is a StaticArray or eltype is Complex etc. don't use sparsity
+    if (
+            (
+                (typeof(u0) <: StaticArray) || (eltype(u0) <: Complex) ||
+                    (!(prob.f isa DAEFunction) && prob.f.mass_matrix isa MatrixOperator)
+            ) &&
+                sparse_prepped_AD isa AutoSparse
+        )
+        @warn "Input type or problem definition is incompatible with sparse automatic differentiation. Switching to using dense automatic differentiation."
+        autodiff = ADTypes.dense_ad(sparse_prepped_AD)
+    else
+        autodiff = sparse_prepped_AD
+    end
+
+    return remake(alg; autodiff)
+end
+
+function prepare_ADType(autodiff_alg::AutoSparse, prob, u0, p, standardtag)
+    return SciMLBase.@set autodiff_alg.dense_ad = prepare_ADType(
+        ADTypes.dense_ad(autodiff_alg), prob, u0, p, standardtag
+    )
+end
+
+function prepare_ADType(autodiff_alg::AutoForwardDiff, prob, u0, p, standardtag::Bool)
+    return prepare_ADType(autodiff_alg, prob, u0, p, Val(standardtag))
+end
+
+# A residual wrapped by AutoSpecialize/AutoDespecialize carries only `Float64` and
+# one-chunk dual signatures, so it has to be differentiated with chunk size 1 whatever
+# `length(u)` is; that is also what keeps the integrator type independent of the model.
+_has_wrapped_f(f::Union{ODEFunction, DAEFunction}) =
+    f.f isa FunctionWrappersWrappers.FunctionWrappersWrapper
+_has_wrapped_f(f) = false
+
+function _prepare_ADType_fwd(autodiff_alg::AutoForwardDiff, prob, u0, tag)
+    T = eltype(u0)
+
+    fwd_cs = OrdinaryDiffEqCore._get_fwd_chunksize_int(autodiff_alg)
+
+    cs = fwd_cs == 0 ? nothing : fwd_cs
+
+    if (_has_wrapped_f(prob.f) || (isbitstype(T) && sizeof(T) > 24)) &&
+            (cs == 0 || isnothing(cs))
+        return AutoForwardDiff{1}(tag)
+    else
+        return AutoForwardDiff{cs}(tag)
+    end
+end
+
+function prepare_ADType(autodiff_alg::AutoForwardDiff, prob, u0, p, ::Val{true})
+    tag = ForwardDiff.Tag(OrdinaryDiffEqTag(), eltype(u0))
+    return _prepare_ADType_fwd(autodiff_alg, prob, u0, tag)
+end
+
+function prepare_ADType(autodiff_alg::AutoForwardDiff, prob, u0, p, ::Val{false})
+    return _prepare_ADType_fwd(autodiff_alg, prob, u0, nothing)
+end
+
+function prepare_ADType(alg::AutoFiniteDiff, prob, u0, p, standardtag)
+    # If the autodiff alg is AutoFiniteDiff, prob.f.f isa FunctionWrappersWrapper,
+    # and fdtype is complex, fdtype needs to change to something not complex
+    if alg.fdtype == Val{:complex}() && _has_wrapped_f(prob.f)
+        @warn "AutoFiniteDiff fdtype complex is not compatible with this function"
+        return AutoFiniteDiff(fdtype = Val{:forward}())
+    end
+    return alg
+end
+
+function prepare_user_sparsity(ad_alg, prob)
+    jac_prototype = prob.f.jac_prototype
+    sparsity = prob.f.sparsity
+
+    # `ODEFunction` defaults `sparsity` to `jac_prototype`. A matrix-free operator
+    # carries no sparsity pattern, so `KnownJacobianSparsityDetector` must not see it
+    # (that path needs an `AbstractMatrix` via `concrete_mass_matrix`).
+    if sparsity isa AbstractSciMLOperator && !SciMLOperators.isconvertible(sparsity)
+        return ad_alg
+    end
+
+    if !isnothing(sparsity) && !(ad_alg isa AutoSparse)
+        if is_sparse_csc(sparsity) && !SciMLBase.has_jac(prob.f)
+            if prob.f.mass_matrix isa UniformScaling
+                idxs = diagind(sparsity)
+                @. @view(sparsity[idxs]) = 1
+
+                if !isnothing(jac_prototype)
+                    @. @view(jac_prototype[idxs]) = 1
+                end
+            else
+                mm = concrete_mass_matrix(prob.f.mass_matrix)
+                idxs = findall(!iszero, mm)
+                for idx in idxs
+                    sparsity[idx] = mm[idx]
+                end
+
+                if !isnothing(jac_prototype)
+                    for idx in idxs
+                        jac_prototype[idx] = mm[idx]
+                    end
+                end
+            end
+        end
+
+        # KnownJacobianSparsityDetector needs an AbstractMatrix
+        sparsity = concrete_mass_matrix(sparsity)
+
+        color_alg = SciMLBase.has_colorvec(prob.f) ?
+            ConstantColoringAlgorithm(
+                sparsity, prob.f.colorvec
+            ) : GreedyColoringAlgorithm()
+
+        sparsity_detector = ADTypes.KnownJacobianSparsityDetector(sparsity)
+
+        return AutoSparse(
+            ad_alg; sparsity_detector, coloring_algorithm = color_alg
+        )
+    else
+        return ad_alg
+    end
+end
+
+function prepare_ADType(alg::AbstractADType, prob, u0, p, standardtag)
+    return alg
+end
+
+@generated function pick_static_chunksize(::Val{chunksize}) where {chunksize}
+    x = ForwardDiff.pickchunksize(chunksize)
+    return :(Val{$x}())
+end

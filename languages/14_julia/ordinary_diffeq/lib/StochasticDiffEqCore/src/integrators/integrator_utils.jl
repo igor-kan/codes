@@ -1,0 +1,142 @@
+@inline function DiffEqNoiseProcess.setup_next_step!(integrator::SDEIntegrator)
+    !isnothing(integrator.W) &&
+        DiffEqNoiseProcess.setup_next_step!(integrator.W, integrator.u, integrator.p)
+    return !isnothing(integrator.P) &&
+        DiffEqNoiseProcess.setup_next_step!(integrator.P, integrator.u, integrator.p)
+end
+
+@inline function handle_callback_modifiers!(integrator::SDEIntegrator)
+    #integrator.reeval_fsal = true
+    return if integrator.P !== nothing && integrator.opts.adaptive
+        if integrator.cache isa StochasticDiffEqMutableCache
+            oldrate = integrator.P.cache.currate
+            integrator.P.cache.rate(oldrate, integrator.u, integrator.p, integrator.t)
+        else
+            integrator.P.cache.currate = integrator.P.cache.rate(integrator.u, integrator.p, integrator.t)
+        end
+    end
+end
+
+@inline initialize!(integrator, cache::StochasticDiffEqCache, f = integrator.f) = nothing
+
+"""
+    TauLeapingDrift{C, R, RateCache, IIP}(c, rate, rate_cache)
+
+Callable that presents the drift of a tau-leaping jump problem as an ordinary ODE
+right-hand side.
+
+The drift is `ν ⋅ a(u)` written in terms of the `RegularJump` pieces: `rate` is the
+propensity function `a` and `c` is the stoichiometry function that applies the jump
+counts. The wrapper evaluates `c(u, p, t, rate(u, p, t), nothing)`, which is exactly
+the function the implicit tau-leaping methods hand to their nonlinear solver.
+
+The `IIP` type parameter selects the calling convention: out-of-place instances are
+called as `drift(u, p, t)`, in-place ones as `drift(du, u, p, t)` and use
+`rate_cache` as scratch space for the propensities.
+"""
+struct TauLeapingDrift{C, R, RateCache, IIP}
+    c::C              # Stoichiometry function (from integrator.c)
+    rate::R           # Rate function (from integrator.P.cache.rate)
+    rate_cache::RateCache  # Cache for rate values (for in-place version)
+end
+
+# Out-of-place: drift(u, p, t)
+function (td::TauLeapingDrift{C, R, Nothing, false})(u, p, t) where {C, R}
+    rates = td.rate(u, p, t)
+    return td.c(u, p, t, rates, nothing)
+end
+
+# In-place: drift(du, u, p, t)
+function (td::TauLeapingDrift{C, R, RateCache, true})(du, u, p, t) where {C, R, RateCache}
+    td.rate(td.rate_cache, u, p, t)
+    td.c(du, u, p, t, td.rate_cache, nothing)
+    return nothing
+end
+
+# nlsolve_f overrides for ImplicitTauLeaping/ThetaTrapezoidalTauLeaping
+# are defined in StochasticDiffEqLeaping alongside their concrete types.
+
+# ============================================================================
+# Traits for SDE composite algorithms/caches
+# ============================================================================
+
+# Trait: SDE composite algorithm types
+function OrdinaryDiffEqCore.is_composite_algorithm(
+        alg::Union{StochasticDiffEqCompositeAlgorithm, StochasticDiffEqRODECompositeAlgorithm},
+    )
+    return true
+end
+
+# Trait: SDE composite cache type
+OrdinaryDiffEqCore.is_composite_cache(cache::StochasticCompositeCache) = true
+
+# ============================================================================
+# Noise interface methods for OrdinaryDiffEqCore's noise functions
+# These implement the accept_noise!/reject_noise!/save_noise!/noise_curt/
+# is_noise_saveable interface that ODE's unified loop functions call.
+# ============================================================================
+
+function OrdinaryDiffEqCore.accept_noise!(W::SciMLBase.AbstractNoiseProcess, dt, u, p, setup)
+    return DiffEqNoiseProcess.accept_step!(W, dt, u, p, setup)
+end
+
+function OrdinaryDiffEqCore.reject_noise!(W::SciMLBase.AbstractNoiseProcess, dt, u, p)
+    return DiffEqNoiseProcess.reject_step!(W, dt, u, p)
+end
+
+function OrdinaryDiffEqCore.save_noise!(W::SciMLBase.AbstractNoiseProcess)
+    return DiffEqNoiseProcess.save_noise!(W)
+end
+
+OrdinaryDiffEqCore.noise_curt(W::SciMLBase.AbstractNoiseProcess) = W.curt
+
+OrdinaryDiffEqCore.is_noise_saveable(W::NoiseProcess) = true
+OrdinaryDiffEqCore.is_noise_saveable(W::SciMLBase.AbstractNoiseProcess) = false
+
+# ============================================================================
+# is_constant_cache for SDE cache types (needed by ODE's change_t_via_interpolation!)
+# ============================================================================
+
+OrdinaryDiffEqCore.is_constant_cache(::StochasticDiffEqConstantCache) = true
+OrdinaryDiffEqCore.is_constant_cache(::StochasticDiffEqMutableCache) = false
+OrdinaryDiffEqCore.is_constant_cache(cache::StochasticCompositeCache) =
+    OrdinaryDiffEqCore.is_constant_cache(cache.caches[1])
+
+# ============================================================================
+# get_fsalfirstlast for SDE cache types: SDE algorithms are never FSAL, so
+# return zero sentinels. The ODE composite perform_step machinery reads these
+# through OrdinaryDiffEqCore.get_fsalfirstlast when DelayDiffEq wraps an SDE
+# integrator cache for SDDEProblem.
+# ============================================================================
+
+OrdinaryDiffEqCore.get_fsalfirstlast(::StochasticDiffEqConstantCache, u) =
+    (zero(u), zero(u))
+OrdinaryDiffEqCore.get_fsalfirstlast(::StochasticDiffEqMutableCache, u) =
+    (zero(u), zero(u))
+
+# ============================================================================
+# reinit_noise!: reinitialize noise process (called from ODE's reinit!)
+# ============================================================================
+
+function OrdinaryDiffEqCore.reinit_noise!(W::SciMLBase.AbstractNoiseProcess, dt)
+    return SciMLBase.reinit!(W, dt)
+end
+
+# _determine_initdt: SDE extension (called from ODE's auto_dt_reset!)
+function OrdinaryDiffEqCore._determine_initdt(integrator::SDEIntegrator)
+    prob = integrator.sol.prob
+    if prob isa SciMLBase.AbstractRODEProblem
+        return OrdinaryDiffEqCore.ode_determine_initdt(
+            integrator.u, integrator.t,
+            integrator.tdir, integrator.opts.dtmax,
+            integrator.opts.abstol, integrator.opts.reltol,
+            integrator.opts.internalnorm, prob,
+            get_current_alg_order(integrator.alg, integrator.cache),
+            integrator
+        )
+    else
+        # TauLeaping/CaoTauLeaping use DiscreteProblem (no f.g or f.mass_matrix),
+        # so neither sde_ nor ode_determine_initdt applies. Return a small dt.
+        return integrator.tdir * integrator.opts.dtmax / convert(typeof(integrator.t), 1.0e6)
+    end
+end

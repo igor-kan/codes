@@ -1,0 +1,184 @@
+## Notes
+
+#=
+differential_vars = [any(!iszero,x) for x in eachcol(M)]
+
+A column should be zero for an algebraic variable, since that means that the
+derivative term doesn't show up in any equations (i.e. is an algebraic variable).
+The rows are not necessarily non-zero, for example a flux condition between two
+differential variables. But if it's a condition that doesn't involve the algebraic
+variable, then the system is not Index 1!
+
+=#
+
+## Expansion
+
+function SciMLBase.initialize_dae!(
+        integrator::ODEIntegrator,
+        initializealg = integrator.initializealg
+    )
+    return _initialize_dae!(
+        integrator, integrator.sol.prob,
+        initializealg,
+        Val(SciMLBase.isinplace(integrator.sol.prob))
+    )
+end
+
+## Default algorithm is CheckInit
+## Changed in v7--previously was BrownFullBasicInit or ShampineCollocationInit
+
+"""
+    _initialize_dae!(integrator, prob, alg, ::Val{iip})
+
+Run the DAE / mass-matrix initialization: adjust `u0` (and `du0`) so the algebraic
+constraints and initialization equations of `prob` are satisfied to tolerance,
+using the initialization algorithm `alg` (e.g. `CheckInit`, `BrownFullBasicInit`,
+`OverrideInit`). `Val{iip}` selects the in-place branch.
+"""
+function _initialize_dae!(
+        integrator::ODEIntegrator, prob::Union{ODEProblem, DAEProblem},
+        alg::DefaultInit, x::Union{Val{true}, Val{false}}
+    )
+    return if SciMLBase.has_initializeprob(prob.f)
+        _initialize_dae!(
+            integrator, prob,
+            OverrideInit(integrator.opts.abstol), x
+        )
+    else
+        _initialize_dae!(
+            integrator, prob,
+            CheckInit(), x
+        )
+    end
+end
+
+function _initialize_dae!(
+        integrator, prob::DiscreteProblem,
+        alg::DefaultInit, x::Union{Val{true}, Val{false}}
+    )
+    return if SciMLBase.has_initializeprob(prob.f)
+        # integrator.opts.abstol is `false` for `DiscreteProblem`.
+        _initialize_dae!(integrator, prob, OverrideInit(one(eltype(prob.u0)) * 1.0e-12), x)
+    end
+end
+
+## Nonlinear Solver Defaulting
+
+## If an alg is given use it
+default_nlsolve(alg, isinplace, u, initprob, autodiff = false, chunksize = Val(0)) = alg
+
+## If the initialization is trivial just use nothing alg
+"""
+    default_nlsolve(alg, isinplace, u, initprob, autodiff = false, chunksize = Val(0))
+
+Return the nonlinear solver to use for a DAE-initialization problem `initprob`. If
+`alg` is already a concrete nonlinear-solve algorithm it is returned as-is;
+otherwise a sensible default is constructed from the arguments.
+"""
+function default_nlsolve(
+        ::Nothing, isinplace::Val{true}, u::Nothing, ::AbstractNonlinearProblem,
+        autodiff = false, chunksize = Val(0)
+    )
+    return nothing
+end
+
+function default_nlsolve(
+        ::Nothing, isinplace::Val{true}, u::Nothing, ::NonlinearLeastSquaresProblem,
+        autodiff = false, chunksize = Val(0)
+    )
+    return nothing
+end
+
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u::Nothing, ::AbstractNonlinearProblem,
+        autodiff = false, chunksize = Val(0)
+    )
+    return nothing
+end
+
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u::Nothing,
+        ::NonlinearLeastSquaresProblem, autodiff = false, chunksize = Val(0)
+    )
+    return nothing
+end
+
+function OrdinaryDiffEqCore.default_nlsolve(
+        ::Nothing, isinplace, u, ::AbstractNonlinearProblem, autodiff = false,
+        chunksize = Val(0)
+    )
+    error("This ODE requires a DAE initialization and thus a nonlinear solve but no nonlinear solve has been loaded. To solve this problem, do `using OrdinaryDiffEqNonlinearSolve` or pass a custom `nlsolve` choice into the `initializealg`.")
+end
+
+function OrdinaryDiffEqCore.default_nlsolve(
+        ::Nothing, isinplace, u, ::NonlinearLeastSquaresProblem, autodiff = false,
+        chunksize = Val(0)
+    )
+    error("This ODE requires a DAE initialization and thus a nonlinear solve but no nonlinear solve has been loaded. To solve this problem, do `using OrdinaryDiffEqNonlinearSolve` or pass a custom `nlsolve` choice into the `initializealg`.")
+end
+
+## NoInit
+
+function _initialize_dae!(
+        integrator, prob::AbstractDEProblem,
+        alg::NoInit, x::Union{Val{true}, Val{false}}
+    )
+end
+
+## OverrideInit
+
+function _initialize_dae!(
+        integrator, prob::AbstractDEProblem,
+        alg::OverrideInit, isinplace::Union{Val{true}, Val{false}}
+    )
+    initializeprob = prob.f.initialization_data.initializeprob
+
+    # If it doesn't have autodiff, assume it comes from symbolic system like ModelingToolkit
+    # Since then it's the case of not a DAE but has initializeprob
+    # In which case, it should be differentiable
+    iu0 = state_values(initializeprob)
+    isAD = if iu0 === nothing
+        AutoForwardDiff
+    elseif has_autodiff(integrator.alg)
+        alg_autodiff(integrator.alg) isa AutoForwardDiff
+    else
+        true
+    end
+
+    nlsolve_alg = default_nlsolve(alg.nlsolve, isinplace, iu0, initializeprob, isAD)
+
+    u0, p,
+        success = SciMLBase.get_initial_values(
+        prob, integrator, prob.f, alg, isinplace; nlsolve_alg,
+        integrator.opts.abstol, integrator.opts.reltol
+    )
+
+    if isinplace === Val{true}()
+        integrator.u .= u0
+    elseif isinplace === Val{false}()
+        integrator.u = u0
+    else
+        error("Unreachable reached. Report this error.")
+    end
+    integrator.p = p
+    sol = integrator.sol
+    @reset sol.prob.p = integrator.p
+    integrator.sol = sol
+
+    return if !success
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+end
+
+## CheckInit
+function _initialize_dae!(
+        integrator, prob::AbstractDEProblem, alg::CheckInit,
+        isinplace::Union{Val{true}, Val{false}}
+    )
+    return SciMLBase.get_initial_values(
+        prob, integrator, prob.f, alg, isinplace; integrator.opts.abstol
+    )
+end

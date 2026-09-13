@@ -1,0 +1,258 @@
+using OrdinaryDiffEqFIRK, DiffEqDevTools, Test, LinearAlgebra
+using OrdinaryDiffEqTsit5: AutoTsit5
+using ADTypes: AutoFiniteDiff
+import ODEProblemLibrary: prob_ode_linear, prob_ode_2Dlinear, prob_ode_vanderpol, prob_ode_rober
+
+testTol = 0.5
+
+for prob in [prob_ode_linear, prob_ode_2Dlinear]
+    sim21 = test_convergence(1 .// 2 .^ (6:-1:3), prob, RadauIIA5(), dense_errors = true)
+    @test sim21.𝒪est[:final] ≈ 5 atol = testTol
+    @test sim21.𝒪est[:L2] ≈ 4 atol = testTol
+end
+
+sim21 = test_convergence(1 ./ 2 .^ (2.5:-1:0.5), prob_ode_linear, RadauIIA9(), dense_errors = true)
+@test sim21.𝒪est[:final] ≈ 8 atol = testTol
+@test sim21.𝒪est[:L2] ≈ 6 atol = testTol
+
+sim21 = test_convergence(1 ./ 2 .^ (2.5:-1:0.5), prob_ode_2Dlinear, RadauIIA9(), dense_errors = true)
+@test sim21.𝒪est[:final] ≈ 8 atol = testTol
+@test sim21.𝒪est[:L2] ≈ 6 atol = testTol
+
+using GenericSchur
+
+prob_ode_linear_big = remake(
+    prob_ode_linear, u0 = big.(prob_ode_linear.u0), tspan = big.(prob_ode_linear.tspan)
+)
+prob_ode_2Dlinear_big = remake(
+    prob_ode_2Dlinear, u0 = big.(prob_ode_2Dlinear.u0),
+    tspan = big.(prob_ode_2Dlinear.tspan)
+)
+
+#non-threaded tests
+for i in [5, 9, 13, 17, 21, 25], prob in [prob_ode_linear_big, prob_ode_2Dlinear_big]
+    dts = 1 ./ 2 .^ (4.25:-1:0.25)
+    local sim21 = test_convergence(dts, prob, AdaptiveRadau(min_order = i, max_order = i), dense_errors = true)
+    @test sim21.𝒪est[:final] ≈ i atol = testTol
+    @test sim21.𝒪est[:L2] ≈ ((i + 3) ÷ 2) atol = testTol
+end
+
+#threaded tests
+using OrdinaryDiffEqCore
+for i in [5, 9, 13, 17, 21, 25], prob in [prob_ode_linear_big, prob_ode_2Dlinear_big]
+
+    dts = 1 ./ 2 .^ (4.25:-1:0.25)
+    local sim21 = test_convergence(
+        dts,
+        prob,
+        AdaptiveRadau(min_order = i, max_order = i, threading = OrdinaryDiffEqCore.BaseThreads()), dense_errors = true
+    )
+    @test sim21.𝒪est[:final] ≈ i atol = testTol
+    @test sim21.𝒪est[:L2] ≈ ((i + 3) ÷ 2) atol = testTol
+end
+
+# Create Van der Pol stiff problem using the same ordering as ODEProblemLibrary
+# New implementation: u[1] = x, u[2] = y, p[1] = μ
+# Initial conditions: [x, y] = [sqrt(3), 0] (matching original [sys.x => sqrt(3), sys.y => 0])
+function vanderpol_firk(du, u, p, t)
+    x, y = u[1], u[2]
+    μ = p[1]
+    du[1] = y                           # dx/dt = y
+    du[2] = μ * ((1 - x^2) * y - x)     # dy/dt = μ * ((1 - x^2) * y - x)
+    return
+end
+
+function vanderpol_firk(u, p, t)
+    x, y = u[1], u[2]
+    μ = p[1]
+    return [
+        y,                           # dx/dt = y
+        μ * ((1 - x^2) * y - x),
+    ]     # dy/dt = μ * ((1 - x^2) * y - x)
+end
+
+# test adaptivity
+for iip in (true, false)
+    vanstiff = ODEProblem{iip}(vanderpol_firk, [sqrt(3), 0.0], (0.0, 1.0), [1.0e6])
+    sol = solve(vanstiff, RadauIIA5())
+    if iip
+        @test sol.stats.naccept + sol.stats.nreject > sol.stats.njacs # J reuse
+        @test sol.stats.njacs < sol.stats.nw # W reuse
+    end
+    @test length(sol.t) < 150
+    @test SciMLBase.successful_retcode(sol)
+    sol_temp = solve(remake(vanstiff, p = [1.0e7]), RadauIIA5())
+    @test length(sol_temp.t) < 150
+    @test SciMLBase.successful_retcode(sol_temp)
+    sol_temp2 = solve(remake(vanstiff, p = [1.0e7]), reltol = [1.0e-6, 1.0e-4], RadauIIA5())
+    @test length(sol_temp2.t) < 180
+    @test SciMLBase.successful_retcode(sol_temp2)
+    sol_temp3 = solve(
+        remake(vanstiff, p = [1.0e7]), RadauIIA5(), reltol = 1.0e-9,
+        abstol = 1.0e-9
+    )
+    @test length(sol_temp3.t) < 970
+    @test SciMLBase.successful_retcode(sol_temp3)
+    sol_temp4 = solve(remake(vanstiff, p = [1.0e9]), RadauIIA5())
+    @test length(sol_temp4.t) < 170
+    @test SciMLBase.successful_retcode(sol_temp4)
+    sol_temp5 = solve(remake(vanstiff, p = [1.0e10]), RadauIIA5())
+    @test length(sol_temp5.t) < 190
+    @test SciMLBase.successful_retcode(sol_temp5)
+end
+
+##Tests for RadauIIA3
+for prob in [prob_ode_linear, prob_ode_2Dlinear]
+    dts = 1 ./ 2 .^ (8:-1:1)
+    sim = test_convergence(dts, prob, RadauIIA3(), dense_errors = true)
+    @test sim.𝒪est[:final] ≈ 3 atol = 0.25
+    @test sim.𝒪est[:L2] ≈ 3 atol = 0.25
+end
+
+# GL4 on the convergence tests
+for prob in [prob_ode_linear, prob_ode_2Dlinear]
+    dts = Float64.(1 ./ 2 .^ (5:-1:2))
+    sim = test_convergence(
+        dts,
+        prob,
+        GaussLegendre(num_stages = 2; maxiters = 100);
+        dense_errors = false,
+        abstol = 1.0e-12,
+        reltol = 1.0e-12,
+    )
+    @test sim.𝒪est[:final] ≈ 4 atol = testTol
+end
+
+# GL6 on the 2D linear problem only due to scalar log–log slope being noisier at high order
+dts = Float64.(1 ./ 2 .^ (5:-1:2))
+sim_gl3 = test_convergence(
+    dts,
+    prob_ode_2Dlinear,
+    GaussLegendre(num_stages = 3; maxiters = 100);
+    dense_errors = false,
+    abstol = 1.0e-12,
+    reltol = 1.0e-12,
+)
+@test sim_gl3.𝒪est[:final] ≈ 6 atol = testTol
+
+# GaussLegendre: fixed-step accuracy at s = 4 (order 8)
+@testset "GaussLegendre fixed-dt accuracy (s = 4)" begin
+    s = 4
+    alg = GaussLegendre(num_stages = s; maxiters = 100)
+    sol = solve(
+        prob_ode_linear, alg; adaptive = false, dt = 1 // 256,
+        abstol = 1.0e-14, reltol = 1.0e-14
+    )
+    @test SciMLBase.successful_retcode(sol)
+    exact = prob_ode_linear.u0 * exp(1.01 * (sol.t[end] - sol.t[1]))
+    @test isapprox(sol.u[end], exact; rtol = 1.0e-9, atol = 1.0e-12)
+end
+
+# GaussLegendre: adaptive stepping hits requested tolerance on scalar linear prob
+@testset "GaussLegendre adaptive matches tolerance" begin
+    for s in 2:4
+        reltol = 1.0e-6
+        abstol = 1.0e-9
+        sol = solve(
+            prob_ode_linear, GaussLegendre(num_stages = s);
+            reltol, abstol
+        )
+        @test SciMLBase.successful_retcode(sol)
+        exact = prob_ode_linear.u0 * exp(1.01 * (sol.t[end] - sol.t[1]))
+        @test isapprox(sol.u[end], exact; rtol = 1.0e-3, atol = 1.0e-6)
+    end
+end
+
+@testset "GaussLegendre adaptive tightens step count when tol tightens" begin
+    s = 3
+    sol_loose = solve(
+        prob_ode_linear, GaussLegendre(num_stages = s);
+        reltol = 1.0e-3, abstol = 1.0e-6
+    )
+    sol_tight = solve(
+        prob_ode_linear, GaussLegendre(num_stages = s);
+        reltol = 1.0e-8, abstol = 1.0e-10
+    )
+    @test length(sol_tight.t) >= length(sol_loose.t)
+end
+
+sol_gl_2d = solve(
+    prob_ode_2Dlinear, GaussLegendre(num_stages = 3); reltol = 1.0e-5, abstol = 1.0e-8
+)
+@test SciMLBase.successful_retcode(sol_gl_2d)
+
+# test adaptivity
+for iip in (true, false)
+    vanstiff = ODEProblem{iip}(vanderpol_firk, [sqrt(3), 0], (0.0, 1.0), [1.0e6])
+    sol = solve(vanstiff, RadauIIA3())
+    if iip
+        @test sol.stats.naccept + sol.stats.nreject > sol.stats.njacs # J reuse
+        @test sol.stats.njacs < sol.stats.nw # W reuse
+    end
+    @test length(sol.t) < 5000 # the error estimate is not very good
+    @test SciMLBase.successful_retcode(sol)
+end
+
+@testset "AdaptiveRadau initializes every stage-value slot" begin
+    # `integrator.k[3:end]` holds one stage value per possible stage; the extrapolated
+    # initial guess reads all `num_stages` of them, so the slots above the starting stage
+    # count are read as soon as the controller raises the order. Leave dirty blocks in the
+    # allocator's free lists first, or an uninitialized slot can come back zeroed by luck.
+    poison() = sum(sum, [fill(NaN, 2) for _ in 1:50_000])
+    @test isnan(poison())
+    GC.gc(false)
+    vanstiff = ODEProblem(vanderpol_firk, [sqrt(3), 0.0], (0.0, 1.0), [1.0e6])
+    integ = init(vanstiff, AdaptiveRadau())
+    @test all(x -> all(iszero, x), integ.k[3:(integ.kshortsize)])
+end
+
+@testset "AdaptiveRadau as a composite member (#4367)" begin
+    f_comp = (du, u, p, t) -> (du[1] = -1000u[1] + u[2]; du[2] = u[1] - 2u[2]; nothing)
+    prob_comp = ODEProblem(f_comp, [1.0, 1.0], (0.0, 1.0))
+
+    integ = init(prob_comp, AutoTsit5(AdaptiveRadau(); stiffalgfirst = true))
+    @test integ isa SciMLBase.DEIntegrator
+
+    bare = init(prob_comp, AdaptiveRadau())
+    @test integ.kshortsize == bare.kshortsize
+end
+
+@testset "AdaptiveRadau Newton tolerance follows the stage count" begin
+    prob = prob_ode_rober
+    ref = solve(prob, RadauIIA5(); abstol = 1.0e-12, reltol = 1.0e-12, save_everystep = false)
+    for alg in (AdaptiveRadau(), AdaptiveRadau(; min_order = 13, max_order = 13))
+        sol = solve(prob, alg; abstol = 1.0e-8, reltol = 1.0e-8, save_everystep = false)
+        @test sol.retcode == ReturnCode.Success
+        @test sol.stats.naccept < 500
+        @test sol.u[end][3] ≈ ref.u[end][3] rtol = 1.0e-7
+        @test abs(sum(sol.u[end]) - 1) < 1.0e-8
+    end
+end
+
+@testset "FIRK stiff member of an AutoSwitch composite (#4364)" begin
+    function rober_firk!(du, u, p, t)
+        y1, y2, y3 = u
+        du[1] = -0.04 * y1 + 1.0e4 * y2 * y3
+        du[2] = 0.04 * y1 - 1.0e4 * y2 * y3 - 3.0e7 * y2^2
+        du[3] = 3.0e7 * y2^2
+        return nothing
+    end
+    prob_rober = ODEProblem(rober_firk!, [1.0, 0.0, 0.0], (0.0, 1.0e5))
+    reference = solve(prob_rober, RadauIIA5(); abstol = 1.0e-10, reltol = 1.0e-10).u[end]
+
+    for stiffalg in (
+            RadauIIA3(autodiff = AutoFiniteDiff()),
+            RadauIIA5(autodiff = AutoFiniteDiff()),
+            AdaptiveRadau(autodiff = AutoFiniteDiff()),
+        )
+        sol = solve(prob_rober, AutoTsit5(stiffalg); abstol = 1.0e-8, reltol = 1.0e-8)
+        @test sol.retcode == ReturnCode.Success
+        @test count(==(2), sol.alg_choice) > 0
+        @test sol.u[end] ≈ reference rtol = 1.0e-4
+    end
+
+    integ = init(
+        prob_rober, AutoTsit5(AdaptiveRadau(autodiff = AutoFiniteDiff()); stiffalgfirst = true)
+    )
+    @test @inferred(OrdinaryDiffEqCore.get_current_adaptive_order(integ.alg.algs[2], integ.cache)) isa Int
+end

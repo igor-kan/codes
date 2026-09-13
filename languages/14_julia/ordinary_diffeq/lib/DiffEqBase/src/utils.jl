@@ -1,0 +1,193 @@
+"""
+    @tight_loop_macros loop_expr
+
+Apply the DiffEqBase loop policy to `loop_expr`. Solver packages use this macro
+around scalar stage loops so DiffEqBase can select common loop annotations without
+duplicating them in every solver implementation.
+
+# Arguments
+
+  - `loop_expr`: loop expression to emit in the caller's scope, normally a `for`
+    loop over state indices.
+
+# Returns
+
+The escaped loop expression with the current DiffEqBase loop policy applied. The
+current policy preserves the expression unchanged; solver packages must not rely
+on that implementation detail.
+
+# Developer contract
+
+The loop body must be valid under reordering and vectorization policies that a
+future DiffEqBase release may apply. Do not use the loop body for externally
+observable iteration ordering or cross-iteration dependencies. This is versioned
+solver-development API, not an application-facing loop macro.
+
+# Examples
+
+```julia
+using DiffEqBase: @tight_loop_macros
+
+function add_one!(out, x)
+    @tight_loop_macros for i in eachindex(out, x)
+        @inbounds out[i] = x[i] + 1
+    end
+    return out
+end
+
+add_one!(zeros(2), [1.0, 2.0]) == [2.0, 3.0]
+```
+"""
+macro tight_loop_macros(ex)
+    return :($(esc(ex)))
+end
+
+# TODO: would be good to have dtmin a function of dt
+"""
+    prob2dtmin(prob; use_end_time = true)
+    prob2dtmin(tspan, onet, use_end_time)
+
+Compute the default minimum timestep implied by a problem or time span.
+
+# Arguments
+- `prob`: Differential-equation problem with a `tspan` field.
+- `tspan`: Tuple-like time span.
+- `onet`: Unit step value used to preserve units for non-floating time types.
+- `use_end_time`: Whether the end of the time span contributes to the floating
+  point spacing calculation.
+
+# Returns
+- A nonnegative minimum timestep with units compatible with the time span.
+"""
+function prob2dtmin(prob; use_end_time = true)
+    return prob2dtmin(prob.tspan, oneunit(eltype(prob.tspan)), use_end_time)
+end
+
+# This function requires `eps` to exist, which restricts below `<: Real`
+# Example of a failure is Rational
+function prob2dtmin(tspan, ::AbstractFloat, use_end_time)
+    t1, t2 = tspan
+    isfinite(t1) || throw(ArgumentError("t0 in the tspan `(t0, t1)` must be finite"))
+    if use_end_time && isfinite(t2 - t1)
+        return max(eps(t2), eps(t1))
+    else
+        return max(eps(typeof(t1)), eps(t1))
+    end
+end
+prob2dtmin(tspan, ::Integer, ::Any) = 0
+# Multiplication is for putting the right units on the constant!
+prob2dtmin(tspan, onet, ::Any) = onet * 1 // Int64(2)^33 # roughly 10^10 but more likely to turn into a multiplication.
+
+"""
+    timedepentdtmin(integrator)
+    timedepentdtmin(t, dtmin)
+
+Return the time-dependent minimum timestep at the current time.
+
+Floating-point times are bounded below by machine spacing at `t`; other time
+types use `abs(dtmin)`.
+"""
+function timedepentdtmin(integrator::DEIntegrator)
+    return timedepentdtmin(integrator.t, integrator.opts.dtmin)
+end
+timedepentdtmin(t::AbstractFloat, dtmin) = abs(max(eps(t), dtmin))
+timedepentdtmin(::Any, dtmin) = abs(dtmin)
+
+maybe_with_logger(f, logger) = logger === nothing ? f() : Logging.with_logger(f, logger)
+
+function default_logger(logger)
+    Logging.min_enabled_level(logger) ≤ ProgressLogging.ProgressLevel && return nothing
+
+    if Sys.iswindows() || (isdefined(Main, :IJulia) && Main.IJulia.inited)
+        progresslogger = ConsoleProgressMonitor.ProgressLogger()
+    else
+        progresslogger = TerminalLoggers.TerminalLogger()
+    end
+
+    logger1 = LoggingExtras.EarlyFilteredLogger(progresslogger) do log
+        log.level == ProgressLogging.ProgressLevel
+    end
+    logger2 = LoggingExtras.EarlyFilteredLogger(logger) do log
+        log.level != ProgressLogging.ProgressLevel
+    end
+
+    return LoggingExtras.TeeLogger(logger1, logger2)
+end
+
+# for the non-unitful case the correct type is just u
+_rate_prototype(u, t::T, onet::T) where {T} = u
+
+# Strip only the unit wrapper, leaving AD/uncertainty wrappers (Dual, Measurement,
+# Tracker, etc.) intact. Extensions for Unitful, DynamicQuantities, and FlexUnits
+# override this to return the underlying numeric value.
+# Complementary to `value` (strips everything) and `unitfulvalue` (strips AD, keeps units).
+"""
+    stripunits(x)
+
+Return `x` with only its unit wrapper removed.
+
+The default method returns `x` unchanged. Unitful extension packages specialize
+this function while preserving AD and uncertainty wrappers.
+"""
+stripunits(x) = x
+
+# Nonlinear Solve functionality
+@inline __fast_scalar_indexing(args...) = all(ArrayInterface.fast_scalar_indexing, args)
+
+@inline __maximum_abs(op::F, x, y) where {F} = __maximum(abs ∘ op, x, y)
+## Nonallocating version of maximum(op.(x, y))
+@inline function __maximum(op::F, x, y) where {F}
+    if __fast_scalar_indexing(x, y)
+        return maximum(
+            @closure(
+                (xᵢyᵢ) -> begin
+                    xᵢ, yᵢ = xᵢyᵢ
+                    return op(xᵢ, yᵢ)
+                end
+            ), zip(x, y)
+        )
+    else
+        return mapreduce(@closure((xᵢ, yᵢ) -> op(xᵢ, yᵢ)), max, x, y)
+    end
+end
+
+@inline function __norm_op(::typeof(Base.Fix2(norm, 2)), op::F, x, y) where {F}
+    if __fast_scalar_indexing(x, y)
+        return sqrt(
+            sum(
+                @closure(
+                    (xᵢyᵢ) -> begin
+                        xᵢ, yᵢ = xᵢyᵢ
+                        return op(xᵢ, yᵢ)^2
+                    end
+                ), zip(x, y)
+            )
+        )
+    else
+        return sqrt(mapreduce(@closure((xᵢ, yᵢ) -> (op(xᵢ, yᵢ)^2)), +, x, y))
+    end
+end
+
+@inline __norm_op(norm::N, op::F, x, y) where {N, F} = norm(op.(x, y))
+
+function __nonlinearsolve_is_approx(
+        x::Number, y::Number; atol = false,
+        rtol = atol > 0 ? false : sqrt(eps(promote_type(typeof(x), typeof(y))))
+    )
+    return isapprox(x, y; atol, rtol)
+end
+function __nonlinearsolve_is_approx(
+        x, y; atol = false,
+        rtol = atol > 0 ? false : sqrt(eps(promote_type(eltype(x), eltype(y))))
+    )
+    length(x) != length(y) && return false
+    d = __maximum_abs(-, x, y)
+    return d ≤ max(atol, rtol * max(maximum(abs, x), maximum(abs, y)))
+end
+
+@inline function __add_and_norm(::Nothing, x, y)
+    return __maximum_abs(+, x, y)
+end
+@inline __add_and_norm(::typeof(Base.Fix1(maximum, abs)), x, y) = __maximum_abs(+, x, y)
+@inline __add_and_norm(::typeof(Base.Fix2(norm, Inf)), x, y) = __maximum_abs(+, x, y)
+@inline __add_and_norm(f::F, x, y) where {F} = __norm_op(f, +, x, y)

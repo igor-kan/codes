@@ -1,0 +1,26 @@
+using SciMLTesting
+using SafeTestsets
+
+const TEST_GROUP = get(ENV, "GROUP", "ALL")
+
+function activate_qa_env()
+    return activate_group_env(joinpath(@__DIR__, "qa"); parent = [dirname(@__DIR__), joinpath(@__DIR__, "..", "..", "..")])
+end
+
+# Run functional tests
+if TEST_GROUP == "Core" || TEST_GROUP == "ALL"
+    @time @safetestset "FIRK Tests" include("ode_firk_tests.jl")
+    @time @safetestset "FIRK Time Reversal Tests" include("firk_time_reversal_tests.jl")
+    @time @safetestset "FIRK Krylov Tests" include("firk_krylov_tests.jl")
+    @time @safetestset "FIRK LHL Factorization Tests" include("lhl_factorization_tests.jl")
+end
+
+# Run QA tests (AllocCheck, JET, Aqua) - skip on pre-release Julia
+# Allocation tests must run before JET because JET's static analysis
+# invalidates compiled code and causes spurious runtime allocations.
+if (TEST_GROUP == "QA" || TEST_GROUP == "ALL") && isempty(VERSION.prerelease)
+    activate_qa_env()
+    @time @safetestset "Allocation Tests" include("qa/allocation_tests.jl")
+    @time @safetestset "JET Tests" include("qa/jet.jl")
+    @time @safetestset "Aqua" include("qa/qa.jl")
+end

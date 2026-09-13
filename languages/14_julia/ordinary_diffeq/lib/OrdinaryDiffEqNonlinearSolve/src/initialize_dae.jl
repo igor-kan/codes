@@ -1,0 +1,910 @@
+# Optimized tolerance checking that avoids allocations
+@inline function check_dae_tolerance(integrator, err, abstol, t, ::Val{true})
+    if abstol isa Number
+        return integrator.opts.internalnorm(err, t) / abstol <= 1
+    else
+        @. err = err / abstol  # Safe for in-place functions
+        return integrator.opts.internalnorm(err, t) <= 1
+    end
+end
+
+@inline function check_dae_tolerance(integrator, err, abstol, t, ::Val{false})
+    if abstol isa Number
+        return integrator.opts.internalnorm(err, t) / abstol <= 1
+    else
+        return integrator.opts.internalnorm(err ./ abstol, t) <= 1  # Allocates for out-of-place
+    end
+end
+
+# A `jac_prototype` makes `prepare_alg` wrap the AD choice in `AutoSparse`, so ask the dense
+# type underneath whether the initialization residual will be called with Duals.
+_isforwarddiff_alg(alg) = ADTypes.dense_ad(alg_autodiff(alg)) isa AutoForwardDiff
+
+_tagged_autodiff(u, ::Val{nothing}) = _tagged_autodiff(u, Val(1))
+_tagged_autodiff(u, ::Val{0}) = _tagged_autodiff(u, Val(1))
+function _tagged_autodiff(u, ::Val{CS} = Val(1)) where {CS}
+    return AutoForwardDiff{CS}(ForwardDiff.Tag(OrdinaryDiffEqTag(), eltype(u)))
+end
+
+function default_nlsolve(
+        ::Nothing, isinplace::Val{true}, u, ::AbstractNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return FastShortcutNonlinearPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{true}, u, ::NonlinearLeastSquaresProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return FastShortcutNLLSPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u, ::AbstractNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return FastShortcutNonlinearPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u, ::NonlinearLeastSquaresProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return FastShortcutNLLSPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u::StaticArray,
+        ::AbstractNonlinearProblem, autodiff = false, chunksize = Val(1)
+    )
+    return SimpleTrustRegion(
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u::StaticArray,
+        ::NonlinearLeastSquaresProblem, autodiff = false, chunksize = Val(1)
+    )
+    return SimpleGaussNewton(
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+
+# A `SciMLBase.HomotopyProblem` is initialized by continuation, not by a Newton
+# polyalgorithm: build a `HomotopyPolyAlgorithm` (sweep, then pseudo-arclength) that sweeps
+# λ from the `simplified` form to the target. The `autodiff` signal is honored by threading
+# it into the continuation's *inner corrector* — that is the differentiation the sweep and
+# the (secant-predictor) arclength stage actually use, and it is where a finite-diff
+# initialization must avoid dual-numbering a residual that is not ForwardDiff-safe. A high
+# level `autodiff` knob on `HomotopyPolyAlgorithm` itself cannot do this: it lives in
+# NonlinearSolveBase, which cannot construct the concrete inner solver, so the AD rides on
+# the inner `FastShortcutNonlinearPolyalg` built here.
+#
+# This is exactly `NonlinearSolve.FastShortcutHomotopyPolyalg(; autodiff)`
+# (SciML/NonlinearSolve.jl#1105, released in NonlinearSolve 4.23). Collapsing this body to a
+# call to it is blocked, though: 4.23 pulls NonlinearSolveBase 2.37 → LinearSolve 5, while
+# OrdinaryDiffEq is capped at LinearSolve "3.75.0, 4" (so it is currently pinned to
+# NonlinearSolve ≤ 4.21). The collapse waits on the OrdinaryDiffEq LinearSolve-5 migration;
+# until then this hand-rolled equivalent (valid on NonlinearSolveBase 2.35) stays.
+function _homotopy_init_alg(u, autodiff, chunksize)
+    inner = FastShortcutNonlinearPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+    return HomotopyPolyAlgorithm((HomotopySweep(; inner), ArcLengthContinuation(; inner)))
+end
+function default_nlsolve(
+        ::Nothing, ::Val{true}, u, ::SciMLBase.HomotopyProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return _homotopy_init_alg(u, autodiff, chunksize)
+end
+function default_nlsolve(
+        ::Nothing, ::Val{false}, u, ::SciMLBase.HomotopyProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return _homotopy_init_alg(u, autodiff, chunksize)
+end
+function default_nlsolve(
+        ::Nothing, ::Val{false}, u::StaticArray, ::SciMLBase.HomotopyProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return _homotopy_init_alg(u, autodiff, chunksize)
+end
+# A stateless `initializeprob` (`state_values(...) === nothing`) needs no solver at all;
+# OrdinaryDiffEqCore answers `nothing` for every `AbstractNonlinearProblem` with `u::Nothing`.
+# That method is more specific in `u` while the ones above are more specific in the problem
+# type, so the pair is ambiguous unless the intersection is spelled out here.
+function default_nlsolve(
+        ::Nothing, ::Val{true}, u::Nothing, ::SciMLBase.HomotopyProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return nothing
+end
+function default_nlsolve(
+        ::Nothing, ::Val{false}, u::Nothing, ::SciMLBase.HomotopyProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return nothing
+end
+
+# An `SCCNonlinearProblem` that contains `HomotopyProblem` blocks must be solved with
+# `nothing` so each block picks its own default: its `HomotopyProblem` blocks continue (via
+# `solve(::HomotopyProblem, ::Nothing)`) while the plain blocks use the standard nonlinear
+# default. A pure-`NonlinearProblem` SCC keeps the `FastShortcutNonlinearPolyalg` default.
+#
+# NOTE (autodiff): unlike the whole-system `HomotopyProblem` branch above, the `autodiff`
+# signal is NOT threaded here — with `nothing` each block picks its own default, so the
+# continuation runs its default inner corrector rather than the requested AD backend.
+# SciML/NonlinearSolve.jl#1104 (SCCNonlinearSolve 1.14) makes `SCCNonlinearSolve` route by
+# block type (continuation for homotopy blocks, the block algorithm applied directly
+# otherwise) with that algorithm threaded in as the inner corrector, which would let these
+# methods return `FastShortcutNonlinearPolyalg(; autodiff)` to honor `autodiff` per block.
+# That flip is blocked on two counts: (1) SCCNonlinearSolve 1.14 → NonlinearSolveBase 2.37 →
+# LinearSolve 5, incompatible with OrdinaryDiffEq's LinearSolve "3.75.0, 4" cap; and (2)
+# SCCNonlinearSolve is a *reverse* dependency of NonlinearSolve, so its per-block routing is
+# not loaded by `using NonlinearSolve` — a direct SCCNonlinearSolve dep would be needed too.
+# Both wait on the OrdinaryDiffEq LinearSolve-5 migration. Until then, returning `nothing`
+# keeps the homotopy blocks on continuation (correct branch) at their ForwardDiff defaults.
+function default_nlsolve(
+        ::Nothing, isinplace::Val{true}, u, prob::SciMLBase.SCCNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    any(p -> p isa SciMLBase.HomotopyProblem, prob.probs) && return nothing
+    return FastShortcutNonlinearPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u, prob::SciMLBase.SCCNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    any(p -> p isa SciMLBase.HomotopyProblem, prob.probs) && return nothing
+    return FastShortcutNonlinearPolyalg(;
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u::StaticArray, prob::SciMLBase.SCCNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    any(p -> p isa SciMLBase.HomotopyProblem, prob.probs) && return nothing
+    return SimpleTrustRegion(
+        autodiff = autodiff ? _tagged_autodiff(u, chunksize) : AutoFiniteDiff()
+    )
+end
+# Disambiguates against OrdinaryDiffEqCore's `u::Nothing` methods, as for `HomotopyProblem`
+# above.
+function default_nlsolve(
+        ::Nothing, isinplace::Val{true}, u::Nothing, ::SciMLBase.SCCNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return nothing
+end
+function default_nlsolve(
+        ::Nothing, isinplace::Val{false}, u::Nothing, ::SciMLBase.SCCNonlinearProblem,
+        autodiff = false, chunksize = Val(1)
+    )
+    return nothing
+end
+
+## ShampineCollocationInit
+
+#=
+The method:
+
+du = (u-u0)/h
+Solve for `u`
+
+Same as BrownFullBasicInit: do not assign `integrator.uprev` here (#4485).
+
+=#
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator,
+        prob::ODEProblem, alg::DiffEqBase.ShampineCollocationInit,
+        isinplace::Val{true}
+    )
+    (; p, t, f) = integrator
+    # Unwrap FunctionWrappersWrapper so the closure works with any argument types.
+    # NonlinearSolve may call the closure with types that don't match the
+    # pre-compiled FunctionWrapper variants (e.g., during nested AD).
+    f = SciMLBase.unwrapped_f(f)
+    M = integrator.f.mass_matrix
+    dtmax = integrator.opts.dtmax
+    tmp = first(get_tmp_cache(integrator))
+    u0 = integrator.u
+
+    initdt = alg.initdt
+    dt = if initdt === nothing
+        integrator.dt != 0 ?
+            copysign(min(abs(integrator.dt) / 5, abs(dtmax)), integrator.dt) :
+            (prob.tspan[end] - prob.tspan[begin]) / 1000 # Haven't implemented norm reduction
+    else
+        initdt
+    end
+
+    algebraic_vars, algebraic_eqs = find_algebraic_vars_eqs(M)
+    (iszero(algebraic_vars) || iszero(algebraic_eqs)) && return
+    update_coefficients!(M, u0, p, t)
+    f(tmp, u0, p, t)
+    tmp .= ArrayInterface.restructure(tmp, algebraic_eqs .* _vec(tmp))
+
+    check_dae_tolerance(integrator, tmp, integrator.opts.abstol, t, isinplace) && return
+
+    if isdefined(integrator.cache, :nlsolver) && !isnothing(alg.nlsolve)
+        # backward Euler
+        nlsolver = integrator.cache.nlsolver
+        oldγ, oldc, oldmethod,
+            olddt = nlsolver.γ, nlsolver.c, nlsolver.method,
+            integrator.dt
+        nlsolver.tmp .= integrator.uprev
+        nlsolver.γ, nlsolver.c = 1, 1
+        nlsolver.method = DIRK
+        integrator.dt = dt
+        z = nlsolve!(nlsolver, integrator, integrator.cache)
+        nlsolver.γ, nlsolver.c, nlsolver.method,
+            integrator.dt = oldγ, oldc, oldmethod,
+            olddt
+        failed = nlsolvefail(nlsolver)
+        @.. broadcast = false integrator.u = integrator.uprev + z
+    else
+
+        # _u0 should be non-dual since NonlinearSolve does not differentiate the solver
+        # These non-dual values are thus used to make the caches
+        #_du = SciMLBase.value.(du)
+        _u0 = SciMLBase.value.(u0)
+
+        # If not doing auto-diff of the solver, save an allocation
+        if typeof(u0) === typeof(_u0)
+            tmp = get_tmp_cache(integrator)[1]
+        else
+            tmp = copy(_u0)
+        end
+
+        isAD = _isforwarddiff_alg(integrator.alg) || typeof(u0) !== typeof(_u0)
+        if isAD
+            chunk = ForwardDiff.pickchunksize(length(tmp))
+            _tmp = DiffCache(tmp, chunk)
+        else
+            _tmp = tmp
+        end
+
+        nlequation! = @closure (out, u, p) -> begin
+            TP = SciMLBase.anyeltypedual(p)
+            if TP <: Dual
+                T = Base.promote_type(eltype(u), TP)
+            else
+                T = eltype(u)
+            end
+            update_coefficients!(M, u, p, t)
+            # f(u,p,t) + M * (u0 - u)/dt
+            tmp = isAD ? get_tmp(_tmp, T) : _tmp
+            @. tmp = (_u0 - u) / dt
+            mul!(_vec(out), M, _vec(tmp))
+            f(tmp, u, p, t)
+            out .+= tmp
+            nothing
+        end
+
+        jac = if isnothing(f.jac)
+            f.jac
+        else
+            @closure (J, u, p) -> begin
+                # f(u,p,t) + M * (u0 - u)/dt
+                # df(u,p,t)/du - M/dt
+                f.jac(J, u, p, t)
+                J .-= M .* inv(dt)
+                nothing
+            end
+        end
+
+        nlfunc = NonlinearFunction{true, SciMLBase.FullSpecialize}(
+            nlequation!;
+            f.jac_prototype,
+            jac
+        )
+        nlprob = NonlinearProblem(nlfunc, integrator.u, p)
+        nlsolve = default_nlsolve(
+            alg.nlsolve, isinplace, u0, nlprob, isAD,
+            SciMLBase.forwarddiff_chunksize(integrator.alg)
+        )
+        nlsol = solve(
+            nlprob, nlsolve; integrator.opts.abstol,
+            integrator.opts.reltol, verbose = integrator.opts.verbose.nonlinear_verbosity
+        )
+        integrator.u .= nlsol.u
+        failed = nlsol.retcode != ReturnCode.Success
+    end
+
+    if failed
+        @SciMLMessage(
+            lazy"ShampineCollocationInit DAE initialization algorithm failed with dt=$dt. Try to adjust initdt like `ShampineCollocationInit(initdt)`.",
+            integrator.opts.verbose, :shampine_dt
+        )
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator,
+        prob::ODEProblem, alg::DiffEqBase.ShampineCollocationInit,
+        isinplace::Val{false}
+    )
+    (; p, t, f) = integrator
+    u0 = integrator.u
+    M = integrator.f.mass_matrix
+    dtmax = integrator.opts.dtmax
+
+    initdt = alg.initdt
+    dt = if initdt === nothing
+        integrator.dt != 0 ?
+            copysign(min(abs(integrator.dt) / 5, abs(dtmax)), integrator.dt) :
+            (prob.tspan[end] - prob.tspan[begin]) / 1000 # Haven't implemented norm reduction
+    else
+        initdt
+    end
+
+    algebraic_vars, algebraic_eqs = find_algebraic_vars_eqs(M)
+    (iszero(algebraic_vars) || iszero(algebraic_eqs)) && return
+    update_coefficients!(M, u0, p, t)
+    du = f(u0, p, t)
+    resid = _vec(du)[algebraic_eqs]
+
+    check_dae_tolerance(integrator, resid, integrator.opts.abstol, t, isinplace) && return
+
+    if isdefined(integrator.cache, :nlsolver) && !isnothing(alg.nlsolve)
+        # backward Euler
+        nlsolver = integrator.cache.nlsolver
+        oldγ, oldc, oldmethod,
+            olddt = nlsolver.γ, nlsolver.c, nlsolver.method,
+            integrator.dt
+        nlsolver.tmp .= integrator.uprev
+        nlsolver.γ, nlsolver.c = 1, 1
+        nlsolver.method = DIRK
+        integrator.dt = dt
+        z = nlsolve!(nlsolver, integrator, integrator.cache)
+        nlsolver.γ, nlsolver.c, nlsolver.method,
+            integrator.dt = oldγ, oldc, oldmethod,
+            olddt
+        failed = nlsolvefail(nlsolver)
+        @.. broadcast = false integrator.u = integrator.uprev + z
+    else
+        nlequation_oop = @closure (u, _) -> begin
+            update_coefficients!(M, u, p, t)
+            M * (u - u0) / dt - f(u, p, t)
+        end
+
+        jac = if isnothing(f.jac)
+            f.jac
+        else
+            @closure (u, p) -> begin
+                return M * (u .- u0) ./ dt .- f.jac(u, p, t)
+            end
+        end
+
+        nlfunc = NonlinearFunction{false, SciMLBase.FullSpecialize}(
+            nlequation_oop;
+            f.jac_prototype,
+            jac
+        )
+        nlprob = NonlinearProblem(nlfunc, u0)
+        isAD = _isforwarddiff_alg(integrator.alg)
+        nlsolve = default_nlsolve(
+            alg.nlsolve, isinplace, u0, nlprob, isAD,
+            SciMLBase.forwarddiff_chunksize(integrator.alg)
+        )
+
+        nlsol = solve(
+            nlprob, nlsolve; integrator.opts.abstol,
+            integrator.opts.reltol, verbose = integrator.opts.verbose.nonlinear_verbosity
+        )
+        integrator.u = nlsol.u
+        failed = nlsol.retcode != ReturnCode.Success
+    end
+
+
+    if failed
+        @SciMLMessage(
+            lazy"ShampineCollocationInit DAE initialization algorithm failed with dt=$dt. Try to adjust initdt like `ShampineCollocationInit(initdt)`.",
+            integrator.opts.verbose, :shampine_dt
+        )
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator, prob::DAEProblem,
+        alg::ShampineCollocationInit, isinplace::Val{true}
+    )
+    (; p, t, f) = integrator
+    u0 = integrator.u
+
+    dtmax = integrator.opts.dtmax
+    resid = get_tmp_cache(integrator)[2]
+
+    dt = t != 0 ? min(t / 1000, dtmax / 10) : dtmax / 10 # Haven't implemented norm reduction
+
+    f(resid, integrator.du, u0, p, t)
+    check_dae_tolerance(integrator, resid, integrator.opts.abstol, t, isinplace) && return
+
+    # _du and _u should be non-dual since NonlinearSolve does not differentiate the solver
+    # These non-dual values are thus used to make the caches
+    #_du = SciMLBase.value.(du)
+    _u0 = SciMLBase.value.(u0)
+
+    # If not doing auto-diff of the solver, save an allocation
+    if typeof(u0) === typeof(_u0)
+        tmp = get_tmp_cache(integrator)[1]
+    else
+        tmp = copy(_u0)
+    end
+
+    isAD = _isforwarddiff_alg(integrator.alg) || typeof(u0) !== typeof(_u0)
+    if isAD
+        chunk = ForwardDiff.pickchunksize(length(tmp))
+        _tmp = DiffCache(tmp, chunk)
+    else
+        _tmp = tmp
+    end
+
+    nlequation! = @closure (out, u, p) -> begin
+        TP = SciMLBase.anyeltypedual(p)
+        if TP <: Dual
+            T = Base.promote_type(eltype(u), TP)
+        else
+            T = eltype(u)
+        end
+        tmp = isAD ? get_tmp(_tmp, T) : _tmp
+        #M * (u-u0)/dt - f(u,p,t)
+        @. tmp = (u - _u0) / dt
+        f(out, tmp, u, p, t)
+        nothing
+    end
+
+    jac = if isnothing(f.jac)
+        f.jac
+    else
+        @closure (J, u, p) -> begin
+            f.jac(J, u, p, inv(dt), t)
+            nothing
+        end
+    end
+
+    nlfunc = NonlinearFunction{true, SciMLBase.FullSpecialize}(
+        nlequation!;
+        f.jac_prototype,
+        jac
+    )
+    nlprob = NonlinearProblem(nlfunc, u0, p)
+    nlsolve = default_nlsolve(
+        alg.nlsolve, isinplace, u0, nlprob, isAD,
+        SciMLBase.forwarddiff_chunksize(integrator.alg)
+    )
+    nlsol = solve(
+        nlprob, nlsolve; integrator.opts.abstol, integrator.opts.reltol,
+        verbose = integrator.opts.verbose.nonlinear_verbosity
+    )
+
+    integrator.u = nlsol.u
+    if nlsol.retcode != ReturnCode.Success
+        @SciMLMessage(
+            lazy"ShampineCollocationInit DAE initialization algorithm failed with dt=$dt. Try to adjust initdt like `ShampineCollocationInit(initdt)`.",
+            integrator.opts.verbose, :shampine_dt
+        )
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator, prob::DAEProblem,
+        alg::ShampineCollocationInit, isinplace::Val{false}
+    )
+    (; p, t, f) = integrator
+    u0 = integrator.u
+    dtmax = integrator.opts.dtmax
+
+    dt = t != 0 ? min(t / 1000, dtmax / 10) : dtmax / 10 # Haven't implemented norm reduction
+
+    nlequation_oop = u -> begin
+        f((u - u0) / dt, u, p, t)
+    end
+
+    nlequation = (u, _) -> nlequation_oop(u)
+
+    resid = f(integrator.du, u0, p, t)
+    check_dae_tolerance(integrator, resid, integrator.opts.abstol, t, isinplace) && return
+
+    jac = if isnothing(f.jac)
+        f.jac
+    else
+        @closure (u, p) -> begin
+            return f.jac(u, p, inv(dt), t)
+        end
+    end
+    nlfunc = NonlinearFunction{false, SciMLBase.FullSpecialize}(
+        nlequation; f.jac_prototype,
+        jac
+    )
+    nlprob = NonlinearProblem(nlfunc, u0)
+    isAD = _isforwarddiff_alg(integrator.alg)
+    nlsolve = default_nlsolve(
+        alg.nlsolve, isinplace, u0, nlprob, isAD,
+        SciMLBase.forwarddiff_chunksize(integrator.alg)
+    )
+
+    nlfunc = NonlinearFunction{false, SciMLBase.FullSpecialize}(
+        nlequation; f.jac_prototype
+    )
+    nlprob = NonlinearProblem(nlfunc, u0)
+    nlsol = solve(
+        nlprob, nlsolve; integrator.opts.abstol,
+        integrator.opts.reltol, verbose = integrator.opts.verbose.nonlinear_verbosity
+    )
+
+    integrator.u = nlsol.u
+
+    if nlsol.retcode != ReturnCode.Success
+        @SciMLMessage(
+            lazy"ShampineCollocationInit DAE initialization algorithm failed with dt=$dt. Try to adjust initdt like `ShampineCollocationInit(initdt)`.",
+            integrator.opts.verbose, :shampine_dt
+        )
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+## BrownFullBasic
+
+#=
+The method:
+
+Keep differential variables constant
+Solve for the algebraic variables
+
+Do not assign `integrator.uprev` here. Callback truncation reinitializes the
+right endpoint while `uprev` must still be the left endpoint of the shortened
+step (see #4466 / #4485). Initial `uprev` sync happens in `solve` via
+`update_uprev!` after `initialize_dae!`.
+
+=#
+
+algebraic_jacobian(::Nothing, algebraic_eqs, algebraic_vars) = nothing
+function algebraic_jacobian(
+        jac_prototype::T, algebraic_eqs,
+        algebraic_vars
+    ) where {T <: AbstractMatrix}
+    return jac_prototype[algebraic_eqs, algebraic_vars]
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator, prob::ODEProblem,
+        alg::DiffEqBase.BrownFullBasicInit, isinplace::Val{true}
+    )
+    (; p, t) = integrator
+    f = SciMLBase.unwrapped_f(integrator.f)
+    u = integrator.u
+    M = integrator.f.mass_matrix
+    M isa UniformScaling && return
+    update_coefficients!(M, u, p, t)
+    algebraic_vars, algebraic_eqs = find_algebraic_vars_eqs(M)
+
+    (iszero(algebraic_vars) || iszero(algebraic_eqs)) && return
+    tmp = get_tmp_cache(integrator)[1]
+
+    f(tmp, u, p, t)
+
+    tmp .= ArrayInterface.restructure(tmp, algebraic_eqs .* _vec(tmp))
+
+    check_dae_tolerance(integrator, tmp, alg.abstol, t, isinplace) && return
+    alg_u = @view u[algebraic_vars]
+
+    # These non-dual values are thus used to make the caches
+    _u = SciMLBase.value.(u)
+
+    # If auto-diff of the solver, should be non-dual since NonlinearSolve does not differentiate the solver
+    if typeof(u) !== typeof(_u)
+        tmp = SciMLBase.value.(tmp)
+    end
+
+    isAD = _isforwarddiff_alg(integrator.alg) || typeof(u) !== typeof(_u)
+    if isAD
+        # A larger chunksize, calibrated according to count(algebraic_vars),
+        # would be more efficient but cannot be inferred from types
+        # chunk = ForwardDiff.pickchunksize(count(algebraic_vars))
+        chunk = 1
+        _tmp = DiffCache(tmp, chunk)
+        _du_tmp = DiffCache(similar(tmp), chunk)
+        nlchunk = Val(chunk)
+    else
+        _tmp, _du_tmp = tmp, similar(tmp)
+        nlchunk = SciMLBase.forwarddiff_chunksize(integrator.alg)
+    end
+
+    nlequation! = @closure (out, x, p) -> begin
+        TP = SciMLBase.anyeltypedual(p)
+        if TP <: Dual
+            T = Base.promote_type(eltype(x), TP)
+        else
+            T = eltype(x)
+        end
+        uu = isAD ? get_tmp(_tmp, T) : _tmp
+        du_tmp = isAD ? get_tmp(_du_tmp, T) : _du_tmp
+        copyto!(uu, _u)
+        alg_uu = @view uu[algebraic_vars]
+        alg_uu .= x
+        f(du_tmp, uu, p, t)
+        out .= @view du_tmp[algebraic_eqs]
+        return nothing
+    end
+
+    J = algebraic_jacobian(f.jac_prototype, algebraic_eqs, algebraic_vars)
+    # Set nonlinear function to operate in-place since the ODE function is in-place
+    nlfunc = NonlinearFunction{true, SciMLBase.FullSpecialize}(
+        nlequation!; jac_prototype = J
+    )
+    nlprob = NonlinearProblem(nlfunc, alg_u, p)
+    nlsolve = default_nlsolve(alg.nlsolve, isinplace, u, nlprob, isAD, nlchunk)
+
+    nlsol = solve(
+        nlprob, nlsolve; alg.abstol, integrator.opts.reltol,
+        verbose = integrator.opts.verbose.nonlinear_verbosity
+    )
+    alg_u .= nlsol.u
+
+
+    if nlsol.retcode != ReturnCode.Success
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator, prob::ODEProblem,
+        alg::DiffEqBase.BrownFullBasicInit, isinplace::Val{false}
+    )
+    (; p, t, f) = integrator
+
+    u0 = integrator.u
+    M = integrator.f.mass_matrix
+    update_coefficients!(M, u0, p, t)
+    algebraic_vars, algebraic_eqs = find_algebraic_vars_eqs(M)
+    (iszero(algebraic_vars) || iszero(algebraic_eqs)) && return
+
+    du = f(u0, p, t)
+    resid = _vec(du)[algebraic_eqs]
+
+    check_dae_tolerance(integrator, resid, alg.abstol, t, isinplace) && return
+
+    isAD = _isforwarddiff_alg(integrator.alg)
+    if isAD
+        # A larger chunksize, calibrated according to count(algebraic_vars),
+        # would be more efficient but cannot be inferred from types
+        # chunk = ForwardDiff.pickchunksize(count(algebraic_vars))
+        chunk = 1
+        _tmp = DiffCache(similar(u0), chunk)
+        nlchunk = Val(chunk)
+    else
+        _tmp = similar(u0)
+        # This was called anyway as an argument to default_nlsolve
+        nlchunk = SciMLBase.forwarddiff_chunksize(integrator.alg)
+    end
+
+    if u0 isa Number
+        # This doesn't fix static arrays!
+        u = [u0]
+    else
+        u = u0
+    end
+
+    nlequation = @closure (x, _) -> begin
+        uu = isAD ? get_tmp(_tmp, x) : _tmp
+        copyto!(uu, integrator.u)
+        alg_uu = @view uu[algebraic_vars]
+        alg_uu .= x
+        _du = f(uu, p, t)
+        _du[algebraic_eqs]
+    end
+
+    J = algebraic_jacobian(f.jac_prototype, algebraic_eqs, algebraic_vars)
+    # Operate out of place since the ODE function is out of place
+    nlfunc = NonlinearFunction{false, SciMLBase.FullSpecialize}(
+        nlequation; jac_prototype = J
+    )
+    nlprob = NonlinearProblem(nlfunc, u0[algebraic_vars])
+    nlsolve = default_nlsolve(alg.nlsolve, isinplace, u0, nlprob, isAD, nlchunk)
+
+    nlsol = solve(nlprob, nlsolve, verbose = integrator.opts.verbose.nonlinear_verbosity)
+
+    u[algebraic_vars] .= nlsol.u
+
+    if u0 isa Number
+        # This doesn't fix static arrays!
+        integrator.u = first(u)
+    else
+        integrator.u = u
+    end
+
+
+    if nlsol.retcode != ReturnCode.Success
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator, prob::DAEProblem,
+        alg::DiffEqBase.BrownFullBasicInit, isinplace::Val{true}
+    )
+    (; p, t, f) = integrator
+    differential_vars = prob.differential_vars
+    u = integrator.u
+    du = integrator.du
+
+    # _du and _u should be non-dual since NonlinearSolve does not differentiate the solver
+    # These non-dual values are thus used to make the caches
+    _du = SciMLBase.value.(du)
+    _u = SciMLBase.value.(u)
+
+    # If not doing auto-diff of the solver, save an allocation
+    if typeof(u) === typeof(_u)
+        tmp = get_tmp_cache(integrator)[1]
+        du_tmp = get_tmp_cache(integrator)[2]
+    else
+        tmp = copy(_u)
+        du_tmp = copy(_du)
+    end
+
+    # Can be the same as tmp
+    normtmp = get_tmp_cache(integrator)[1]
+    f(normtmp, du, u, p, t)
+
+    if check_dae_tolerance(integrator, normtmp, alg.abstol, t, isinplace)
+        return
+    elseif differential_vars === nothing
+        error("differential_vars must be set for DAE initialization to occur. Either set consistent initial conditions, differential_vars, or use a different initialization algorithm.")
+    end
+
+    isAD = _isforwarddiff_alg(integrator.alg) || typeof(u) !== typeof(_u)
+    if isAD
+        chunk = ForwardDiff.pickchunksize(length(tmp))
+        _tmp = DiffCache(tmp, chunk)
+        _du_tmp = DiffCache(du_tmp, chunk)
+    else
+        _tmp, _du_tmp = tmp, du_tmp
+    end
+
+    nlequation! = @closure (out, x, p) -> begin
+        TP = SciMLBase.anyeltypedual(p)
+        if TP <: Dual
+            T = Base.promote_type(eltype(x), TP)
+        else
+            T = eltype(x)
+        end
+        du_tmp = isAD ? get_tmp(_du_tmp, T) : _du_tmp
+        uu = isAD ? get_tmp(_tmp, T) : _tmp
+
+        @. du_tmp = ifelse(differential_vars, x, _du)
+        @. uu = ifelse(differential_vars, _u, x)
+
+        f(out, du_tmp, uu, p, t)
+    end
+
+    nlsolve_alg = alg.nlsolve
+    if nlsolve_alg !== nothing
+        nlsolve = nlsolve_alg
+    else
+        nlsolve = NewtonRaphson(autodiff = alg_autodiff(integrator.alg))
+    end
+
+    nlfunc = NonlinearFunction{true, SciMLBase.FullSpecialize}(
+        nlequation!; f.jac_prototype
+    )
+    nlprob = NonlinearProblem(nlfunc, ifelse.(differential_vars, du, u), p)
+    nlsol = solve(
+        nlprob, nlsolve; alg.abstol, integrator.opts.reltol,
+        verbose = integrator.opts.verbose.nonlinear_verbosity
+    )
+
+    @. du = ifelse(differential_vars, nlsol.u, du)
+    @. u = ifelse(differential_vars, u, nlsol.u)
+
+
+    if nlsol.retcode != ReturnCode.Success
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end
+
+function _initialize_dae!(
+        integrator::OrdinaryDiffEqCore.ODEIntegrator, prob::DAEProblem,
+        alg::DiffEqBase.BrownFullBasicInit, isinplace::Val{false}
+    )
+    (; p, t, f) = integrator
+    differential_vars = prob.differential_vars
+
+    if check_dae_tolerance(
+            integrator, f(integrator.du, integrator.u, p, t), alg.abstol, t, isinplace
+        )
+        return
+    elseif differential_vars === nothing
+        error("differential_vars must be set for DAE initialization to occur. Either set consistent initial conditions, differential_vars, or use a different initialization algorithm.")
+    end
+
+    if integrator.u isa Number && integrator.du isa Number
+        # This doesn't fix static arrays!
+        u = [integrator.u]
+        du = [integrator.du]
+    else
+        u = integrator.u
+        du = integrator.du
+    end
+
+    nlequation = @closure (x, _) -> begin
+        du_ = ifelse.(differential_vars, x, du)
+        u_ = ifelse.(differential_vars, u, x)
+        f.f(du_, u_, p, t)
+    end
+
+    nlfunc = NonlinearFunction{false, SciMLBase.FullSpecialize}(
+        nlequation; f.jac_prototype
+    )
+    nlprob = NonlinearProblem(nlfunc, ifelse.(differential_vars, du, u))
+
+    isAD = _isforwarddiff_alg(integrator.alg)
+    nlsolve = default_nlsolve(
+        alg.nlsolve, isinplace, integrator.u, nlprob, isAD,
+        SciMLBase.forwarddiff_chunksize(integrator.alg)
+    )
+
+    nlsol = solve(nlprob, nlsolve, verbose = integrator.opts.verbose.nonlinear_verbosity)
+
+    du = ifelse.(differential_vars, nlsol.u, du)
+    u = ifelse.(differential_vars, u, nlsol.u)
+
+    if integrator.u isa Number && integrator.du isa Number
+        # This doesn't fix static arrays!
+        integrator.u = first(u)
+        integrator.du = first(du)
+    else
+        integrator.u = u
+        integrator.du = du
+    end
+
+
+    if nlsol.retcode != ReturnCode.Success
+        integrator.sol = SciMLBase.solution_new_retcode(
+            integrator.sol,
+            ReturnCode.InitialFailure
+        )
+    end
+    return
+end

@@ -1,0 +1,281 @@
+module OrdinaryDiffEqRosenbrock
+
+import OrdinaryDiffEqCore: alg_adaptive_order, isWmethod, isfsal, _unwrap_val,
+    OrdinaryDiffEqRosenbrockAlgorithm, @cache,
+    alg_cache, initialize!,
+    calculate_residuals!, OrdinaryDiffEqMutableCache,
+    OrdinaryDiffEqConstantCache, _ode_interpolant, _ode_interpolant!,
+    _vec, perform_step!, trivial_limiter!,
+    OrdinaryDiffEqRosenbrockAdaptiveAlgorithm,
+    OrdinaryDiffEqRosenbrockAlgorithm, generic_solver_docstring,
+    initialize!, perform_step!, get_fsalfirstlast,
+    constvalue, only_diagonal_mass_matrix,
+    calculate_residuals, has_stiff_interpolation, ODEIntegrator,
+    _ode_addsteps!,
+    DerivativeOrderNotPossibleError, _fixup_ad,
+    copyat_or_push!, DifferentialVarsUndefined, resize_J_W!,
+    find_algebraic_vars_eqs, _diff_alg_vars
+using MuladdMacro: MuladdMacro, @muladd
+using FastBroadcast: FastBroadcast, @..
+using RecursiveArrayTools: RecursiveArrayTools, recursivefill!
+using ArrayInterface: ArrayInterface
+
+# Map flat linear-solve results onto the state container (ArrayPartition-safe).
+@inline _restructure_state(template, x) = ArrayInterface.restructure(template, x)
+@inline _restructure_state(template::Number, x) = oftype(template, x)
+import DifferentiationInterface as DI
+import LinearSolve
+import ForwardDiff
+using FiniteDiff: FiniteDiff
+using LinearAlgebra: mul!, I, norm, lu, UniformScaling
+using ADTypes: ADTypes, AutoFiniteDiff, AutoForwardDiff
+using SciMLBase: @def, LinearAliasSpecifier
+import OrdinaryDiffEqCore, OrdinaryDiffEqDifferentiation
+
+using OrdinaryDiffEqDifferentiation: wrapprecs, calc_tderivative, build_grad_config,
+    build_jac_config, issuccess_W, jacobian2W!,
+    resize_jac_config!, resize_grad_config!,
+    calc_rosenbrock_differentiation!, build_J_W,
+    dolinsolve
+
+using OrdinaryDiffEqDifferentiation: calc_rosenbrock_differentiation
+
+using OrdinaryDiffEqRosenbrockTableaus: OrdinaryDiffEqRosenbrockTableaus,
+    GRK4ARodasTableau, GRK4TRodasTableau, ROS2PRRodasTableau, ROS2RodasTableau,
+    ROS2SRodasTableau, ROS34PRwRodasTableau, ROS34PW1aRodasTableau,
+    ROS34PW1bRodasTableau, ROS34PW2RodasTableau, ROS3PRL2RodasTableau,
+    ROS3PRLRodasTableau, ROS3PRRodasTableau, ROS3PRodasTableau, ROS3RodasTableau,
+    Rodas3PRodasTableau, Rodas3RodasTableau, Rodas3dRodasTableau, Rodas42Tableau, Rodas4P2Tableau,
+    Rodas4PTableau, Rodas4PWTableau, Rodas4Tableau, Rodas5Tableau, RodasTableau,
+    Ros4LStabRodasTableau, RosShamp4RodasTableau, RosenbrockW6S4OSRodasTableau,
+    Scholz4_7RodasTableau, Veldd4RodasTableau, Velds4RodasTableau
+using Reexport: Reexport, @reexport
+@reexport using SciMLBase
+using SciMLBase: SciMLBase, LinearProblem, ODEProblem, init, solve,
+    TimeDerivativeWrapper, TimeGradientWrapper, UDerivativeWrapper, UJacobianWrapper
+# alg_order is owned by and public in SciMLBase; import (not using) so methods can be extended
+import SciMLBase: alg_order, full_cache, resize_non_user_cache!
+
+import OrdinaryDiffEqCore: alg_autodiff
+import OrdinaryDiffEqCore
+
+function rosenbrock_wolfbrandt_docstring(
+        description::String,
+        name::String;
+        references::String = "",
+        extra_keyword_description = "",
+        extra_keyword_default = "",
+        with_step_limiter = false
+    )
+    keyword_default = """
+        autodiff = AutoForwardDiff(),
+        concrete_jac = nothing,
+        linsolve = nothing,
+        """ * extra_keyword_default
+
+    keyword_default_description = """
+        - `autodiff`: Uses [ADTypes.jl](https://sciml.github.io/ADTypes.jl/stable/)
+            to specify whether to use automatic differentiation via
+            [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl) or finite
+            differencing via [FiniteDiff.jl](https://github.com/JuliaDiff/FiniteDiff.jl).
+            Defaults to `AutoForwardDiff()` for automatic differentiation, which by default uses
+            `chunksize = 0`, and thus uses the internal ForwardDiff.jl algorithm for the choice.
+            To use `FiniteDiff.jl`, the `AutoFiniteDiff()` ADType can be used, which has a keyword argument
+            `fdtype` with default value `Val{:forward}()`, and alternatives `Val{:central}()` and `Val{:complex}()`.
+        - `concrete_jac`: Specifies whether a Jacobian should be constructed. Defaults to
+            `nothing`, which means it will be chosen true/false depending on circumstances
+            of the solver, such as whether a Krylov subspace method is used for `linsolve`.
+        - `linsolve`: Any [LinearSolve.jl](https://github.com/SciML/LinearSolve.jl) compatible linear solver.
+          For example, to use [KLU.jl](https://github.com/JuliaSparse/KLU.jl), specify
+          `$name(linsolve = KLUFactorization()`).
+           When `nothing` is passed, uses `DefaultLinearSolver`.
+        """ * extra_keyword_description
+
+    if with_step_limiter
+        keyword_default *= "step_limiter! = OrdinaryDiffEq.trivial_limiter!,\n"
+        keyword_default_description *= "- `step_limiter!`: function of the form `limiter!(u, integrator, p, t)`\n"
+    end
+
+    return generic_solver_docstring(
+        description, name, "Rosenbrock-Wanner-W(olfbrandt) Method. ", references,
+        keyword_default_description, keyword_default
+    )
+end
+
+function rosenbrock_docstring(
+        description::String,
+        name::String;
+        references::String = "",
+        extra_keyword_description = "",
+        extra_keyword_default = "",
+        with_step_limiter = false
+    )
+    keyword_default = """
+        autodiff = AutoForwardDiff(),
+        concrete_jac = nothing,
+        linsolve = nothing,
+        """ * extra_keyword_default
+
+    keyword_default_description = """
+        - `autodiff`: boolean to control if the Jacobian should be computed via AD or not
+        - `concrete_jac`: function of the form `jac!(J, u, p, t)`
+        - `linsolve`: custom solver for the inner linear systems
+        """ * extra_keyword_description
+
+    if with_step_limiter
+        keyword_default *= "step_limiter! = OrdinaryDiffEq.trivial_limiter!,\n"
+        keyword_default_description *= "- `step_limiter!`: function of the form `limiter!(u, integrator, p, t)`\n"
+    end
+
+    return generic_solver_docstring(
+        description, name, "Rosenbrock-Wanner Method. ", references,
+        keyword_default_description, keyword_default
+    )
+end
+
+include("algorithms.jl")
+include("alg_utils.jl")
+include("rosenbrock_caches.jl")
+include("rosenbrock_tableaus.jl")
+include("interp_func.jl")
+include("rosenbrock_interpolants.jl")
+include("stiff_addsteps.jl")
+include("rosenbrock_perform_step.jl")
+include("integrator_interface.jl")
+
+import PrecompileTools
+import Preferences
+PrecompileTools.@compile_workload begin
+    function lorenz(du, u, p, t)
+        du[1] = 10.0(u[2] - u[1])
+        du[2] = u[1] * (28.0 - u[3]) - u[2]
+        du[3] = u[1] * u[2] - (8 / 3) * u[3]
+        return
+    end
+    lorenz_oop(u, p, t) = [
+        10.0(u[2] - u[1]),
+        u[1] * (28.0 - u[3]) - u[2],
+        u[1] * u[2] - (8 / 3) * u[3],
+    ]
+    function lorenz_p(du, u, p, t)
+        du[1] = p.σ * (u[2] - u[1])
+        du[2] = u[1] * (p.ρ - u[3]) - u[2]
+        du[3] = u[1] * u[2] - p.β * u[3]
+        return
+    end
+    lorenz_p_params = (σ = 10.0, ρ = 28.0, β = 8 / 3)
+    function lorenz_pref(du, u, p, t)
+        du[1] = p[1] * (u[2] - u[1])
+        du[2] = u[1] * (p[2] - u[3]) - u[2]
+        du[3] = u[1] * u[2] - p[3] * u[3]
+        return
+    end
+    lorenz_pref_params = [10.0, 28.0, 8 / 3]
+    solver_list = [Rosenbrock23(), Rodas5P()]
+    prob_list = []
+
+    if Preferences.@load_preference("PrecompileDefaultSpecialize", true)
+        push!(prob_list, ODEProblem(lorenz, [1.0; 0.0; 0.0], (0.0, 1.0)))
+        push!(prob_list, ODEProblem(lorenz, [1.0; 0.0; 0.0], (0.0, 1.0), Float64[]))
+    end
+
+    if Preferences.@load_preference("PrecompileAutoSpecialize", false)
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.AutoSpecialize}(
+                lorenz, [1.0; 0.0; 0.0],
+                (0.0, 1.0)
+            )
+        )
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.AutoSpecialize}(
+                lorenz, [1.0; 0.0; 0.0],
+                (0.0, 1.0), Float64[]
+            )
+        )
+    end
+
+    if Preferences.@load_preference("PrecompileAutoDespecialize", true)
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.AutoDespecialize}(
+                lorenz_p, [1.0; 0.0; 0.0],
+                (0.0, 1.0), lorenz_p_params
+            )
+        )
+    end
+
+    if Preferences.@load_preference("PrecompileAutoDePSpecialize", true)
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.AutoDePSpecialize}(
+                lorenz_p, [1.0; 0.0; 0.0],
+                (0.0, 1.0), lorenz_p_params
+            )
+        )
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.AutoDePSpecialize}(
+                lorenz_pref, [1.0; 0.0; 0.0],
+                (0.0, 1.0), lorenz_pref_params
+            )
+        )
+    end
+
+    if Preferences.@load_preference("PrecompileFunctionWrapperSpecialize", false)
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.FunctionWrapperSpecialize}(
+                lorenz, [1.0; 0.0; 0.0],
+                (0.0, 1.0)
+            )
+        )
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.FunctionWrapperSpecialize}(
+                lorenz, [1.0; 0.0; 0.0],
+                (0.0, 1.0), Float64[]
+            )
+        )
+    end
+
+    if Preferences.@load_preference("PrecompileNoSpecialize", false)
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.NoSpecialize}(lorenz, [1.0; 0.0; 0.0], (0.0, 1.0))
+        )
+        push!(
+            prob_list,
+            ODEProblem{true, SciMLBase.NoSpecialize}(
+                lorenz, [1.0; 0.0; 0.0], (0.0, 1.0),
+                Float64[]
+            )
+        )
+    end
+
+    for prob in prob_list, solver in solver_list
+
+        solve(prob, solver)(5.0)
+    end
+
+    prob_list = nothing
+    solver_list = nothing
+end
+
+export Rosenbrock23, Rosenbrock32, RosShamp4, Veldd4, Velds4, GRK4T, GRK4A,
+    Ros4LStab, ROS3P, Rodas3, Rodas3d, Rodas23W, Rodas3P, Rodas4, Rodas42, Rodas4P, Rodas4P2,
+    Rodas4PW, Rodas5, Rodas5P, Rodas5Pe, Rodas5Pr, Rodas6P, HybridExplicitImplicitRK,
+    Tsit5DA, RosenbrockW6S4OS, ROS34PW1a, ROS34PW1b, ROS34PW2, ROS34PW3, ROS34PRw,
+    ROS3PRL, ROS3PRL2, ROK4a,
+    ROS2, ROS2PR, ROS2S, ROS3, ROS3PR, Scholz4_7
+
+# Abstract Rosenbrock cache supertype that other OrdinaryDiffEq consumers
+# (e.g. DelayDiffEq) reference to special-case Rosenbrock cache resizing.
+# Marked public so that cross-package reference is recognized as a supported
+# extension API rather than internal access.
+@static if VERSION >= v"1.11.0-DEV.469"
+    eval(Expr(:public, :RosenbrockMutableCache))
+end
+
+end

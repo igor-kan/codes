@@ -1,0 +1,91 @@
+module OrdinaryDiffEqNonlinearSolve
+
+using ADTypes: ADTypes, AutoForwardDiff, AutoFiniteDiff
+using CommonSolve: init, solve, solve!, step!
+
+import SciMLBase
+import SciMLBase: remake
+using SciMLOperators: update_coefficients!
+using SciMLBase: DAEFunction, DEIntegrator, NonlinearFunction, NonlinearProblem,
+    NonlinearLeastSquaresProblem, LinearProblem, ODEProblem, DAEProblem,
+    get_tmp_cache, ReturnCode,
+    AbstractNonlinearProblem, LinearAliasSpecifier,
+    _vec, _reshape, postamble!, alg_order, isadaptive
+import DiffEqBase
+import DiffEqBase: OrdinaryDiffEqTag, calculate_residuals, calculate_residuals!,
+    BrownFullBasicInit, ShampineCollocationInit
+import ConstructionBase
+import PreallocationTools: DiffCache, get_tmp
+using SimpleNonlinearSolve: SimpleTrustRegion, SimpleGaussNewton
+using NonlinearSolve: FastShortcutNonlinearPolyalg, FastShortcutNLLSPolyalg, NewtonRaphson
+using SciMLPublic: @public
+# The operator Jacobian path is implemented in NonlinearSolveBase and needs its own floor.
+import NonlinearSolveBase
+# `get_u`/`get_fu` are the only inner-state reads that hold for every inner cache type:
+# polyalgorithm caches keep `u`/`fu` on the active branch, not as top-level fields.
+# `NonlinearSolveNoInitCache` is the fallback cache for algorithms with no `__init` (every
+# SimpleNonlinearSolve algorithm): it holds no iteration state, so `step!`, `get_fu`,
+# `.stats` and `not_terminated` are all off-limits and it can only be driven by `solve!`.
+using NonlinearSolveBase:
+    ArcLengthContinuation, HomotopyPolyAlgorithm, HomotopySweep, KantorovichHomotopy,
+    NonlinearSolveNoInitCache,
+    get_linear_cache, get_u, get_fu
+using MuladdMacro: @muladd
+using FastBroadcast: @..
+import FastClosures: @closure
+using LinearAlgebra: UniformScaling, UpperTriangular, givens, cond, dot, lmul!, axpy!,
+    I, rmul!, norm, mul!, ldiv!
+import LinearAlgebra
+import ArrayInterface: ArrayInterface
+import LinearSolve
+import ForwardDiff: ForwardDiff
+using ForwardDiff: Dual
+import OrdinaryDiffEqCore
+
+import SciMLOperators: islinear, AbstractSciMLOperator, MatrixOperator,
+    mark_jacobian_updated!
+import OrdinaryDiffEqCore: nlsolve_f, set_new_W!, set_W_γdt!
+
+import OrdinaryDiffEqCore: default_nlsolve
+
+using OrdinaryDiffEqCore: resize_nlsolver!, _initialize_dae!,
+    AbstractNLSolverAlgorithm, AbstractNLSolverCache,
+    AbstractNLSolver, NewtonAlgorithm,
+    DAEAlgorithm,
+    has_special_newton_error,
+    TryAgain, DIRK, COEFFICIENT_MULTISTEP,
+    Convergence,
+    Divergence, NLStatus,
+    MethodType, error_constant,
+    resize_J_W!, alg_autodiff,
+    find_algebraic_vars_eqs
+
+import OrdinaryDiffEqCore: _initialize_dae!,
+    isnewton, get_W, isfirstcall, isfirststage,
+    isJcurrent, get_new_W_γdt_cutoff, resize_nlsolver!, apply_step!,
+    @SciMLMessage
+
+import OrdinaryDiffEqDifferentiation: update_W!, is_always_new, build_uf, build_J_W,
+    WOperator, StaticWOperator, wrapprecs, default_krylov_warm_start,
+    build_jac_config, dolinsolve, set_linear_reltol!,
+    resize_jac_config!, jacobian2W!, jacobian!, calc_J
+
+import StaticArraysCore: StaticArray
+
+include("type.jl")
+include("utils.jl")
+include("nlsolve.jl")
+include("functional.jl")
+include("newton.jl")
+include("homotopy.jl")
+include("initialize_dae.jl")
+
+export BrownFullBasicInit, ShampineCollocationInit
+
+@public NLNewton, NLFunctional, NLAnderson, HomotopyNonlinearSolveAlg, NonlinearSolveAlg
+
+# Solver-author interface called or extended by sibling integrator packages.
+@public build_nlsolver, nlsolve!, nlsolvefail, markfirststage!, du_alias_or_new
+@public can_smooth_est, compute_step!, initial_η, anderson, anderson!
+
+end

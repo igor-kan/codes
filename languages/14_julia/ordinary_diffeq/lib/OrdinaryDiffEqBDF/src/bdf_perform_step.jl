@@ -1,0 +1,1820 @@
+function initialize!(integrator, cache::ABDF2ConstantCache)
+    integrator.kshortsize = 2
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t) # Pre-start fsal
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    # Avoid undefined entries if k is an array of arrays
+    integrator.fsallast = zero(integrator.fsalfirst)
+    integrator.k[1] = integrator.fsalfirst
+    return integrator.k[2] = integrator.fsallast
+end
+
+@muladd function perform_step!(integrator, cache::ABDF2ConstantCache, repeat_step = false)
+    (; t, f, p) = integrator
+    (; dtₙ₋₁, nlsolver) = cache
+    alg = unwrap_alg(integrator, true)
+    dtₙ, uₙ, uₙ₋₁, uₙ₋₂ = integrator.dt, integrator.u, integrator.uprev, integrator.uprev2
+
+    # TODO: this doesn't look right
+    if integrator.iter == 1 && !integrator.derivative_discontinuity
+        cache.dtₙ₋₁ = dtₙ
+        cache.eulercache.nlsolver.method = DIRK
+        cache.eulercache.nlsolver.γ = 1
+        cache.eulercache.nlsolver.α = 1
+        perform_step!(integrator, cache.eulercache, repeat_step)
+        cache.fsalfirstprev = integrator.fsalfirst
+        return
+    end
+
+    fₙ₋₁ = integrator.fsalfirst
+    ρ = dtₙ / dtₙ₋₁
+    β₀ = Int64(2) // 3
+    β₁ = -(ρ - 1) / 3
+    α₀ = 1
+    α̂ = ρ^2 / 3
+    α₁ = 1 + α̂
+    α₂ = -α̂
+
+    markfirststage!(nlsolver)
+
+    # initial guess
+    if alg.extrapolant == :linear
+        u = @.. broadcast = false uₙ₋₁ + dtₙ * fₙ₋₁
+    else # :constant
+        u = uₙ₋₁
+    end
+    nlsolver.z = u
+
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        nlsolver.tmp = @.. (
+            (dtₙ * β₁) * fₙ₋₁ +
+                (α₁ * uₙ₋₁ + α₂ * uₙ₋₂)
+        ) / (dtₙ * β₀)
+    else
+        _tmp = mass_matrix * @.. (α₁ * uₙ₋₁ + α₂ * uₙ₋₂)
+        nlsolver.tmp = @.. ((dtₙ * β₁) * fₙ₋₁ + _tmp) / (dtₙ * β₀)
+    end
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    uₙ = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+
+    integrator.fsallast = f(uₙ, p, t + dtₙ)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    if integrator.opts.adaptive
+        tmp = integrator.fsallast - (1 + dtₙ / dtₙ₋₁) * integrator.fsalfirst +
+            (dtₙ / dtₙ₋₁) * cache.fsalfirstprev
+        est = (dtₙ₋₁ + dtₙ) / 6 * tmp
+        atmp = calculate_residuals(
+            est, uₙ₋₁, uₙ, integrator.opts.abstol,
+            integrator.opts.reltol, integrator.opts.internalnorm, t
+        )
+        OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+    end
+
+    ################################### Finalize
+
+    if OrdinaryDiffEqCore.get_EEst(integrator) < one(OrdinaryDiffEqCore.get_EEst(integrator))
+        cache.fsalfirstprev = integrator.fsalfirst
+        cache.dtₙ₋₁ = dtₙ
+    end
+
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.u = uₙ
+    return
+end
+
+function initialize!(integrator, cache::ABDF2Cache)
+    integrator.kshortsize = 2
+
+    resize!(integrator.k, integrator.kshortsize)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t) # For the interpolation, needs k at the updated point
+    return OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+end
+
+@muladd function perform_step!(integrator, cache::ABDF2Cache, repeat_step = false)
+    (; t, dt, f, p) = integrator
+    #TODO: remove zₙ₋₁ from the cache
+    (; atmp, dtₙ₋₁, zₙ₋₁, nlsolver) = cache
+    (; z, tmp, ztmp) = nlsolver
+    alg = unwrap_alg(integrator, true)
+    uₙ, uₙ₋₁, uₙ₋₂, dtₙ = integrator.u, integrator.uprev, integrator.uprev2, integrator.dt
+
+    if integrator.iter == 1 && !integrator.derivative_discontinuity
+        cache.dtₙ₋₁ = dtₙ
+        cache.eulercache.nlsolver.method = DIRK
+        cache.eulercache.nlsolver.γ = 1
+        cache.eulercache.nlsolver.α = 1
+        perform_step!(integrator, cache.eulercache, repeat_step)
+        cache.fsalfirstprev .= integrator.fsalfirst
+        nlsolver.tmp = tmp
+        return
+    end
+
+    fₙ₋₁ = integrator.fsalfirst
+    ρ = dtₙ / dtₙ₋₁
+    β₀ = Int64(2) // 3
+    β₁ = -(ρ - 1) / 3
+    α₀ = 1
+    α̂ = ρ^2 / 3
+    α₁ = 1 + α̂
+    α₂ = -α̂
+
+    markfirststage!(nlsolver)
+
+    # initial guess
+    if alg.extrapolant == :linear
+        @.. broadcast = false z = uₙ₋₁ + dtₙ * fₙ₋₁
+    else # :constant
+        @.. broadcast = false z = uₙ₋₁
+    end
+
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        @.. broadcast = false tmp = ((dtₙ * β₁) * fₙ₋₁ + (α₁ * uₙ₋₁ + α₂ * uₙ₋₂)) / (dtₙ * β₀)
+    else
+        dz = nlsolver.cache.dz
+        @.. broadcast = false dz = α₁ * uₙ₋₁ + α₂ * uₙ₋₂
+        mul!(ztmp, mass_matrix, dz)
+        @.. broadcast = false tmp = ((dtₙ * β₁) * fₙ₋₁ + ztmp) / (dtₙ * β₀)
+    end
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+
+    @.. broadcast = false uₙ = z
+
+
+    f(integrator.fsallast, uₙ, p, t + dtₙ)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    if integrator.opts.adaptive
+        btilde0 = (dtₙ₋₁ + dtₙ) * Int64(1) // 6
+        btilde1 = 1 + dtₙ / dtₙ₋₁
+        btilde2 = dtₙ / dtₙ₋₁
+        @.. broadcast = false tmp = btilde0 *
+            (
+            integrator.fsallast - btilde1 * integrator.fsalfirst +
+                btilde2 * cache.fsalfirstprev
+        )
+        calculate_residuals!(
+            atmp, tmp, uₙ₋₁, uₙ, integrator.opts.abstol,
+            integrator.opts.reltol, integrator.opts.internalnorm, t
+        )
+        OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+    end
+
+    ################################### Finalize
+
+    if OrdinaryDiffEqCore.get_EEst(integrator) < one(OrdinaryDiffEqCore.get_EEst(integrator))
+        @.. broadcast = false cache.fsalfirstprev = integrator.fsalfirst
+        cache.dtₙ₋₁ = dtₙ
+    end
+    return
+end
+
+# SBDF
+
+function initialize!(integrator, cache::SBDFConstantCache)
+    (; uprev, p, t) = integrator
+    (; f1, f2) = integrator.f
+    integrator.kshortsize = 2
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    cache.du₁ = f1(uprev, p, t)
+    cache.du₂ = f2(uprev, p, t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.stats.nf2 += 1
+    integrator.fsalfirst = cache.du₁ + cache.du₂
+
+    # Avoid undefined entries if k is an array of arrays
+    integrator.fsallast = zero(integrator.fsalfirst)
+    integrator.k[1] = integrator.fsalfirst
+    return integrator.k[2] = integrator.fsallast
+end
+
+function perform_step!(integrator, cache::SBDFConstantCache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    alg = unwrap_alg(integrator, true)
+    (; uprev2, uprev3, uprev4, du₁, du₂, k₁, k₂, k₃, nlsolver) = cache
+    (; f1, f2) = integrator.f
+    # cnt tracks how many past (uprev_i, k_i) points the fixed-coefficient
+    # formulas below can validly read, which is the number of completed
+    # steps -- not one more than that (that was defect 1: it ran a k-point
+    # formula with only k-1 points on record). It must also drop back to 1
+    # whenever dt changes: the BDF coefficients below are derived assuming
+    # the whole history is spaced at the current dt, so history recorded at
+    # a different dt (e.g. a step clipped to land on tspan[2]) makes the
+    # formula wrong, not just less accurate (see #4329).
+    cnt = cache.cnt = min(alg.order, integrator.iter)
+    integrator.iter == 1 && !integrator.derivative_discontinuity && (cnt = cache.cnt = 1)
+    dt != cache.dtprev && (cnt = cache.cnt = 1)
+    nlsolver.γ = γ = inv(γₖ[cnt])
+    if cache.ark
+        # Additive Runge-Kutta Method
+        du₂ = f2(uprev + dt * du₁, p, t)
+        integrator.stats.nf2 += 1
+    end
+    if cnt == 1
+        tmp = uprev + dt * du₂
+    elseif cnt == 2
+        tmp = γ * (2 * uprev - Int64(1) // 2 * uprev2 + dt * (2 * du₂ - k₁))
+    elseif cnt == 3
+        tmp = γ *
+            (3 * uprev - Int64(3) // 2 * uprev2 + Int64(1) // 3 * uprev3 + dt * (3 * (du₂ - k₁) + k₂))
+    else
+        tmp = γ * (
+            4 * uprev - 3 * uprev2 + Int64(4) // 3 * uprev3 - Int64(1) // 4 * uprev4 +
+                dt * (4 * du₂ - 6 * k₁ + 4 * k₂ - k₃)
+        )
+    end
+    nlsolver.tmp = tmp
+
+    # Implicit part
+    # precalculations
+    γdt = γ * dt
+    markfirststage!(nlsolver)
+
+    # initial guess
+    if alg.extrapolant == :linear
+        z = dt * du₁
+    else # :constant
+        z = zero(u)
+    end
+    nlsolver.z = z
+
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    u = nlsolver.tmp + γ * z
+
+    # Shift the history every step (not gated on cnt, which only says how
+    # much of it is *usable yet* -- defect 2 was gating the shift itself on
+    # cnt, so the first step that could validly read a slot found it still
+    # holding its cache-construction value). Gated on alg.order instead,
+    # which is fixed per algorithm instance: for order < 4 (< 3), uprev4/k₃
+    # (uprev3/k₂) alias uprev2/k₁ as a memory optimization in the mutable
+    # cache's constructor, and writing through an aliased slot here would
+    # corrupt uprev2/k₁ before the unaliased lines below read them.
+    alg.order == 4 && (
+        cache.uprev4 = uprev3;
+        cache.k₃ = k₂
+    )
+    alg.order >= 3 && (
+        cache.uprev3 = uprev2;
+        cache.k₂ = k₁
+    )
+    (
+        cache.uprev2 = uprev;
+        cache.k₁ = du₂
+    )
+    cache.dtprev = dt
+    cache.du₁ = f1(u, p, t + dt)
+    cache.du₂ = f2(u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.stats.nf2 += 1
+    integrator.fsallast = cache.du₁ + cache.du₂
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    return integrator.u = u
+end
+
+function initialize!(integrator, cache::SBDFCache)
+    (; uprev, p, t) = integrator
+    (; f1, f2) = integrator.f
+    integrator.kshortsize = 2
+
+    resize!(integrator.k, integrator.kshortsize)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    f1(cache.du₁, uprev, p, t)
+    f2(cache.du₂, uprev, p, t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.stats.nf2 += 1
+    return @.. broadcast = false integrator.fsalfirst = cache.du₁ + cache.du₂
+end
+
+function perform_step!(integrator, cache::SBDFCache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    alg = unwrap_alg(integrator, true)
+    (; uprev2, uprev3, uprev4, k₁, k₂, k₃, du₁, du₂, nlsolver) = cache
+    (; tmp, z) = nlsolver
+    (; f1, f2) = integrator.f
+    # See the matching branch in the constant-cache method for why cnt is
+    # min(order, iter) rather than iter + 1, and why it also resets on a
+    # dt change (#4329).
+    cnt = cache.cnt = min(alg.order, integrator.iter)
+    integrator.iter == 1 && !integrator.derivative_discontinuity && (cnt = cache.cnt = 1)
+    dt != cache.dtprev && (cnt = cache.cnt = 1)
+    nlsolver.γ = γ = inv(γₖ[cnt])
+    # Explicit part
+    if cache.ark
+        # Additive Runge-Kutta Method
+        f2(du₂, uprev + dt * du₁, p, t)
+        integrator.stats.nf2 += 1
+    end
+    if cnt == 1
+        @.. broadcast = false tmp = uprev + dt * du₂
+    elseif cnt == 2
+        @.. broadcast = false tmp = γ * (2 * uprev - 1 // 2 * uprev2 + dt * (2 * du₂ - k₁))
+    elseif cnt == 3
+        @.. broadcast = false tmp = γ * (
+            3 * uprev - 3 // 2 * uprev2 + 1 // 3 * uprev3 +
+                dt * (3 * (du₂ - k₁) + k₂)
+        )
+    else
+        @.. broadcast = false tmp = γ * (
+            4 * uprev - 3 * uprev2 + 4 // 3 * uprev3 -
+                1 // 4 * uprev4 + dt * (4 * du₂ - 6 * k₁ + 4 * k₂ - k₃)
+        )
+    end
+    # Implicit part
+    # precalculations
+    γdt = γ * dt
+    markfirststage!(nlsolver)
+
+    # initial guess
+    if alg.extrapolant == :linear
+        @.. broadcast = false z = dt * du₁
+    else # :constant
+        @.. broadcast = false z = zero(eltype(u))
+    end
+
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = tmp + γ * z
+
+    # See the matching comment in the constant-cache method: gated on
+    # alg.order (fixed), not cnt (varies per step and was defect 2), and
+    # the alg.order gate is what keeps this safe under the mutable cache's
+    # order<4/order<3 buffer aliasing (uprev4≡uprev2, k₃≡k₁ / uprev3≡uprev2,
+    # k₂≡k₁) -- each destination below is only written after every line
+    # that still needs its old contents as a source has already run.
+    alg.order == 4 && (
+        cache.uprev4 .= uprev3;
+        cache.k₃ .= k₂
+    )
+    alg.order >= 3 && (
+        cache.uprev3 .= uprev2;
+        cache.k₂ .= k₁
+    )
+    (
+        cache.uprev2 .= uprev;
+        cache.k₁ .= du₂
+    )
+    cache.dtprev = dt
+    f1(du₁, u, p, t + dt)
+    f2(du₂, u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.stats.nf2 += 1
+    return @.. broadcast = false integrator.fsallast = du₁ + du₂
+end
+
+# QNDF1
+
+function initialize!(integrator, cache::QNDF1ConstantCache)
+    integrator.kshortsize = 2
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t) # Pre-start fsal
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    # Avoid undefined entries if k is an array of arrays
+    integrator.fsallast = zero(integrator.fsalfirst)
+    integrator.k[1] = integrator.fsalfirst
+    return integrator.k[2] = integrator.fsallast
+end
+
+function perform_step!(integrator, cache::QNDF1ConstantCache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    (; uprev2, D, D2, R, U, dtₙ₋₁, nlsolver) = cache
+    alg = unwrap_alg(integrator, true)
+    κ = alg.kappa
+    cnt = integrator.iter
+    k = 1
+    if cnt > 1
+        ρ = dt / dtₙ₋₁
+        D[1] = uprev - uprev2   # backward diff
+        if ρ != 1
+            R!(k, ρ, cache)
+            R .= R * U
+            D[1] = D[1] * R[1, 1]
+        end
+    else
+        κ = zero(alg.kappa)
+    end
+
+    #Changing uprev2 after D Array has changed with step-size
+    uprev2 = uprev - D[1]
+
+    β₀ = 1
+    α₀ = 1 - κ
+    α₁ = 1 - 2 * κ
+    α₂ = κ
+
+    markfirststage!(nlsolver)
+
+    # initial guess
+    nlsolver.z = uprev + sum(D)
+
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        nlsolver.tmp = @.. broadcast = false (α₁ * uprev + α₂ * uprev2) / (dt * β₀)
+    else
+        _tmp = mass_matrix * @.. broadcast = false (α₁ * uprev + α₂ * uprev2)
+        nlsolver.tmp = @.. broadcast = false _tmp / (dt * β₀)
+    end
+
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+
+    u = nlsolve!(nlsolver, integrator, cache, repeat_step)
+
+    nlsolvefail(nlsolver) && return
+    if integrator.opts.adaptive
+        if integrator.success_iter == 0
+            OrdinaryDiffEqCore.set_EEst!(integrator, one(OrdinaryDiffEqCore.get_EEst(integrator)))
+        else
+            D2[1] = u - uprev
+            D2[2] = D2[1] - D[1]
+            utilde = (κ + inv(k + 1)) * D2[2]
+            atmp = calculate_residuals(
+                utilde, uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm,
+                t
+            )
+            OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        end
+    end
+    if OrdinaryDiffEqCore.get_EEst(integrator) > one(OrdinaryDiffEqCore.get_EEst(integrator))
+        return
+    end
+    cache.dtₙ₋₁ = dt
+    cache.uprev2 = uprev
+    integrator.fsallast = f(u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.u = u
+    return
+end
+
+function initialize!(integrator, cache::QNDF1Cache)
+    integrator.kshortsize = 2
+
+    resize!(integrator.k, integrator.kshortsize)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t) # For the interpolation, needs k at the updated point
+    return OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+end
+
+function perform_step!(integrator, cache::QNDF1Cache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    (; uprev2, D, D2, R, U, dtₙ₋₁, utilde, atmp, nlsolver) = cache
+    (; z, tmp, ztmp) = nlsolver
+    alg = unwrap_alg(integrator, true)
+    κ = alg.kappa
+    cnt = integrator.iter
+    k = 1
+    if cnt > 1
+        ρ = dt / dtₙ₋₁
+        @.. broadcast = false D[1] = uprev - uprev2 # backward diff
+        if ρ != 1
+            R!(k, ρ, cache)
+            R .= R * U
+            @.. broadcast = false D[1] = D[1] * R[1, 1]
+        end
+    else
+        κ = zero(alg.kappa)
+    end
+
+    #Changing uprev2 after D Array has changed with step-size
+    uprev2 = uprev - D[1]
+
+    β₀ = 1
+    α₀ = 1 - κ
+    α₁ = 1 - 2 * κ
+    α₂ = κ
+
+    markfirststage!(nlsolver)
+
+    # initial guess
+    nlsolver.z = uprev + sum(D)
+
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        @.. broadcast = false tmp = (α₁ * uprev + α₂ * uprev2) / (dt * β₀)
+    else
+        dz = nlsolver.cache.dz
+        @.. broadcast = false dz = α₁ * uprev + α₂ * uprev2
+        mul!(ztmp, mass_matrix, dz)
+        @.. broadcast = false tmp = ztmp / (dt * β₀)
+    end
+
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = z
+
+
+    if integrator.opts.adaptive
+        if integrator.success_iter == 0
+            OrdinaryDiffEqCore.set_EEst!(integrator, one(OrdinaryDiffEqCore.get_EEst(integrator)))
+        else
+            @.. broadcast = false D2[1] = u - uprev
+            @.. broadcast = false D2[2] = D2[1] - D[1]
+            @.. broadcast = false utilde = (κ + inv(k + 1)) * D2[2]
+            calculate_residuals!(
+                atmp, utilde, uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm, t
+            )
+            OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        end
+    end
+    if OrdinaryDiffEqCore.get_EEst(integrator) > one(OrdinaryDiffEqCore.get_EEst(integrator))
+        return
+    end
+    cache.uprev2 .= uprev
+    cache.dtₙ₋₁ = dt
+    f(integrator.fsallast, u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    return
+end
+
+function initialize!(integrator, cache::QNDF2ConstantCache)
+    integrator.kshortsize = 2
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t) # Pre-start fsal
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    # Avoid undefined entries if k is an array of arrays
+    integrator.fsallast = zero(integrator.fsalfirst)
+    integrator.k[1] = integrator.fsalfirst
+    return integrator.k[2] = integrator.fsallast
+end
+
+function perform_step!(integrator, cache::QNDF2ConstantCache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    (; uprev2, uprev3, dtₙ₋₁, dtₙ₋₂, D, D2, R, U, nlsolver) = cache
+    alg = unwrap_alg(integrator, true)
+    cnt = integrator.iter
+    k = 2
+    if cnt == 1 || cnt == 2
+        κ = zero(alg.kappa)
+        γ₁ = Int64(1) // 1
+        γ₂ = Int64(1) // 1
+    else
+        κ = alg.kappa
+        γ₁ = Int64(1) // 1
+        γ₂ = Int64(1) // 1 + Int64(1) // 2
+    end
+
+    # `D` stays at the step size its differences were formed with, so a change of
+    # `dt` scales them through `R * U` instead of rebuilding them from the
+    # solution history, and a rejected attempt leaves `D` untouched.
+    if cnt > 2 && dt != dtₙ₋₁
+        R!(k, dt / dtₙ₋₁, cache)
+        R .= R * U
+        d₁ = D[1] * R[1, 1] + D[2] * R[2, 1]
+        d₂ = D[1] * R[1, 2] + D[2] * R[2, 2]
+    else
+        d₁ = D[1]
+        d₂ = D[2]
+    end
+
+    β₀ = inv((1 - κ) * γ₂)
+    α₀ = 1
+
+    u₀ = uprev + d₁ + d₂
+    ϕ = (γ₁ * d₁ + γ₂ * d₂) * β₀
+
+    markfirststage!(nlsolver)
+
+    # initial guess
+    nlsolver.z = u₀
+
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        nlsolver.tmp = @.. broadcast = false (u₀ - ϕ) / (dt * β₀)
+    else
+        _tmp = mass_matrix * @.. broadcast = false (u₀ - ϕ)
+        nlsolver.tmp = @.. broadcast = false _tmp / (dt * β₀)
+    end
+
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+
+    u = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+
+    if integrator.opts.adaptive
+        if integrator.success_iter == 0
+            OrdinaryDiffEqCore.set_EEst!(integrator, one(OrdinaryDiffEqCore.get_EEst(integrator)))
+        elseif integrator.success_iter == 1
+            utilde = (u - uprev) - ((uprev - uprev2) * dt / dtₙ₋₁)
+            atmp = calculate_residuals(
+                utilde, uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm,
+                t
+            )
+            OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        else
+            D2[1] = u - uprev
+            D2[2] = D2[1] - d₁
+            D2[3] = D2[2] - d₂
+            utilde = (κ * γ₂ + inv(k + 1)) * D2[3]
+            atmp = calculate_residuals(
+                utilde, uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm,
+                t
+            )
+            OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        end
+    end
+    if OrdinaryDiffEqCore.get_EEst(integrator) > one(OrdinaryDiffEqCore.get_EEst(integrator))
+        return
+    end
+
+    Δ = u - uprev
+    cache.D[1] = Δ
+    cache.D[2] = integrator.success_iter == 0 ? zero(Δ) : Δ - d₁
+    cache.uprev3 = uprev2
+    cache.uprev2 = uprev
+    cache.dtₙ₋₂ = dtₙ₋₁
+    cache.dtₙ₋₁ = dt
+    integrator.fsallast = f(u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.u = u
+    return
+end
+
+function initialize!(integrator, cache::QNDF2Cache)
+    integrator.kshortsize = 2
+
+    resize!(integrator.k, integrator.kshortsize)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t) # For the interpolation, needs k at the updated point
+    return OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+end
+
+function perform_step!(integrator, cache::QNDF2Cache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    (; uprev2, uprev3, dtₙ₋₁, dtₙ₋₂, D, Dtmp, D2, R, U, utilde, atmp, nlsolver) = cache
+    (; z, tmp, ztmp) = nlsolver
+    alg = unwrap_alg(integrator, true)
+    cnt = integrator.iter
+    k = 2
+    if cnt == 1 || cnt == 2
+        κ = zero(alg.kappa)
+        γ₁ = Int64(1) // 1
+        γ₂ = Int64(1) // 1
+    else
+        κ = alg.kappa
+        γ₁ = Int64(1) // 1
+        γ₂ = Int64(1) // 1 + Int64(1) // 2
+    end
+
+    # `D` stays at the step size its differences were formed with, so a change of
+    # `dt` scales them through `R * U` instead of rebuilding them from the
+    # solution history, and a rejected attempt leaves `D` untouched.
+    if cnt > 2 && dt != dtₙ₋₁
+        R!(k, dt / dtₙ₋₁, cache)
+        R .= R * U
+        @.. broadcast = false Dtmp[1] = D[1] * R[1, 1] + D[2] * R[2, 1]
+        @.. broadcast = false Dtmp[2] = D[1] * R[1, 2] + D[2] * R[2, 2]
+    else
+        @.. broadcast = false Dtmp[1] = D[1]
+        @.. broadcast = false Dtmp[2] = D[2]
+    end
+
+    β₀ = inv((1 - κ) * γ₂)
+    α₀ = 1
+
+    u₀ = uprev + Dtmp[1] + Dtmp[2]
+    ϕ = (γ₁ * Dtmp[1] + γ₂ * Dtmp[2]) * β₀
+
+    markfirststage!(nlsolver)
+
+    # initial guess
+    nlsolver.z = u₀
+
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        @.. broadcast = false tmp = (u₀ - ϕ) / (dt * β₀)
+    else
+        dz = nlsolver.cache.dz
+        @.. broadcast = false dz = u₀ - ϕ
+        mul!(ztmp, mass_matrix, dz)
+        @.. broadcast = false tmp = ztmp / (dt * β₀)
+    end
+
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = z
+
+
+    if integrator.opts.adaptive
+        if integrator.success_iter == 0
+            OrdinaryDiffEqCore.set_EEst!(integrator, one(OrdinaryDiffEqCore.get_EEst(integrator)))
+        elseif integrator.success_iter == 1
+            @.. broadcast = false utilde = (u - uprev) - ((uprev - uprev2) * dt / dtₙ₋₁)
+            calculate_residuals!(
+                atmp, utilde, uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm, t
+            )
+            OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        else
+            @.. broadcast = false D2[1] = u - uprev
+            @.. broadcast = false D2[2] = D2[1] - Dtmp[1]
+            @.. broadcast = false D2[3] = D2[2] - Dtmp[2]
+            @.. broadcast = false utilde = (κ * γ₂ + inv(k + 1)) * D2[3]
+            calculate_residuals!(
+                atmp, utilde, uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm, t
+            )
+            OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        end
+    end
+    if OrdinaryDiffEqCore.get_EEst(integrator) > one(OrdinaryDiffEqCore.get_EEst(integrator))
+        return
+    end
+
+    if integrator.success_iter == 0
+        @.. broadcast = false D[2] = false
+    else
+        @.. broadcast = false D[2] = (u - uprev) - Dtmp[1]
+    end
+    @.. broadcast = false D[1] = u - uprev
+    cache.uprev3 .= uprev2
+    cache.uprev2 .= uprev
+    cache.dtₙ₋₂ = dtₙ₋₁
+    cache.dtₙ₋₁ = dt
+    f(integrator.fsallast, u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    return
+end
+
+function initialize!(integrator, cache::QNDFConstantCache{max_order}) where {max_order}
+    integrator.kshortsize = max_order
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t) # Pre-start fsal
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    # Avoid undefined entries if k is an array of arrays
+    integrator.fsallast = zero(integrator.fsalfirst)
+    for i in 1:max_order
+        integrator.k[i] = zero(integrator.fsalfirst)
+    end
+    return nothing
+end
+
+function perform_step!(
+        integrator, cache::QNDFConstantCache{max_order},
+        repeat_step = false
+    ) where {max_order}
+    (; t, dt, uprev, u, f, p) = integrator
+    (; dtprev, order, D, U, nlsolver, γₖ) = cache
+    alg = unwrap_alg(integrator, true)
+
+    if integrator.derivative_discontinuity
+        dtprev = one(dt)
+        order = 1
+        cache.nconsteps = 0
+        cache.consfailcnt = 0
+        for i in eachindex(D)
+            D[i] = zero(D[i])
+        end
+        for i in eachindex(cache.prevD)
+            cache.prevD[i] = zero(cache.prevD[i])
+        end
+    end
+
+    k = order
+    κlist = alg.kappa
+    κ = κlist[k]
+    if cache.consfailcnt > 0
+        # Deep copy to avoid aliasing: D[i] and prevD[i] must not share arrays
+        for i in eachindex(D)
+            D[i] = copy(cache.prevD[i])
+        end
+    end
+    if dt != dtprev || cache.prevorder != k
+        ρ = dt / dtprev
+        integrator.cache.nconsteps = 0
+        (; U, R, RU) = cache
+        calc_R!(R, ρ, k)
+        mul!(RU, R, U)
+        D_new = [sum(D[i] * RU[i, j] for i in 1:k) for j in 1:k]
+        for j in 1:k
+            D[j] = D_new[j]
+        end
+    end
+
+    α₀ = 1
+    β₀ = inv((1 - κ) * γₖ[k])
+    if u isa Number
+        u₀ = sum(D[i] for i in 1:k) + uprev
+        ϕ = zero(u)
+        for i in 1:k
+            ϕ += γₖ[i] * D[i]
+        end
+    else
+        u₀ = sum(D[i] for i in 1:k) .+ uprev
+        ϕ = zero(u)
+        for i in 1:k
+            ϕ = @.. ϕ + γₖ[i] * D[i]
+        end
+    end
+    markfirststage!(nlsolver)
+    nlsolver.z = u₀
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        nlsolver.tmp = @.. (u₀ / β₀ - ϕ) / dt
+    else
+        nlsolver.tmp = mass_matrix * @.. (u₀ / β₀ - ϕ) / dt
+    end
+
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    u = z
+    dd = u - u₀
+    update_D!(D, dd, k)
+
+    if integrator.opts.adaptive
+        (; abstol, reltol, internalnorm) = integrator.opts
+        if cache.consfailcnt > 1 && mass_matrix !== I
+            # if we get repeated failure and mass_matrix !== I it's likely that
+            # there's a discontinuity on the algebraic equations
+            atmp = calculate_residuals(
+                mass_matrix * dd, uprev, u, abstol, reltol,
+                internalnorm, t
+            )
+        else
+            atmp = calculate_residuals(dd, uprev, u, abstol, reltol, internalnorm, t)
+        end
+        OrdinaryDiffEqCore.set_EEst!(integrator, error_constant(integrator, k) * internalnorm(atmp, t))
+        if k > 1
+            atmpm1 = calculate_residuals(
+                D[k],
+                uprev, u, integrator.opts.abstol,
+                integrator.opts.reltol, integrator.opts.internalnorm, t
+            )
+            cache.EEst1 = error_constant(integrator, k - 1) * internalnorm(atmpm1, t)
+        end
+        if k < max_order
+            atmpp1 = calculate_residuals(
+                D[k + 2],
+                uprev, u, abstol, reltol, internalnorm, t
+            )
+            cache.EEst2 = error_constant(integrator, k + 1) * internalnorm(atmpp1, t)
+        end
+    end
+    if OrdinaryDiffEqCore.get_EEst(integrator) <= one(OrdinaryDiffEqCore.get_EEst(integrator))
+        # Deep copy to avoid aliasing: prevD[i] must not share arrays with D[i]
+        for i in eachindex(D)
+            cache.prevD[i] = copy(D[i])
+        end
+        cache.dtprev = dt
+        cache.prevorder = k
+        if integrator.opts.dense
+            integrator.fsallast = f(u, p, t + dt)
+            OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+        end
+    end
+    if integrator.opts.calck
+        for j in 1:max_order
+            if j <= k
+                # Deep copy: k[j] must not alias D[j] since update_D! mutates in-place
+                integrator.k[j] = copy(D[j])
+            else
+                integrator.k[j] = zero(u)
+            end
+        end
+    end
+    return integrator.u = u
+end
+
+function initialize!(integrator, cache::QNDFCache{max_order}) where {max_order}
+    integrator.kshortsize = max_order
+
+    resize!(integrator.k, integrator.kshortsize)
+    for i in 1:max_order
+        integrator.k[i] = cache.dense[i]
+    end
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t) # For the interpolation, needs k at the updated point
+    return OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+end
+
+function perform_step!(
+        integrator, cache::QNDFCache{max_order},
+        repeat_step = false
+    ) where {max_order}
+    (; t, dt, uprev, u, f, p) = integrator
+    (; dtprev, order, D, nlsolver, γₖ, dd, atmp, atmpm1, atmpp1, utilde, utildem1, utildep1, ϕ, u₀) = cache
+    alg = unwrap_alg(integrator, true)
+
+    if integrator.derivative_discontinuity
+        dtprev = one(dt)
+        order = 1
+        cache.nconsteps = 0
+        cache.consfailcnt = 0
+        for d in D
+            recursivefill!(d, false)
+        end
+        for d in cache.prevD
+            recursivefill!(d, false)
+        end
+    end
+
+    k = order
+    κlist = alg.kappa
+    κ = κlist[k]
+    if cache.consfailcnt > 0
+        for i in eachindex(D)
+            copyto!(D[i], cache.prevD[i])
+        end
+    end
+    if dt != dtprev || cache.prevorder != k
+        ρ = dt / dtprev
+        cache.nconsteps = 0
+        (; R, RU, U, Dtmp) = cache
+        calc_R!(R, ρ, k)
+        mul!(RU, R, U)
+        for j in 1:k
+            fill!(Dtmp[j], zero(eltype(Dtmp[j])))
+            for i in 1:k
+                @.. broadcast = false Dtmp[j] += D[i] * RU[i, j]
+            end
+        end
+        D, Dtmp = Dtmp, D
+        cache.D = D
+        cache.Dtmp = Dtmp
+    end
+
+    α₀ = 1
+    β₀ = inv((1 - κ) * γₖ[k])
+    # D[j] contains scaled j-th derivative approximation.
+    # Thus, it’s likely that ||D[j+1]|| <= ||D[j]|| holds,
+    # we want to sum small numbers first to minimize the accumulation error.
+    # Hence, we sum it backwards.
+    @.. broadcast = false u₀ = D[k]
+    for j in (k - 1):-1:1
+        @.. broadcast = false u₀ += D[j]
+    end
+    @.. broadcast = false u₀ += uprev
+    @.. broadcast = false ϕ = zero(u)
+    for i in 1:k
+        @.. broadcast = false ϕ += γₖ[i] * D[i]
+    end
+    markfirststage!(nlsolver)
+    @.. broadcast = false nlsolver.z = u₀
+    mass_matrix = f.mass_matrix
+
+    if mass_matrix === I
+        @.. broadcast = false nlsolver.tmp = (u₀ / β₀ - ϕ) / dt
+    else
+        (; tmp2) = cache
+        @.. broadcast = false tmp2 = (u₀ / β₀ - ϕ) / dt
+        mul!(nlsolver.tmp, mass_matrix, tmp2)
+    end
+
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = z
+    @.. broadcast = false dd = u - u₀
+    update_D!(D, dd, k)
+
+
+    if integrator.opts.adaptive
+        (; abstol, reltol, internalnorm) = integrator.opts
+        if cache.consfailcnt > 1 && mass_matrix !== I
+            # if we get repeated failure and mass_matrix !== I it's likely that
+            # there's a discontinuity on the algebraic equations
+            calculate_residuals!(
+                atmp, mul!(nlsolver.tmp, mass_matrix, dd), uprev, u,
+                abstol, reltol, internalnorm, t
+            )
+        else
+            calculate_residuals!(atmp, dd, uprev, u, abstol, reltol, internalnorm, t)
+        end
+        OrdinaryDiffEqCore.set_EEst!(integrator, error_constant(integrator, k) * internalnorm(atmp, t))
+        if k > 1
+            calculate_residuals!(
+                atmpm1, D[k], uprev, u, abstol,
+                reltol, internalnorm, t
+            )
+            cache.EEst1 = error_constant(integrator, k - 1) * internalnorm(atmpm1, t)
+        end
+        if k < max_order
+            calculate_residuals!(
+                atmpp1, D[k + 2], uprev, u, abstol,
+                reltol, internalnorm, t
+            )
+            cache.EEst2 = error_constant(integrator, k + 1) * internalnorm(atmpp1, t)
+        end
+    end
+    if OrdinaryDiffEqCore.get_EEst(integrator) <= one(OrdinaryDiffEqCore.get_EEst(integrator))
+        for i in eachindex(D)
+            copyto!(cache.prevD[i], D[i])
+        end
+        cache.dtprev = dt
+        cache.prevorder = k
+        if integrator.opts.dense
+            f(integrator.fsallast, u, p, t + dt)
+            OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+        end
+    end
+    if integrator.opts.calck
+        for j in 1:length(integrator.k)
+            if j <= k
+                copyto!(integrator.k[j], D[j])
+            else
+                fill!(integrator.k[j], zero(eltype(u)))
+            end
+        end
+    end
+    return nothing
+end
+
+### MEBDF2
+function initialize!(integrator, cache::MEBDF2ConstantCache)
+    integrator.kshortsize = 2
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t) # Pre-start fsal
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    # Avoid undefined entries if k is an array of arrays
+    integrator.fsallast = zero(integrator.fsalfirst)
+    integrator.k[1] = integrator.fsalfirst
+    return integrator.k[2] = integrator.fsallast
+end
+
+@muladd function perform_step!(integrator, cache::MEBDF2ConstantCache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    nlsolver = cache.nlsolver
+    alg = unwrap_alg(integrator, true)
+    markfirststage!(nlsolver)
+
+    # initial guess
+    if alg.extrapolant == :linear
+        nlsolver.z = dt * integrator.fsalfirst
+    else # :constant
+        nlsolver.z = zero(u)
+    end
+
+    ### STEP 1
+    nlsolver.tmp = uprev
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    z₁ = nlsolver.tmp + z
+    ### STEP 2
+    nlsolver.tmp = z₁
+    nlsolver.c = 2
+    isnewton(nlsolver) && set_new_W!(nlsolver, false)
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    z₂ = z₁ + z
+    ### STEP 3
+    tmp2 = 0.5uprev + z₁ - 0.5z₂
+    nlsolver.tmp = tmp2
+    nlsolver.c = 1
+    isnewton(nlsolver) && set_new_W!(nlsolver, false)
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    u = tmp2 + z
+
+    ### finalize
+    integrator.fsallast = f(u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.u = u
+end
+
+function initialize!(integrator, cache::MEBDF2Cache)
+    integrator.kshortsize = 2
+
+    resize!(integrator.k, integrator.kshortsize)
+    integrator.k[1] = integrator.fsalfirst
+    integrator.k[2] = integrator.fsallast
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t) # For the interpolation, needs k at the updated point
+    return OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+end
+
+@muladd function perform_step!(integrator, cache::MEBDF2Cache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    (; z₁, z₂, tmp2, nlsolver) = cache
+    z = nlsolver.z
+    mass_matrix = integrator.f.mass_matrix
+    alg = unwrap_alg(integrator, true)
+    markfirststage!(nlsolver)
+
+    # initial guess
+    if alg.extrapolant == :linear
+        @.. broadcast = false z = dt * integrator.fsalfirst
+    else # :constant
+        z .= zero(eltype(u))
+    end
+
+    ### STEP 1
+    nlsolver.tmp = uprev
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false z₁ = uprev + z
+    ### STEP 2
+    nlsolver.tmp = z₁
+    nlsolver.c = 2
+    isnewton(nlsolver) && set_new_W!(nlsolver, false)
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false z₂ = z₁ + z
+    ### STEP 3
+    # z .= zero(eltype(u))
+    @.. broadcast = false tmp2 = 0.5uprev + z₁ - 0.5z₂
+    nlsolver.tmp = tmp2
+    nlsolver.c = 1
+    isnewton(nlsolver) && set_new_W!(nlsolver, false)
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = tmp2 + z
+
+    ### finalize
+    f(integrator.fsallast, u, p, t + dt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+end
+
+function _fbdf_time_filter(
+        integrator, cache::FBDFConstantCache{max_order}, u_bdf, k
+    ) where {max_order}
+    (; ts, u_history, ts_asc, α_bar, dd_c, dd_D) = cache
+    (; t, dt, f, p, uprev) = integrator
+    (; abstol, reltol, internalnorm, adaptive) = integrator.opts
+    cache.filter_order = 0
+    tdt = t + dt
+    if k <= 4 && cache.iters_from_event >= k
+        n = k + 2
+        _filt_fill_ts_asc!(ts_asc, ts, tdt, n)
+        backdiff!(dd_c, dd_D, ts_asc, n)
+        η = _fbdf_filter_weight(dd_c, ts_asc, n, k, dt, cache.bdf_coeffs)
+        δ = _filt_divided_diff(dd_c, n, n, u_bdf, u_history)
+        est = @.. broadcast = false -η * δ
+        y_hi = @.. broadcast = false u_bdf + est
+        if !adaptive
+            cache.filter_order = min(k + 1, max_order)
+            y = k < max_order ? y_hi : u_bdf
+            OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+            return y, f(y, p, tdt)
+        end
+        err = internalnorm(calculate_residuals(est, uprev, u_bdf, abstol, reltol, internalnorm, t), t)
+        f_hi = f(y_hi, p, tdt)
+        OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+        _filt_bdf_coefficients!(α_bar, dd_c, ts_asc, n, k + 1)
+        res = _filt_bdf_residual(α_bar, n, y_hi, u_history, f_hi)
+        est_hi = @.. broadcast = false res / α_bar[n]
+        err_hi = internalnorm(calculate_residuals(est_hi, uprev, y_hi, abstol, reltol, internalnorm, t), t)
+        y_lo = u_bdf
+        err_lo = oftype(err, Inf)
+        if k == 3
+            w = bdf3stab_coeff(dd_c, n)
+            δ3 = _filt_divided_diff(dd_c, 4, n, u_bdf, u_history)
+            est_lo = @.. broadcast = false w * δ3
+            y_lo = @.. broadcast = false u_bdf + est_lo
+            err_lo = internalnorm(calculate_residuals(est_lo, uprev, y_lo, abstol, reltol, internalnorm, t), t)
+        end
+        selected = _fbdf_select_filter!(integrator, cache, k, max_order, err, err_hi, err_lo)
+        selected == k + 1 && return y_hi, f_hi
+        y = selected < k ? y_lo : u_bdf
+        OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+        return y, f(y, p, tdt)
+    end
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    return u_bdf, f(u_bdf, p, tdt)
+end
+
+function initialize!(integrator, cache::FBDFConstantCache{max_order}) where {max_order}
+    integrator.kshortsize = max_order + 1
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t) # Pre-start fsal
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    # k[1..max_order+1] = solution values at fixed Chebyshev reference nodes
+    integrator.fsallast = zero(integrator.fsalfirst)
+    for i in 1:(max_order + 1)
+        integrator.k[i] = zero(integrator.fsalfirst)
+    end
+
+    derivative_discontinuity = integrator.derivative_discontinuity
+    integrator.derivative_discontinuity = true
+    reinitFBDF!(integrator, cache)
+    return integrator.derivative_discontinuity = derivative_discontinuity
+end
+
+function perform_step!(
+        integrator, cache::FBDFConstantCache{max_order},
+        repeat_step = false
+    ) where {max_order}
+    reinitFBDF!(integrator, cache)
+    (;
+        ts, u_history, order, u_corrector, bdf_coeffs, r, nlsolver,
+        ts_tmp, iters_from_event, nconsteps,
+    ) = cache
+    (; t, dt, u, f, p, uprev) = integrator
+
+    tdt = t + dt
+    k = order
+
+    # Predictor: evaluate Lagrange interpolant through u_history at Θ=1
+    # using actual (variable) theta nodes. No need to fill integrator.k.
+    n_pred = k + 1
+    pred_thetas = Vector{typeof(t)}(undef, n_pred)
+    u₀ = zero(u)
+    if iters_from_event >= 1
+        for j in 1:n_pred
+            pred_thetas[j] = (ts[j] - t) / dt
+        end
+        u₀ = _eval_lagrange_oop(one(t), pred_thetas, u_history, n_pred)
+    else
+        u₀ = u
+    end
+    markfirststage!(nlsolver)
+
+    nlsolver.z = u₀
+    mass_matrix = f.mass_matrix
+
+    # Corrector: evaluate Lagrange interpolant at equidistant past points
+    if u isa Number
+        fill!(u_corrector, zero(eltype(u)))
+    else
+        for i in eachindex(u_corrector)
+            u_corrector[i] = zero(u_corrector[i])
+        end
+    end
+    if iters_from_event >= 1
+        for i in 1:(k - 1)
+            u_corrector[i] = _eval_lagrange_oop(
+                oftype(t, -i), pred_thetas, u_history, n_pred
+            )
+        end
+    end
+    if u isa Number
+        tmp = -uprev * bdf_coeffs[k, 2]
+        for i in 1:(k - 1)
+            tmp -= u_corrector[i] * bdf_coeffs[k, i + 2]
+        end
+    else
+        tmp = -uprev * bdf_coeffs[k, 2]
+        for i in 1:(k - 1)
+            tmp = @.. tmp - u_corrector[i] * bdf_coeffs[k, i + 2]
+        end
+    end
+
+    if mass_matrix === I
+        nlsolver.tmp = tmp / dt
+    else
+        nlsolver.tmp = mass_matrix * tmp / dt
+    end
+    β₀ = inv(bdf_coeffs[k, 1])
+    α₀ = 1 #bdf_coeffs[k,1]
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+
+    u = z
+
+    for j in 2:k
+        r[j] = (1 - j)
+        for i in 2:(k + 1)
+            r[j] *= ((tdt - j * dt) - ts[i]) / (i * dt)
+        end
+    end
+
+    terkp1 = (u - u₀)
+    for j in 1:(k + 1)
+        terkp1 *= j * dt / (tdt - ts[j])
+    end
+
+    lte = -1 / (1 + k)
+    for j in 2:k
+        lte -= bdf_coeffs[k, j] * r[j]
+    end
+    lte *= terkp1
+
+    if integrator.opts.adaptive
+        for i in 1:(k + 1)
+            ts_tmp[i + 1] = ts[i]
+        end
+        ts_tmp[1] = tdt
+        atmp = calculate_residuals(
+            lte, uprev, u, integrator.opts.abstol,
+            integrator.opts.reltol, integrator.opts.internalnorm, t
+        )
+        OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+
+        terk = estimate_terk(integrator, cache, k + 1, Val(max_order), u)
+        fd_weights = calc_finite_difference_weights(ts_tmp, tdt, k, Val(max_order))
+        terk = @.. broadcast = false fd_weights[1, k + 1] * u
+        if u isa Number
+            for i in 2:(k + 1)
+                terk += fd_weights[i, k + 1] * u_history[i - 1]
+            end
+            terk *= abs(dt^(k))
+        else
+            for i in 2:(k + 1)
+                terk = @.. terk + fd_weights[i, k + 1] * u_history[i - 1]
+            end
+            terk *= abs(dt^(k))
+        end
+
+        atmp = calculate_residuals(
+            terk, uprev, u, integrator.opts.abstol,
+            integrator.opts.reltol, integrator.opts.internalnorm, t
+        )
+        cache.terk = integrator.opts.internalnorm(atmp, t)
+
+        if k > 1
+            terkm1 = estimate_terk(integrator, cache, k, Val(max_order), u)
+            atmp = calculate_residuals(
+                terkm1, uprev, u,
+                integrator.opts.abstol, integrator.opts.reltol,
+                integrator.opts.internalnorm, t
+            )
+            cache.terkm1 = integrator.opts.internalnorm(atmp, t)
+        end
+        if k > 2
+            terkm2 = estimate_terk(integrator, cache, k - 1, Val(max_order), u)
+            atmp = calculate_residuals(
+                terkm2, uprev, u,
+                integrator.opts.abstol, integrator.opts.reltol,
+                integrator.opts.internalnorm, t
+            )
+            cache.terkm2 = integrator.opts.internalnorm(atmp, t)
+        end
+        if cache.qwait == 0 && k < max_order
+            atmp = calculate_residuals(
+                terkp1, uprev, u,
+                integrator.opts.abstol, integrator.opts.reltol,
+                integrator.opts.internalnorm, t
+            )
+            cache.terkp1 = integrator.opts.internalnorm(atmp, t)
+        else
+            cache.terkp1 = zero(cache.terk)
+        end
+    end
+
+    if cache.time_filter
+        u, integrator.fsallast = _fbdf_time_filter(integrator, cache, u, k)
+    else
+        integrator.fsallast = f(u, p, tdt)
+        OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    end
+    if integrator.opts.calck
+        # Store dense output: resample Lagrange interpolant at Chebyshev nodes
+        dense_order = cache.time_filter ? max(k, cache.filter_order) : k
+        n = min(dense_order + 1, max_order + 1)
+        calck_thetas = Vector{typeof(t)}(undef, n)
+        calck_thetas[1] = one(t)
+        for j in 1:min(dense_order, max_order)
+            calck_thetas[1 + j] = (ts[j] - t) / dt
+        end
+        calck_values = Vector{typeof(u)}(undef, n)
+        calck_values[1] = u isa Number ? u : copy(u)
+        for j in 1:min(dense_order, max_order)
+            calck_values[1 + j] = u isa Number ? u_history[j] : copy(u_history[j])
+        end
+        _resample_at_chebyshev!(integrator.k, calck_values, calck_thetas, n)
+        for j in (n + 1):(max_order + 1)
+            integrator.k[j] = zero(u)
+        end
+    end
+    _fbdf_finish_fixed_step!(integrator, cache)
+    return integrator.u = u
+end
+
+function _fbdf_time_filter!(
+        integrator, cache::FBDFCache{max_order}, k
+    ) where {max_order}
+    (; ts, u_history, ts_asc, α_bar, dd_c, dd_D, atmp) = cache
+    (; t, dt, u, f, p, uprev) = integrator
+    (; abstol, reltol, internalnorm, adaptive) = integrator.opts
+    cache.filter_order = 0
+    k <= 4 && cache.iters_from_event >= k || return false
+    tdt = t + dt
+    # These error-estimation buffers are no longer live after the nonlinear solve.
+    y_lo = cache.u₀
+    y_hi = cache.terk_tmp
+    work = cache.terkp1_tmp
+    n = k + 2
+    _filt_fill_ts_asc!(ts_asc, ts, tdt, n)
+    backdiff!(dd_c, dd_D, ts_asc, n)
+    η = _fbdf_filter_weight(dd_c, ts_asc, n, k, dt, cache.bdf_coeffs)
+    _filt_divided_diff!(work, dd_c, n, n, u, u_history)
+    @.. broadcast = false work = -η * work
+    @.. broadcast = false y_hi = u + work
+    if !adaptive
+        cache.filter_order = min(k + 1, max_order)
+        k < max_order || return false
+        @.. broadcast = false u = y_hi
+        f(integrator.fsallast, u, p, tdt)
+        OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+        return true
+    end
+    calculate_residuals!(atmp, work, uprev, u, abstol, reltol, internalnorm, t)
+    err = internalnorm(atmp, t)
+    f(integrator.fsallast, y_hi, p, tdt)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    _filt_bdf_coefficients!(α_bar, dd_c, ts_asc, n, k + 1)
+    _filt_bdf_residual!(work, α_bar, n, y_hi, u_history, integrator.fsallast)
+    @.. broadcast = false work = work / α_bar[n]
+    calculate_residuals!(atmp, work, uprev, y_hi, abstol, reltol, internalnorm, t)
+    err_hi = internalnorm(atmp, t)
+    err_lo = oftype(err, Inf)
+    if k == 3
+        w = bdf3stab_coeff(dd_c, n)
+        _filt_divided_diff!(work, dd_c, 4, n, u, u_history)
+        @.. broadcast = false work = w * work
+        @.. broadcast = false y_lo = u + work
+        calculate_residuals!(atmp, work, uprev, y_lo, abstol, reltol, internalnorm, t)
+        err_lo = internalnorm(atmp, t)
+    end
+    selected = _fbdf_select_filter!(integrator, cache, k, max_order, err, err_hi, err_lo)
+    if selected == k + 1
+        @.. broadcast = false u = y_hi
+        return true
+    elseif selected < k
+        @.. broadcast = false u = y_lo
+        f(integrator.fsallast, u, p, tdt)
+        OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+        return true
+    end
+    return false
+end
+
+function initialize!(integrator, cache::FBDFCache{max_order}) where {max_order}
+    integrator.kshortsize = max_order + 1
+
+    resize!(integrator.k, integrator.kshortsize)
+    for i in 1:(max_order + 1)
+        integrator.k[i] = cache.dense[i]
+    end
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+
+    derivative_discontinuity = integrator.derivative_discontinuity
+    integrator.derivative_discontinuity = true
+    reinitFBDF!(integrator, cache)
+    return integrator.derivative_discontinuity = derivative_discontinuity
+end
+
+function perform_step!(
+        integrator, cache::FBDFCache{max_order},
+        repeat_step = false
+    ) where {max_order}
+    reinitFBDF!(integrator, cache)
+    (; ts, u_history, order, u_corrector, bdf_coeffs, r, nlsolver, terk_tmp, terkp1_tmp, atmp, tmp, u₀, ts_tmp, equi_ts, dense) = cache
+    (; t, dt, u, f, p, uprev) = integrator
+
+    k = order
+    tdt = t + dt
+
+    # Predictor: evaluate Lagrange interpolant through u_history at Θ=1
+    # using actual (variable) theta nodes. No need to fill integrator.k.
+    n_pred = k + 1
+    @.. broadcast = false u₀ = zero(u)
+    if cache.iters_from_event >= 1
+        for j in 1:n_pred
+            equi_ts[j] = (ts[j] - t) / dt
+        end
+        _eval_lagrange_iip!(u₀, one(t), equi_ts, u_history, n_pred)
+    else
+        @.. broadcast = false u₀ = u
+    end
+    markfirststage!(nlsolver)
+    @.. broadcast = false nlsolver.z = u₀
+    mass_matrix = f.mass_matrix
+
+    # Corrector: evaluate Lagrange interpolant at equidistant past points
+    for h in u_corrector
+        fill!(h, zero(eltype(h)))
+    end
+    if cache.iters_from_event >= 1
+        for i in 1:(k - 1)
+            _eval_lagrange_iip!(u_corrector[i], oftype(t, -i), equi_ts, u_history, n_pred)
+        end
+    end
+    @.. broadcast = false tmp = -uprev * bdf_coeffs[k, 2]
+    for i in 1:(k - 1)
+        @.. broadcast = false tmp -= u_corrector[i] * bdf_coeffs[k, i + 2]
+    end
+
+    invdt = inv(dt)
+    if mass_matrix === I
+        @.. broadcast = false nlsolver.tmp = tmp * invdt
+    else
+        @.. broadcast = false terkp1_tmp = tmp * invdt
+        mul!(nlsolver.tmp, mass_matrix, terkp1_tmp)
+    end
+
+    β₀ = inv(bdf_coeffs[k, 1])
+    α₀ = 1
+    nlsolver.γ = β₀
+    nlsolver.α = α₀
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = z
+
+
+    #This is to correct the interpolation error of error estimation.
+    for j in 2:k
+        r[j] = (1 - j)
+        for i in 2:(k + 1)
+            r[j] *= ((tdt - j * dt) - ts[i]) / (i * dt)
+        end
+    end
+
+    #for terkp1, we could use corrector and predictor to make an estimation.
+    @.. broadcast = false terkp1_tmp = (u - u₀)
+    for j in 1:(k + 1)
+        @.. broadcast = false terkp1_tmp *= j * dt / (tdt - ts[j])
+    end
+
+    lte = -1 / (1 + k)
+    for j in 2:k
+        lte -= bdf_coeffs[k, j] * r[j]
+    end
+    @.. broadcast = false terk_tmp = lte * terkp1_tmp
+    if integrator.opts.adaptive
+        (; abstol, reltol, internalnorm) = integrator.opts
+        for i in 1:(k + 1)
+            ts_tmp[i + 1] = ts[i]
+        end
+        ts_tmp[1] = tdt
+        calculate_residuals!(
+            atmp, terk_tmp, uprev, u, abstol, reltol,
+            internalnorm, t
+        )
+        OrdinaryDiffEqCore.set_EEst!(integrator, integrator.opts.internalnorm(atmp, t))
+        estimate_terk!(integrator, cache, k + 1, Val(max_order))
+        calculate_residuals!(
+            atmp, terk_tmp, uprev, u, abstol, reltol,
+            internalnorm, t
+        )
+        cache.terk = integrator.opts.internalnorm(atmp, t)
+
+        if k > 1
+            estimate_terk!(integrator, cache, k, Val(max_order))
+            calculate_residuals!(
+                atmp, terk_tmp, uprev, u,
+                integrator.opts.abstol, integrator.opts.reltol,
+                integrator.opts.internalnorm, t
+            )
+            cache.terkm1 = integrator.opts.internalnorm(atmp, t)
+        end
+        if k > 2
+            estimate_terk!(integrator, cache, k - 1, Val(max_order))
+            calculate_residuals!(
+                atmp, terk_tmp, uprev, u,
+                integrator.opts.abstol, integrator.opts.reltol,
+                integrator.opts.internalnorm, t
+            )
+            cache.terkm2 = integrator.opts.internalnorm(atmp, t)
+        end
+        if cache.qwait == 0 && k < max_order
+            calculate_residuals!(
+                atmp, terkp1_tmp, uprev, u,
+                integrator.opts.abstol, integrator.opts.reltol,
+                integrator.opts.internalnorm, t
+            )
+            cache.terkp1 = integrator.opts.internalnorm(atmp, t)
+        else
+            cache.terkp1 = zero(cache.terkp1)
+        end
+    end
+
+    # The filter moves u off the nonlinear solution, so it has to evaluate f
+    # itself; otherwise fsallast follows algebraically from the NL solver
+    # convergence condition:
+    #   f(u) = α*invγdt*u - nlsolver.tmp           (mass_matrix === I)
+    #   f(u) = α*invγdt*(M*u) - nlsolver.tmp       (mass_matrix !== I)
+    # This avoids calling f() through FunctionWrapper dispatch which can allocate.
+    if !(cache.time_filter && _fbdf_time_filter!(integrator, cache, k))
+        invγdt = inv(nlsolver.γ * dt)
+        if mass_matrix === I
+            @.. integrator.fsallast =
+                nlsolver.α * invγdt * u - nlsolver.tmp
+        else
+            mul!(terkp1_tmp, mass_matrix, u)
+            @.. integrator.fsallast =
+                nlsolver.α * invγdt * terkp1_tmp - nlsolver.tmp
+        end
+    end
+    if integrator.opts.calck
+        # Store dense output: resample Lagrange interpolant at Chebyshev nodes.
+        # Use _resample_at_chebyshev_direct_iip! to read from u and u_history
+        # directly, avoiding scratch buffer type mismatches during AD.
+        dense_order = cache.time_filter ? max(k, cache.filter_order) : k
+        n = min(dense_order + 1, max_order + 1)
+        equi_ts[1] = one(eltype(equi_ts))
+        for j in 1:min(dense_order, max_order)
+            equi_ts[1 + j] = (ts[j] - t) / dt
+        end
+        _resample_at_chebyshev_direct_iip!(integrator.k, u, u_history, equi_ts, n)
+        for j in (n + 1):(max_order + 1)
+            fill!(integrator.k[j], zero(eltype(u)))
+        end
+    end
+    _fbdf_finish_fixed_step!(integrator, cache)
+    return nothing
+end
+
+############################################ NordsieckBDF
+# ================================================================= perform_step!
+function initialize!(integrator, cache::NordsieckBDFCache)
+    integrator.kshortsize = cache.max_order_int + 1
+    resize!(integrator.k, integrator.kshortsize)
+    @inbounds for i in 1:(integrator.kshortsize)
+        integrator.k[i] = zero(integrator.u)
+    end
+    integrator.f(integrator.fsalfirst, integrator.uprev, integrator.p, integrator.t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    return nothing
+end
+
+function initialize!(integrator, cache::NordsieckBDFConstantCache)
+    integrator.kshortsize = cache.max_order_int + 1
+    integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
+    @inbounds for i in 1:(integrator.kshortsize)
+        integrator.k[i] = zero(integrator.u)
+    end
+    integrator.fsalfirst = integrator.f(integrator.uprev, integrator.p, integrator.t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    return nothing
+end
+
+# Store the Nordsieck columns for dense output. Unused columns stay zero, so the
+# interpolant can sum all of them without knowing the order at evaluation time.
+@inline function _nordsieck_store_k!(integrator, cache, ::Val{true})
+    @inbounds for j in 0:(cache.max_order_int)
+        if j <= cache.order
+            copyto!(integrator.k[j + 1], cache.zn[j + 1])
+        else
+            fill!(integrator.k[j + 1], zero(eltype(integrator.u)))
+        end
+    end
+    return nothing
+end
+@inline function _nordsieck_store_k!(integrator, cache, ::Val{false})
+    @inbounds for j in 0:(cache.max_order_int)
+        integrator.k[j + 1] = j <= cache.order ? cache.zn[j + 1] : zero(integrator.u)
+    end
+    return nothing
+end
+
+function perform_step!(integrator, cache::NordsieckBDFCache, repeat_step = false)
+    (; t, dt, uprev, u, f, p) = integrator
+    iip = Val(true)
+    nlsolver = cache.nlsolver
+    nordsieck_needs_start(integrator, cache) && nordsieck_start!(integrator, cache, iip)
+
+    nordsieck_prepare!(integrator, cache, iip)
+    nordsieck_predict!(cache, iip)
+    nordsieck_set_coeffs!(cache, dt)
+
+    zn = cache.zn
+    copyto!(cache.ypred, zn[1])
+    l1 = cache.l[2]
+
+    # (l1/dt) M u - f(u) = (l1*ypred - zn[1])/dt  =>  gamma = 1/l1, alpha = 1
+    mass_matrix = f.mass_matrix
+    @.. broadcast = false cache.tmp = (l1 * cache.ypred - zn[2]) / dt
+    if mass_matrix === I
+        copyto!(nlsolver.tmp, cache.tmp)
+    else
+        mul!(nlsolver.tmp, mass_matrix, cache.tmp)
+    end
+    markfirststage!(nlsolver)
+    copyto!(nlsolver.z, cache.ypred)
+    nlsolver.γ = inv(l1)
+    nlsolver.α = one(l1)
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    @.. broadcast = false u = z
+    cache.step_limiter!(u, integrator, p, t + dt)
+
+    @.. broadcast = false cache.acor = u - cache.ypred
+    if integrator.opts.adaptive
+        OrdinaryDiffEqCore.set_EEst!(
+            integrator,
+            cache.tq[2] * _nord_wrms(integrator, cache, cache.acor, uprev, u)
+        )
+    end
+
+    # zn[1] is h*f(u) exactly once the corrector has converged, so fsallast is free
+    @.. broadcast = false integrator.fsallast = (zn[2] + l1 * cache.acor) / dt
+    _nordsieck_finish_fixed!(integrator, cache, iip)
+    return nothing
+end
+
+function perform_step!(integrator, cache::NordsieckBDFConstantCache, repeat_step = false)
+    (; t, dt, uprev, f, p) = integrator
+    iip = Val(false)
+    nlsolver = cache.nlsolver
+    nordsieck_needs_start(integrator, cache) && nordsieck_start!(integrator, cache, iip)
+
+    nordsieck_prepare!(integrator, cache, iip)
+    nordsieck_predict!(cache, iip)
+    nordsieck_set_coeffs!(cache, dt)
+
+    zn = cache.zn
+    cache.ypred = zn[1]
+    l1 = cache.l[2]
+
+    mass_matrix = f.mass_matrix
+    tmp = @.. (l1 * cache.ypred - zn[2]) / dt
+    nlsolver.tmp = mass_matrix === I ? tmp : mass_matrix * tmp
+    markfirststage!(nlsolver)
+    nlsolver.z = cache.ypred
+    nlsolver.γ = inv(l1)
+    nlsolver.α = one(l1)
+    nlsolver.method = COEFFICIENT_MULTISTEP
+    z = nlsolve!(nlsolver, integrator, cache, repeat_step)
+    nlsolvefail(nlsolver) && return
+    u = z
+
+    cache.acor = @.. u - cache.ypred
+    if integrator.opts.adaptive
+        OrdinaryDiffEqCore.set_EEst!(
+            integrator,
+            cache.tq[2] * _nord_wrms(integrator, cache, cache.acor, uprev, u)
+        )
+    end
+    integrator.fsallast = @.. (zn[2] + l1 * cache.acor) / dt
+    integrator.u = u
+    _nordsieck_finish_fixed!(integrator, cache, iip)
+    return nothing
+end
+
+"""
+    nordsieck_stald!(cache, integrator, u, uprev, dsm)
+
+CVODE `cvBDFStab`: feed the stability-limit detector the scaled derivative norms
+
+    sqm2 = (q-1)! * ‖zn[q-1]‖,  sqm1 = (q-1)! * q * ‖zn[q]‖,
+    sq   = (q-1)! * q * (q+1) * acnrm / tq[5]
+
+and return whether the order must be reduced. BDF orders 3–5 are only α-stable, so
+eigenvalues near the imaginary axis can destabilise the integration at high order;
+this detects that from the history and drops the order. Off by default, as in CVODE.
+"""
+function nordsieck_stald!(cache, integrator, u, uprev, dsm)
+    cache.stald.enabled || return false
+    q = cache.order
+    q < 3 && return false
+    T = typeof(cache.eta)
+    fact = one(T)
+    for i in 1:(q - 1)
+        fact *= i
+    end
+    acnrm = dsm / max(cache.tq[2], eps(T))
+    sq = fact * q * (q + 1) * acnrm / max(cache.tq[5], eps(T))
+    sqm1 = fact * q * _nord_wrms(integrator, cache, cache.zn[q + 1], uprev, u)
+    sqm2 = fact * _nord_wrms(integrator, cache, cache.zn[q], uprev, u)
+    stald_collect_data!(cache.stald, q, sqm2, sqm1, sq)
+    return stald_check!(cache.stald, q)
+end

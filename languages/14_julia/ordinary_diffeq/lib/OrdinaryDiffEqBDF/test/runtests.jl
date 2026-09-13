@@ -1,0 +1,49 @@
+using Pkg
+using SciMLTesting
+using SafeTestsets
+
+const TEST_GROUP = get(ENV, "GROUP", "ALL")
+
+function activate_gpu_env()
+    Pkg.activate(joinpath(@__DIR__, "gpu"))
+    return Pkg.instantiate()
+end
+
+function activate_qa_env()
+    return activate_group_env(joinpath(@__DIR__, "qa"); parent = [dirname(@__DIR__), joinpath(@__DIR__, "..", "..", "..")])
+end
+
+# Run GPU tests
+if TEST_GROUP == "GPU"
+    activate_gpu_env()
+    @time @safetestset "BDF Solvers GPU" include("gpu/bdf_solvers.jl")
+end
+
+# Run functional tests
+if TEST_GROUP == "Core" || TEST_GROUP == "ALL"
+    @time @safetestset "DAE Convergence Tests" include("dae_convergence_tests.jl")
+    @time @safetestset "DAE AD Tests" include("dae_ad_tests.jl")
+    @time @safetestset "DAE Event Tests" include("dae_event.jl")
+    @time @safetestset "DAE derivative_discontinuity! Tests" include("dae_derivative_discontinuity_tests.jl")
+    @time @safetestset "DAE Initialization Tests" include("dae_initialization_tests.jl")
+    @time @safetestset "DAE Nonlinear Solve Path Tests" include("dae_nlsolve_path_tests.jl")
+
+    @time @safetestset "BDF Inference Tests" include("inference_tests.jl")
+    @time @safetestset "BDF Convergence Tests" include("bdf_convergence_tests.jl")
+    @time @safetestset "BDF Regression Tests" include("bdf_regression_tests.jl")
+    @time @safetestset "BDF Time Reversal Tests" include("bdf_time_reversal_tests.jl")
+    @time @safetestset "FBDF Time Filter Tests" include("fbdf_time_filter_tests.jl")
+    @time @safetestset "FBDF Filter Regression Tests" include("fbdf_filter_regression_tests.jl")
+    @time @safetestset "Nordsieck BDF Tests" include("nordsieck_tests.jl")
+    @time @safetestset "LHL Factorization Tests" include("lhl_factorization_tests.jl")
+end
+
+# Run QA tests (AllocCheck, JET, Aqua) - skip on pre-release Julia
+# Allocation tests must run before JET because JET's static analysis
+# invalidates compiled code and causes spurious runtime allocations.
+if (TEST_GROUP == "QA" || TEST_GROUP == "ALL") && isempty(VERSION.prerelease)
+    activate_qa_env()
+    @time @safetestset "Allocation Tests" include("qa/allocation_tests.jl")
+    @time @safetestset "JET Tests" include("qa/jet.jl")
+    @time @safetestset "Aqua" include("qa/qa.jl")
+end
