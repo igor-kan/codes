@@ -1,0 +1,12 @@
+def bellman_ford(edges, n, src):
+    dist = [float("inf")] * n
+    dist[src] = 0
+    for _ in range(n - 1):
+        for u, v, w in edges:
+            if dist[u] + w < dist[v]:
+                dist[v] = dist[u] + w
+    # negative-cycle check
+    for u, v, w in edges:
+        if dist[u] + w < dist[v]:
+            raise ValueError("Negative cycle detected")
+    return dist
