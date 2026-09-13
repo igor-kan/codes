@@ -1,0 +1,772 @@
+//===--- AvailabilityContext.cpp - Swift Availability Structures ----------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
+#include "swift/AST/AvailabilityContext.h"
+#include "swift/AST/ASTContext.h"
+#include "swift/AST/AvailabilityContextStorage.h"
+#include "swift/AST/AvailabilityRestriction.h"
+#include "swift/AST/AvailabilityScope.h"
+#include "swift/AST/Decl.h"
+#include "swift/AST/Module.h"
+#include "swift/AST/SourceFile.h"
+#include "swift/Basic/Assertions.h"
+
+using namespace swift;
+
+struct AvailabilityDomainInfoComparator {
+  bool operator()(const AvailabilityContext::DomainInfo &lhs,
+                  const AvailabilityContext::DomainInfo &rhs) const {
+    StableAvailabilityDomainComparator domainComparator;
+    return domainComparator(lhs.getDomain(), rhs.getDomain());
+  }
+};
+
+static bool constrainBool(bool &existing, bool other) {
+  if (existing || !other)
+    return false;
+  existing = other;
+  return true;
+}
+
+static bool constrainRange(AvailabilityRange &existing,
+                           const AvailabilityRange &other) {
+  if (!other.isContainedIn(existing))
+    return false;
+
+  existing = other;
+  return true;
+}
+
+/// Returns true if `domainInfos` will be constrained by merging the domain
+/// availability represented by `otherDomainInfo`. Additionally, this function
+/// has a couple of side-effects:
+///
+///   - If any existing domain availability ought to be constrained by
+///     `otherDomainInfo` then that value will be updated in place.
+///   - If any existing value in `domainInfos` should be replaced when
+///     `otherDomainInfo` is added, then that existing value is removed
+///     and `otherDomainInfo` is appended to `domainInfosToAdd`.
+///
+static bool constrainDomainInfos(
+    AvailabilityContext::DomainInfo otherDomainInfo,
+    llvm::SmallVectorImpl<AvailabilityContext::DomainInfo> &domainInfos,
+    llvm::SmallVectorImpl<AvailabilityContext::DomainInfo> &domainInfosToAdd) {
+  bool isConstrained = false;
+  bool shouldAdd = true;
+  auto otherDomain = otherDomainInfo.getDomain();
+  auto end = domainInfos.rend();
+
+  // Iterate over domainInfos in reverse order to allow items to be removed
+  // during iteration.
+  for (auto iter = domainInfos.rbegin(); iter != end; ++iter) {
+    auto &domainInfo = *iter;
+    auto domain = domainInfo.getDomain();
+
+    // We found an existing available range for the domain. Constrain it if
+    // necessary.
+    if (domain == otherDomain) {
+      shouldAdd = false;
+      isConstrained |= domainInfo.constrainRange(otherDomainInfo.getRange());
+      continue;
+    }
+
+    // Check whether an existing unavailable domain contains the domain that
+    // would be added. If so, there's nothing to do because the availability of
+    // the domain is already as constrained as it can be.
+    if (domainInfo.isUnavailable() && domain.contains(otherDomain)) {
+      DEBUG_ASSERT(!isConstrained);
+      return false;
+    }
+
+    // If the domain that will be added is unavailable, check whether the
+    // existing domain is contained within it. If it is, availability for the
+    // existing domain should be removed because it has been superseded.
+    if (otherDomainInfo.isUnavailable() && otherDomain.contains(domain)) {
+      domainInfos.erase((iter + 1).base());
+      isConstrained = true;
+    }
+  }
+
+  // If the new domain availability isn't already covered by an item in
+  // `domainInfos`, then it needs to be added. Defer adding the new domain
+  // availability until later when the entire set of domain infos can be
+  // re-sorted once.
+  if (shouldAdd) {
+    domainInfosToAdd.push_back(otherDomainInfo);
+    return true;
+  }
+
+  return isConstrained;
+}
+
+/// Constrains `domainInfos` by merging them with `otherDomainInfos`. Returns
+/// true if any changes were made to `domainInfos`.
+static bool constrainDomainInfos(
+    llvm::SmallVectorImpl<AvailabilityContext::DomainInfo> &domainInfos,
+    llvm::ArrayRef<AvailabilityContext::DomainInfo> otherDomainInfos) {
+  bool isConstrained = false;
+  llvm::SmallVector<AvailabilityContext::DomainInfo, 4> domainInfosToAdd;
+  for (auto otherDomainInfo : otherDomainInfos) {
+    isConstrained |=
+        constrainDomainInfos(otherDomainInfo, domainInfos, domainInfosToAdd);
+  }
+
+  if (!isConstrained)
+    return false;
+
+  // Add the new domains and then re-sort.
+  for (auto domainInfo : domainInfosToAdd)
+    domainInfos.push_back(domainInfo);
+
+  llvm::sort(domainInfos, AvailabilityDomainInfoComparator());
+  return true;
+}
+
+bool AvailabilityContext::DomainInfo::constrainRange(
+    const AvailabilityRange &otherRange) {
+  return ::constrainRange(range, otherRange);
+}
+
+AvailabilityContext
+AvailabilityContext::forPlatformRange(const AvailabilityRange &range,
+                                      const ASTContext &ctx) {
+  return AvailabilityContext(
+      Storage::get(range, /*isDeprecated=*/false, /*domainInfos=*/{}, ctx));
+}
+
+AvailabilityContext
+AvailabilityContext::forInliningTarget(const ASTContext &ctx) {
+  return AvailabilityContext::forPlatformRange(
+      AvailabilityRange::forInliningTarget(ctx), ctx);
+}
+
+AvailabilityContext
+AvailabilityContext::forDeploymentTarget(const ASTContext &ctx) {
+  return AvailabilityContext::forPlatformRange(
+      AvailabilityRange::forDeploymentTarget(ctx), ctx);
+}
+
+static AvailabilityContext
+contextForLocationInSourceFile(SourceLoc loc, SourceFile *sf,
+                               AvailabilityContext baseAvailability,
+                               const AvailabilityScope **refinedScope) {
+  if (!sf || loc.isInvalid())
+    return baseAvailability;
+
+  auto &ctx = sf->getASTContext();
+  auto *rootScope = AvailabilityScope::getOrBuildForSourceFile(*sf);
+  if (!rootScope)
+    return baseAvailability;
+
+  auto *scope = rootScope->findMostRefinedSubContext(loc, ctx);
+  if (!scope)
+    return baseAvailability;
+
+  if (refinedScope)
+    *refinedScope = scope;
+
+  auto availability = scope->getAvailabilityContext();
+  availability.constrainWithContext(baseAvailability, ctx);
+  return availability;
+}
+
+AvailabilityContext
+AvailabilityContext::forLocation(SourceLoc loc, const DeclContext *declContext,
+                                 const AvailabilityScope **refinedScope) {
+  auto &ctx = declContext->getASTContext();
+  SourceFile *sf =
+      loc.isValid()
+          ? declContext->getParentModule()->getSourceFileContainingLocation(loc)
+          : declContext->getParentSourceFile();
+
+  // If our source location is invalid (this may be synthesized code), climb the
+  // decl context hierarchy until we find a location that is valid, merging
+  // availability contexts on the way up.
+  //
+  // Because we are traversing decl contexts, we will miss availability scopes
+  // in synthesized code that are introduced by AST elements that are themselves
+  // not decl contexts, such as `#available(..)` and property declarations.
+  // Therefore a reference with an invalid source location that is contained
+  // inside an `#available()` and with no intermediate decl context will not be
+  // refined. For now, this is fine, but if we ever synthesize #available(),
+  // this could become a problem..
+
+  // We can assume we are running on at least the minimum inlining target.
+  auto baseAvailability = AvailabilityContext::forInliningTarget(ctx);
+  auto isInvalidLoc = [sf](SourceLoc loc) {
+    return sf ? loc.isInvalid() : true;
+  };
+  while (declContext && isInvalidLoc(loc)) {
+    const Decl *decl = declContext->getInnermostDeclarationDeclContext();
+    if (!decl)
+      break;
+
+    baseAvailability.constrainWithDecl(decl);
+    loc = decl->getLoc();
+    declContext = decl->getDeclContext();
+  }
+
+  return contextForLocationInSourceFile(loc, sf, baseAvailability,
+                                        refinedScope);
+}
+
+AvailabilityContext AvailabilityContext::forDeclSignature(const Decl *decl) {
+  // For decls with valid source locations in source files, we can query the
+  // availability scope tree.
+  auto loc = decl->getLoc();
+  auto &ctx = decl->getASTContext();
+  auto availability = forInliningTarget(ctx);
+
+  if (loc.isValid()) {
+    if (auto sf = decl->getDeclContext()
+                      ->getParentModule()
+                      ->getSourceFileContainingLocation(loc))
+      return contextForLocationInSourceFile(loc, sf, availability, nullptr);
+  }
+
+  // Otherwise, just walk the decl hierarchy to compute availability.
+  while (decl) {
+    availability.constrainWithDecl(decl);
+    decl = decl->parentDeclForAvailability();
+  }
+
+  return availability;
+}
+
+AvailabilityContext
+AvailabilityContext::forAlwaysAvailable(const ASTContext &ctx) {
+  return AvailabilityContext(Storage::get(AvailabilityRange::alwaysAvailable(),
+                                          /*isDeprecated=*/false,
+                                          /*domainInfos=*/{}, ctx));
+}
+
+AvailabilityRange AvailabilityContext::getPlatformRange() const {
+  return storage->platformRange;
+}
+
+std::optional<AvailabilityRange>
+AvailabilityContext::getAvailabilityRange(AvailabilityDomain domain,
+                                          const ASTContext &ctx) const {
+  DEBUG_ASSERT(domain.supportsContextRefinement());
+
+  if (domain.isActivePlatform(ctx))
+    return storage->platformRange;
+
+  for (auto domainInfo : storage->getDomainInfos()) {
+    if (domain == domainInfo.getDomain() && !domainInfo.isUnavailable())
+      return domainInfo.getRange();
+  }
+
+  return std::nullopt;
+}
+
+bool AvailabilityContext::isUnavailable() const {
+  for (auto domainInfo : storage->getDomainInfos()) {
+    if (domainInfo.isUnavailable())
+      return true;
+  }
+  return false;
+}
+
+bool AvailabilityContext::isUnavailableForDomain(
+    AvailabilityDomain domain) const {
+  for (auto domainInfo : storage->getDomainInfos()) {
+    if (domainInfo.isUnavailable()) {
+      if (domainInfo.getDomain().isUniversal())
+        return true;
+
+      if (domainInfo.getDomain().contains(domain))
+        return true;
+    }
+  }
+  return false;
+}
+
+bool AvailabilityContext::isDeprecated() const { return storage->isDeprecated; }
+
+void AvailabilityContext::constrainWithContext(const AvailabilityContext &other,
+                                               const ASTContext &ctx) {
+  bool isConstrained = false;
+  auto platformRange = storage->platformRange;
+  isConstrained |= constrainRange(platformRange, other.storage->platformRange);
+
+  bool isDeprecated = storage->isDeprecated;
+  isConstrained |= constrainBool(isDeprecated, other.storage->isDeprecated);
+
+  auto domainInfos = storage->copyDomainInfos();
+  isConstrained |=
+      constrainDomainInfos(domainInfos, other.storage->getDomainInfos());
+
+  if (!isConstrained)
+    return;
+
+  storage = Storage::get(platformRange, isDeprecated, domainInfos, ctx);
+}
+
+void AvailabilityContext::constrainWithPlatformRange(
+    const AvailabilityRange &range, const ASTContext &ctx) {
+  auto platformRange = storage->platformRange;
+  if (!constrainRange(platformRange, range))
+    return;
+
+  storage = Storage::get(platformRange, storage->isDeprecated,
+                         storage->getDomainInfos(), ctx);
+}
+
+void AvailabilityContext::constrainWithAvailabilityRange(
+    const AvailabilityRange &range, AvailabilityDomain domain,
+    const ASTContext &ctx) {
+  DEBUG_ASSERT(domain.supportsContextRefinement());
+
+  if (domain.isActivePlatform(ctx)) {
+    constrainWithPlatformRange(range, ctx);
+    return;
+  }
+
+  auto domainInfos = storage->copyDomainInfos();
+  if (!constrainDomainInfos(domainInfos, {DomainInfo(domain, range)}))
+    return;
+
+  storage = Storage::get(storage->platformRange, storage->isDeprecated,
+                         domainInfos, ctx);
+}
+
+void AvailabilityContext::constrainWithUnavailableDomain(
+    AvailabilityDomain domain, const ASTContext &ctx) {
+  auto domainInfos = storage->copyDomainInfos();
+  if (!constrainDomainInfos(domainInfos, {DomainInfo::unavailable(domain)}))
+    return;
+
+  storage = Storage::get(storage->platformRange, storage->isDeprecated,
+                         domainInfos, ctx);
+}
+
+void AvailabilityContext::constrainWithDecl(const Decl *decl) {
+  constrainWithDeclAndPlatformRange(decl, AvailabilityRange::alwaysAvailable());
+}
+
+void AvailabilityContext::constrainWithDeclAndPlatformRange(
+    const Decl *decl, const AvailabilityRange &otherPlatformRange) {
+  auto &ctx = decl->getASTContext();
+
+  // Constrain the platform range first since this may have an effect on
+  // whether the decl is considered obsolete.
+  constrainWithPlatformRange(otherPlatformRange, ctx);
+
+  bool isConstrained = false;
+  auto platformRange = storage->platformRange;
+  bool isDeprecated = storage->isDeprecated;
+
+  // Compute the availability restrictions for the decl when used in this
+  // context and then map those restrictions to domain infos. The result will
+  // be merged into the existing domain infos for this context.
+  llvm::SmallVector<DomainInfo, 4> declDomainInfos;
+  AvailabilityRestrictionFlags flags =
+      AvailabilityRestrictionFlag::SkipEnclosingExtension;
+  auto restrictions = allRestrictionsForDecl(decl, flags);
+  for (auto restriction : restrictions) {
+    auto attr = restriction.getAttr();
+    auto domain = attr.getDomain();
+    switch (restriction.getReason()) {
+    case AvailabilityRestriction::Reason::UnavailableUnconditionally:
+    case AvailabilityRestriction::Reason::UnavailableObsolete:
+    case AvailabilityRestriction::Reason::UnavailableUnintroduced:
+      declDomainInfos.push_back(DomainInfo::unavailable(domain));
+      break;
+    case AvailabilityRestriction::Reason::Unintroduced:
+      if (auto introducedRange = attr.getIntroducedRange(ctx)) {
+        if (domain.isActivePlatform(ctx)) {
+          isConstrained |= constrainRange(platformRange, *introducedRange);
+        } else {
+          declDomainInfos.push_back({domain, *introducedRange});
+        }
+      }
+      break;
+    case AvailabilityRestriction::Reason::Deprecated:
+      isConstrained |= constrainBool(isDeprecated, true);
+      break;
+    }
+  }
+
+  auto domainInfos = storage->copyDomainInfos();
+  isConstrained |= constrainDomainInfos(domainInfos, declDomainInfos);
+
+  if (!isConstrained)
+    return;
+
+  storage = Storage::get(platformRange, isDeprecated, domainInfos,
+                         decl->getASTContext());
+}
+
+bool AvailabilityContext::isContainedIn(const AvailabilityContext other) const {
+  // The available versions range be the same or smaller.
+  if (!storage->platformRange.isContainedIn(other.storage->platformRange))
+    return false;
+
+  // The set of deprecated domains should be the same or larger.
+  if (!storage->isDeprecated && other.storage->isDeprecated)
+    return false;
+
+  // Every unavailable domain in the other context should be contained in some
+  // unavailable domain in this context.
+  bool disjointUnavailability = llvm::any_of(
+      other.storage->getDomainInfos(), [&](const DomainInfo &otherDomainInfo) {
+        return llvm::none_of(storage->getDomainInfos(),
+                             [&otherDomainInfo](const DomainInfo &domainInfo) {
+                               return domainInfo.getDomain().contains(
+                                   otherDomainInfo.getDomain());
+                             });
+      });
+  if (disjointUnavailability)
+    return false;
+
+  return true;
+}
+
+/// Returns an implicit `@available` attribute that describes the restriction
+/// that \p domainInfo represents, or `nullptr` if the restriction cannot be
+/// expressed as an attribute.
+static AvailableAttr *
+createImplicitAvailableAttr(AvailabilityContext::DomainInfo domainInfo,
+                            ASTContext &ctx) {
+  auto domain = domainInfo.getDomain();
+  auto kind = AvailableAttr::Kind::Default;
+  llvm::VersionTuple introduced;
+
+  if (domainInfo.isUnavailable()) {
+    // FIXME: [availability] Disambiguate effective vs explicit unavailability.
+    // Regions that are @available(..., unavailable) need to be modeled
+    // separately from regions that are "known unreachable" in order to
+    // determine whether it is appropriate to add @available(..., unavailable)
+    // for a versioned domain.
+    if (domain.isVersioned())
+      return nullptr;
+
+    kind = AvailableAttr::Kind::Unavailable;
+  } else if (domain.isVersioned()) {
+    introduced = domainInfo.getRange().getRawMinimumVersion();
+  }
+
+  return new (ctx) AvailableAttr(
+      SourceLoc(), SourceRange(), domain, SourceLoc(), kind, /*Message=*/"",
+      /*Rename=*/"", introduced, /*IntroducedRange=*/SourceRange(),
+      /*Deprecated=*/{}, /*DeprecatedRange=*/SourceRange(),
+      /*Obsoleted=*/{}, /*ObsoletedRange=*/SourceRange(),
+      /*Implicit=*/true, /*IsSPI=*/false);
+}
+
+void AvailabilityContext::createImplicitAvailableAttrs(
+    const AvailabilityContext &other, ASTContext &ctx,
+    llvm::SmallVectorImpl<AvailableAttr *> &attrs) const {
+  if (auto platform = targetPlatform(ctx.LangOpts)) {
+    // Only describe the platform range if it is strictly narrower than the
+    // range that is already implied by `other`.
+    if (other.storage->platformRange.isSupersetOf(storage->platformRange)) {
+      if (auto *attr = createImplicitAvailableAttr(
+              DomainInfo(AvailabilityDomain::forPlatform(*platform),
+                         storage->platformRange),
+              ctx))
+        attrs.push_back(attr);
+    }
+  }
+
+  for (auto domainInfo : storage->getDomainInfos()) {
+    auto domain = domainInfo.getDomain();
+    auto constrained = other;
+    // FIXME: [availability] This is inefficient.
+    if (domainInfo.isUnavailable()) {
+      constrained.constrainWithUnavailableDomain(domain, ctx);
+    } else {
+      constrained.constrainWithAvailabilityRange(domainInfo.getRange(), domain,
+                                                 ctx);
+    }
+
+    if (constrained == other)
+      continue;
+
+    if (auto *attr = createImplicitAvailableAttr(domainInfo, ctx))
+      attrs.push_back(attr);
+  }
+}
+
+std::optional<AvailabilityRestriction>
+AvailabilityContext::restrictionForDecl(const Decl *decl,
+                                        AvailabilityRestrictionFlags flags) {
+  return allRestrictionsForDecl(decl, flags).getPrimaryRestriction();
+}
+
+std::optional<AvailabilityRestriction>
+AvailabilityContext::unsatisfiedRestrictionForDecl(
+    const Decl *decl, AvailabilityRestrictionFlags flags) {
+  auto restriction = restrictionForDecl(decl, flags);
+  if (restriction && restriction->isDeprecated())
+    return std::nullopt;
+  return restriction;
+}
+
+std::optional<AvailabilityRestriction>
+AvailabilityContext::restrictionForDeclInDomain(
+    const Decl *decl, AvailabilityDomain domain,
+    AvailabilityRestrictionFlags flags) {
+  auto restrictions = allRestrictionsForDecl(decl, flags);
+  for (auto const &restriction : restrictions) {
+    if (restriction.getDomain().isRelated(domain))
+      return restriction;
+  }
+
+  return std::nullopt;
+}
+
+static bool restrictionIsStronger(const AvailabilityRestriction &lhs,
+                                  const AvailabilityRestriction &rhs) {
+  DEBUG_ASSERT(lhs.getDomain() == rhs.getDomain());
+
+  // If the restrictions have matching domains but different reasons, the
+  // restriction with the lowest reason is "strongest".
+  if (lhs.getReason() != rhs.getReason())
+    return lhs.getReason() < rhs.getReason();
+
+  switch (lhs.getReason()) {
+  case AvailabilityRestriction::Reason::UnavailableUnconditionally:
+    // Just keep the first.
+    return false;
+
+  case AvailabilityRestriction::Reason::UnavailableObsolete:
+    // Pick the larger obsoleted range.
+    return lhs.getAttr().getObsoleted().value() <
+           rhs.getAttr().getObsoleted().value();
+
+  case AvailabilityRestriction::Reason::UnavailableUnintroduced:
+  case AvailabilityRestriction::Reason::Unintroduced:
+    // Pick the smaller introduced range.
+    return lhs.getAttr().getIntroduced().value_or(llvm::VersionTuple()) >
+           rhs.getAttr().getIntroduced().value_or(llvm::VersionTuple());
+
+  case AvailabilityRestriction::Reason::Deprecated:
+    // Prefer an unconditionally deprecation attribute over one that specifies a
+    // version. If both are unconditionally deprecated keep the first. If both
+    // specify a version, pick the earlier version. Fall back to last-wins.
+    if (lhs.getAttr().isUnconditionallyDeprecated() &&
+        rhs.getAttr().isUnconditionallyDeprecated())
+      return false;
+    if (lhs.getAttr().isUnconditionallyDeprecated())
+      return true;
+    if (rhs.getAttr().isUnconditionallyDeprecated())
+      return false;
+    return lhs.getAttr().getDeprecated().value() <
+           rhs.getAttr().getDeprecated().value();
+  }
+}
+
+static void
+addRestriction(llvm::SmallVector<AvailabilityRestriction, 4> &restrictions,
+               const AvailabilityRestriction &restriction) {
+  auto iter = llvm::find_if(
+      restrictions, [&restriction](AvailabilityRestriction &existing) {
+        return restriction.getDomain() == existing.getDomain();
+      });
+
+  // There's no existing restriction for the same domain so just add it.
+  if (iter == restrictions.end()) {
+    restrictions.emplace_back(restriction);
+    return;
+  }
+
+  if (restrictionIsStronger(restriction, *iter)) {
+    restrictions.erase(iter);
+    restrictions.emplace_back(restriction);
+  }
+}
+
+/// Returns the most specific platform domain from the availability attributes
+/// attached to \p decl or `std::nullopt` if there are none. Platform specific
+/// `@available` attributes for other platforms should be ignored. For example,
+/// if a declaration has attributes for both iOS and macCatalyst, only the
+/// macCatalyst attributes take effect when compiling for a macCatalyst target.
+static std::optional<AvailabilityDomain>
+activePlatformDomainForDecl(const Decl *decl) {
+  std::optional<AvailabilityDomain> activeDomain;
+  for (auto attr :
+       decl->getSemanticAvailableAttrs(/*includingInactive=*/false)) {
+    auto domain = attr.getDomain();
+    if (!domain.isPlatform())
+      continue;
+
+    if (activeDomain && domain.contains(*activeDomain))
+      continue;
+
+    activeDomain.emplace(domain);
+  }
+
+  return activeDomain;
+}
+
+/// Generates availability restrictions that apply to the use of \p targetDecl
+/// based on the attributes attached to \p sourceDecl (these declarations may be
+/// different since \p targetDecl may inherit attributes from another
+/// declaration lexically).
+static void collectRestrictionsForDecl(
+    llvm::SmallVector<AvailabilityRestriction, 4> &restrictions,
+    const Decl *targetDecl, const Decl *sourceDecl,
+    const AvailabilityContext &context, AvailabilityRestrictionFlags flags) {
+  auto activePlatformDomain = activePlatformDomainForDecl(sourceDecl);
+  bool includeAllDomains =
+      flags.contains(AvailabilityRestrictionFlag::IncludeAllDomains);
+
+  for (auto attr : sourceDecl->getSemanticAvailableAttrs(includeAllDomains)) {
+    auto domain = attr.getDomain();
+    if (!includeAllDomains && domain.isPlatform() && activePlatformDomain &&
+        !activePlatformDomain->contains(domain))
+      continue;
+
+    if (auto restriction =
+            getAvailabilityRestrictionForAttr(attr, targetDecl, context, flags))
+      addRestriction(restrictions, *restriction);
+  }
+}
+
+DeclAvailabilityRestrictions AvailabilityContext::allRestrictionsForDecl(
+    const Decl *decl, AvailabilityRestrictionFlags flags) {
+  llvm::SmallVector<AvailabilityRestriction, 4> restrictions;
+
+  // Generic parameters are always available.
+  if (isa<GenericTypeParamDecl>(decl))
+    return DeclAvailabilityRestrictions();
+
+  decl = decl->getAbstractSyntaxDeclForAttributes();
+
+  collectRestrictionsForDecl(restrictions, decl, decl, *this, flags);
+
+  // For requirements of reparentable protocols, add restrictions from the
+  // enclosing protocol itself. We don't need to do this for ordinary protocols
+  // because of the rule that a protocol P cannot inherit from Q if Q is less
+  // available than P. Thus, the availability of the most derived protocol
+  // already carries the same or stricter restrictions than its ancestors.
+  if (auto *proto = decl->getDeclContext()->getSelfProtocolDecl()) {
+    if (proto->getAttrs().hasAttribute<ReparentableAttr>())
+      collectRestrictionsForDecl(restrictions, decl, proto, *this, flags);
+  }
+
+  if (flags.contains(AvailabilityRestrictionFlag::SkipEnclosingExtension))
+    return restrictions;
+
+  // If decl is an extension member, query the attributes of the extension, too.
+  //
+  // Skip decls imported from Clang, though, as they could be associated to the
+  // wrong extension and inherit unavailability incorrectly. ClangImporter
+  // associates Objective-C protocol members to the first category where the
+  // protocol is directly or indirectly adopted, no matter its availability
+  // and the availability of other categories. rdar://problem/53956555
+  if (decl->getClangNode())
+    return restrictions;
+
+  auto parent = decl->parentDeclForAvailability();
+  if (auto extension = dyn_cast_or_null<ExtensionDecl>(parent))
+    collectRestrictionsForDecl(restrictions, decl, extension, *this, flags);
+
+  return restrictions;
+}
+
+static std::string
+stringForAvailability(const AvailabilityRange &availability) {
+  if (availability.isAlwaysAvailable())
+    return "all";
+  if (availability.isKnownUnreachable())
+    return "none";
+
+  return availability.getVersionString();
+}
+
+void AvailabilityContext::print(llvm::raw_ostream &os) const {
+  os << "version=" << stringForAvailability(getPlatformRange());
+
+  auto domainInfos = storage->getDomainInfos();
+  if (!domainInfos.empty()) {
+    auto availableInfos = llvm::make_filter_range(
+        domainInfos, [](auto info) { return !info.isUnavailable(); });
+
+    if (!availableInfos.empty()) {
+      os << " available=";
+      llvm::interleave(
+          availableInfos, os,
+          [&](const DomainInfo &domainInfo) {
+            domainInfo.getDomain().print(os);
+            if (domainInfo.getDomain().isVersioned() &&
+                domainInfo.getRange().hasMinimumVersion())
+              os << ">=" << domainInfo.getRange().getAsString();
+          },
+          ",");
+    }
+
+    auto unavailableInfos = llvm::make_filter_range(
+        domainInfos, [](auto info) { return info.isUnavailable(); });
+
+    if (!unavailableInfos.empty()) {
+      os << " unavailable=";
+      llvm::interleave(
+          unavailableInfos, os,
+          [&](const DomainInfo &domainInfo) {
+            domainInfo.getDomain().print(os);
+          },
+          ",");
+    }
+  }
+
+  if (isDeprecated())
+    os << " deprecated";
+}
+
+void AvailabilityContext::dump() const { print(llvm::errs()); }
+
+bool verifyDomainInfos(
+    llvm::ArrayRef<AvailabilityContext::DomainInfo> domainInfos) {
+  // Checks that the following invariants hold:
+  //   - The domain infos are sorted using AvailabilityDomainInfoComparator.
+  //   - There is not more than one info per-domain.
+  if (domainInfos.empty())
+    return true;
+
+  AvailabilityDomainInfoComparator compare;
+  auto prev = domainInfos.begin();
+  auto next = prev;
+  auto end = domainInfos.end();
+  for (++next; next != end; prev = next, ++next) {
+    const auto &prevInfo = *prev;
+    const auto &nextInfo = *next;
+
+    if (compare(nextInfo, prevInfo))
+      return false;
+
+    // Since the infos are sorted by domain, infos with the same domain should
+    // be adjacent.
+    if (prevInfo.getDomain() == nextInfo.getDomain())
+      return false;
+  }
+
+  return true;
+}
+
+bool AvailabilityContext::verify(const ASTContext &ctx) const {
+  return verifyDomainInfos(storage->getDomainInfos());
+}
+
+void AvailabilityContext::Storage::Profile(
+    llvm::FoldingSetNodeID &ID, const AvailabilityRange &platformRange,
+    bool isDeprecated,
+    llvm::ArrayRef<AvailabilityContext::DomainInfo> domainInfos) {
+  platformRange.getRawVersionRange().Profile(ID);
+  ID.AddBoolean(isDeprecated);
+  ID.AddInteger(domainInfos.size());
+  for (auto domainInfo : domainInfos) {
+    domainInfo.Profile(ID);
+  }
+}

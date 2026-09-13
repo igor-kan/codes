@@ -1,0 +1,420 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2025 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
+import SwiftShims
+
+// MARK: Support functions
+
+/// What is the byte count required for an allocation with the specified
+/// type and capacity?
+///
+/// - Parameters:
+///   - type: The type of the elements in the buffer being temporarily allocated.
+///   - capacity: The number of elements to temporarily allocate. `capacity` must
+///     not be negative.
+///
+/// - Returns: The number of bytes required for the allocation.
+@export(implementation) @_transparent
+internal func _byteCountForTemporaryAllocation<T: ~Copyable>(
+  of type: T.Type,
+  capacity: Int
+) -> Int {
+  // PRECONDITIONS: Negatively-sized buffers obviously cannot be allocated on
+  // the stack (or anywhere else.)
+  //
+  // NOTE: This function only makes its precondition checks for non-constant
+  // inputs. If it makes them for constant inputs, it prevents the compiler from
+  // emitting equivalent compile-time diagnostics because the call to
+  // Builtin.stackAlloc() becomes unreachable.
+  if _isComputed(capacity) {
+    _precondition(
+      capacity >= 0, "Allocation capacity must be greater than or equal to zero"
+    )
+  }
+  let stride = MemoryLayout<T>.stride
+  let (byteCount, overflow) = capacity.multipliedReportingOverflow(by: stride)
+  if _isComputed(capacity) {
+    _precondition(!overflow, "Allocation byte count too large")
+  }
+  return byteCount
+}
+
+/// Will an allocation of the specified size fit on the stack?
+///
+/// - Parameters:
+///   - byteCount: The number of bytes to temporarily allocate. `byteCount` must
+///     not be negative.
+///   - alignment: The alignment of the temporary allocation. `alignment` must
+///     be a whole power of 2.
+///
+/// - Returns: Whether or not there is sufficient space on the stack to allocate
+///   `byteCount` bytes of memory.
+@export(implementation) @_transparent
+internal func _isStackAllocationSafe(byteCount: Int, alignment: Int) -> Bool {
+  // PRECONDITIONS: Non-positive alignments are nonsensical, as are
+  // non-power-of-two alignments.
+  if _isComputed(alignment) {
+    _precondition(alignment > 0, "Alignment value must be greater than zero")
+    _precondition(
+      _isPowerOf2(alignment), "Alignment value must be a power of two"
+    )
+  }
+
+  // If the alignment is larger than MaximumAlignment, the allocation is always
+  // performed on the heap. There are two reasons why:
+  // 1. llvm's alloca instruction can take any power-of-two alignment value, but
+  //    will produce unsafe assembly when that value is very large (i.e. it
+  //    risks a stack overflow.)
+  // 2. For non-constant values, we have no way to know what value to pass to
+  //    alloca and always pass MaximumAlignment. This may be incorrect if the
+  //    caller really wants a larger allocation.
+  if alignment > _minAllocationAlignment() {
+    return false
+  }
+
+  // Allocations smaller than this limit are reasonable to allocate on the stack
+  // without worrying about running out of space, and the compiler would emit
+  // such allocations on the stack anyway when they represent structures or
+  // stack-promoted objects.
+  if _fastPath(byteCount <= 1024) {
+    return true
+  }
+
+  // NOTE: If swift_stdlib_isStackAllocationSafe() is ever updated to return
+  // something other than false, call it here instead of returning false
+  // unconditionally.
+  return false
+}
+
+/// Provides scoped access to a raw buffer pointer with the specified type,
+/// capacity, and alignment.
+///
+/// - Parameters:
+///   - type: The type of the elements in the buffer being temporarily
+///     allocated. For untyped buffers, use `Int8.self`.
+///   - capacity: The number of elements to allocate. `capacity` must not be
+///     negative.
+///   - alignment: The alignment of the new, temporary region of allocated
+///     memory, in bytes. `alignment` must be a whole power of 2.
+///   - body: A closure to invoke and to which the allocated buffer pointer
+///     should be passed.
+///
+/// - Returns: Whatever is returned by `body`.
+///
+/// This function encapsulates the various calls to builtins required by
+/// `withUnsafeTemporaryAllocation()`.
+@export(implementation) @_transparent
+internal func _withUnsafeTemporaryAllocation<
+  T: ~Copyable, R: ~Copyable, E: Error
+>(
+  of type: T.Type,
+  capacity: Int,
+  alignment: Int,
+  _ body: (Builtin.RawPointer) throws(E) -> R
+) throws(E) -> R {
+  // How many bytes do we need to allocate?
+  let byteCount = _byteCountForTemporaryAllocation(of: type, capacity: capacity)
+
+  guard _isStackAllocationSafe(byteCount: byteCount, alignment: alignment) else {
+    return try _fallBackToHeapAllocation(
+      byteCount: byteCount, alignment: alignment, body
+    )
+  }
+
+  let stackAddress = Builtin.stackAlloc(
+    capacity._builtinWordValue,
+    MemoryLayout<T>.stride._builtinWordValue,
+    alignment._builtinWordValue
+  )
+  defer {
+    Builtin.stackDealloc(stackAddress)
+  }
+  return try body(stackAddress)
+}
+
+@export(implementation) @_transparent
+internal func _withUnprotectedUnsafeTemporaryAllocation<
+  T: ~Copyable, R: ~Copyable, E: Error
+>(
+  of type: T.Type,
+  capacity: Int,
+  alignment: Int,
+  _ body: (Builtin.RawPointer) throws(E) -> R
+) throws(E) -> R {
+  // How many bytes do we need to allocate?
+  let byteCount = _byteCountForTemporaryAllocation(of: type, capacity: capacity)
+
+  guard _isStackAllocationSafe(byteCount: byteCount, alignment: alignment) else {
+    return try _fallBackToHeapAllocation(
+      byteCount: byteCount, alignment: alignment, body
+    )
+  }
+
+  let stackAddress = Builtin.unprotectedStackAlloc(
+    capacity._builtinWordValue,
+    MemoryLayout<T>.stride._builtinWordValue,
+    alignment._builtinWordValue
+  )
+  defer {
+    Builtin.stackDealloc(stackAddress)
+  }
+  return try body(stackAddress)
+}
+
+@export(implementation) @_transparent
+internal func _fallBackToHeapAllocation<R: ~Copyable, E: Error>(
+  byteCount: Int,
+  alignment: Int,
+  _ body: (Builtin.RawPointer) throws(E) -> R
+) throws(E) -> R {
+  let buffer = UnsafeMutableRawPointer.allocate(
+    byteCount: byteCount,
+    alignment: alignment
+  )
+  defer {
+    unsafe buffer.deallocate()
+  }
+  return try body(buffer._rawValue)
+}
+
+// MARK: - Public interface
+
+/// Provides scoped access to a raw buffer pointer with the specified byte count
+/// and alignment.
+///
+/// - Parameters:
+///   - byteCount: The number of bytes to temporarily allocate. `byteCount` must
+///     not be negative.
+///   - alignment: The alignment of the new, temporary region of allocated
+///     memory, in bytes. `alignment` must be a whole power of 2.
+///   - body: A closure to invoke and to which the allocated buffer pointer
+///     should be passed.
+///
+/// - Returns: Whatever is returned by `body`.
+///
+/// - Throws: Whatever is thrown by `body`.
+///
+/// This function is useful for cheaply allocating raw storage for a brief
+/// duration. Storage may be allocated on the heap or on the stack, depending on
+/// the required size and alignment.
+///
+/// When `body` is called, the contents of the buffer pointer passed to it are
+/// in an unspecified, uninitialized state. `body` is responsible for
+/// initializing the buffer pointer before it is used _and_ for deinitializing
+/// it before returning, but deallocation is automatic.
+///
+/// The buffer pointer passed to `body` (as well as any pointers to elements in
+/// the buffer) must not escape. It will be deallocated when `body` returns and
+/// cannot be used afterward.
+@export(implementation) @_transparent
+@safe
+public func withUnsafeTemporaryAllocation<R: ~Copyable, E: Error>(
+  byteCount: Int,
+  alignment: Int,
+  _ body: (UnsafeMutableRawBufferPointer) throws(E) -> R
+) throws(E) -> R {
+  return try _withUnsafeTemporaryAllocation(
+    of: Int8.self,
+    capacity: byteCount,
+    alignment: alignment
+  ) { (pointer: Builtin.RawPointer) throws(E) -> R in
+    let buffer = unsafe UnsafeMutableRawBufferPointer(
+      start: .init(pointer),
+      count: byteCount
+    )
+    return try unsafe body(buffer)
+  }
+}
+
+/// Provides scoped access to an output span of the specified type and capacity.
+///
+/// This function is useful for cheaply allocating storage for a sequence of
+/// values for a brief duration. Storage may be allocated on the heap or on the
+/// stack, depending on the required size and alignment.
+///
+/// When `body` is called, it is passed an empty `OutputSpan`. `body` may
+/// append or initialize elements in the output span. Any elements that have
+/// been initialized when `body` returns are deinitialized automatically, and
+/// deallocation is also automatic.
+///
+/// - Parameters:
+///   - type: The type of the elements in the buffer being temporarily
+///     allocated.
+///   - capacity: The capacity of the output span being temporarily allocated.
+///   - body: A closure to invoke and to which the allocated output span
+///     should be passed.
+///
+/// - Returns: Whatever is returned by `body`.
+///
+/// - Throws: Whatever is thrown by `body`.
+@available(SwiftCompatibilitySpan 5.0, *)
+@export(implementation) @_transparent
+public func withTemporaryAllocation<T: ~Copyable, R: ~Copyable, E: Error>(
+  of type: T.Type,
+  capacity: Int,
+  _ body: (inout OutputSpan<T>) throws(E) -> R
+) throws(E) -> R where T : ~Copyable, R : ~Copyable {
+  try withUnsafeTemporaryAllocation(of: type, capacity: capacity) {
+    (buffer) throws(E) in
+    var span = unsafe OutputSpan(buffer: buffer, initializedCount: 0)
+    defer {
+      let initializedCount = unsafe span.finalize(for: buffer)
+      span = OutputSpan()
+      unsafe buffer.extracting(..<initializedCount).deinitialize()
+    }
+
+    return try body(&span)
+  }
+}
+
+/// Provides scoped access to an output raw span with the specified byte count
+/// and alignment.
+///
+/// This function is useful for cheaply allocating raw storage for a brief
+/// duration. Storage may be allocated on the heap or on the stack, depending on
+/// the required size and alignment.
+///
+/// When `body` is called, it is passed an empty `OutputRawSpan`. `body`
+/// may append bytes to the output raw span. After `body` returns, deallocation
+/// is automatic.
+///
+/// - Parameters:
+///   - byteCount: The number of bytes to temporarily allocate. `byteCount` must
+///     not be negative.
+///   - alignment: The alignment of the new, temporary region of allocated
+///     memory, in bytes. `alignment` must be a whole power of 2.
+///   - body: A closure to invoke and to which the allocated output raw span
+///     should be passed.
+///
+/// - Returns: Whatever is returned by `body`.
+///
+/// - Throws: Whatever is thrown by `body`.
+@available(SwiftCompatibilitySpan 5.0, *)
+@export(implementation) @_transparent
+public func withTemporaryAllocation<R: ~Copyable, E: Error>(
+  byteCount: Int,
+  alignment: Int,
+  _ body: (inout OutputRawSpan) throws(E) -> R
+) throws(E) -> R where R: ~Copyable {
+  try withUnsafeTemporaryAllocation(byteCount: byteCount, alignment: alignment) {
+    (buffer) throws(E) in
+    var span = unsafe OutputRawSpan(buffer: buffer, initializedCount: 0)
+    defer {
+      _ = unsafe span.finalize(for: buffer)
+      span = OutputRawSpan()
+    }
+    return try body(&span)
+  }
+}
+
+/// Provides scoped access to a raw buffer pointer with the specified byte count
+/// and alignment.
+///
+/// This function is similar to `withUnsafeTemporaryAllocation`, except that it
+/// doesn't trigger stack protection for the stack allocated memory.
+@export(implementation) @_transparent
+public func _withUnprotectedUnsafeTemporaryAllocation<R: ~Copyable, E: Error>(
+  byteCount: Int,
+  alignment: Int,
+  _ body: (UnsafeMutableRawBufferPointer) throws(E) -> R
+) throws(E) -> R {
+  return try _withUnprotectedUnsafeTemporaryAllocation(
+    of: Int8.self,
+    capacity: byteCount,
+    alignment: alignment
+  ) { (pointer: Builtin.RawPointer) throws(E) -> R in
+    let buffer = unsafe UnsafeMutableRawBufferPointer(
+      start: .init(pointer),
+      count: byteCount
+    )
+    return try unsafe body(buffer)
+  }
+}
+
+/// Provides scoped access to a buffer pointer to memory of the specified type
+/// and with the specified capacity.
+///
+/// - Parameters:
+///   - type: The type of the elements in the buffer being temporarily
+///     allocated.
+///   - capacity: The capacity of the buffer pointer being temporarily
+///     allocated.
+///   - body: A closure to invoke and to which the allocated buffer pointer
+///     should be passed.
+///
+/// - Returns: Whatever is returned by `body`.
+///
+/// - Throws: Whatever is thrown by `body`.
+///
+/// This function is useful for cheaply allocating storage for a sequence of
+/// values for a brief duration. Storage may be allocated on the heap or on the
+/// stack, depending on the required size and alignment.
+///
+/// When `body` is called, the contents of the buffer pointer passed to it are
+/// in an unspecified, uninitialized state. `body` is responsible for
+/// initializing the buffer pointer before it is used _and_ for deinitializing
+/// it before returning, but deallocation is automatic.
+///
+/// The buffer pointer passed to `body` (as well as any pointers to elements in
+/// the buffer) must not escape. It will be deallocated when `body` returns and
+/// cannot be used afterward.
+@export(implementation) @_transparent
+@safe
+public func withUnsafeTemporaryAllocation<
+  T: ~Copyable, R: ~Copyable,
+  E: Error
+>(
+  of type: T.Type,
+  capacity: Int,
+  _ body: (UnsafeMutableBufferPointer<T>) throws(E) -> R
+) throws(E) -> R {
+  return try _withUnsafeTemporaryAllocation(
+    of: type,
+    capacity: capacity,
+    alignment: MemoryLayout<T>.alignment
+  ) { (pointer: Builtin.RawPointer) throws(E) -> R in
+    Builtin.bindMemory(pointer, capacity._builtinWordValue, type)
+    let buffer = unsafe UnsafeMutableBufferPointer<T>(
+      start: .init(pointer),
+      count: capacity
+    )
+    return try unsafe body(buffer)
+  }
+}
+
+/// Provides scoped access to a buffer pointer to memory of the specified type
+/// and with the specified capacity.
+///
+/// This function is similar to `withUnsafeTemporaryAllocation`, except that it
+/// doesn't trigger stack protection for the stack allocated memory.
+@export(implementation) @_transparent
+public func _withUnprotectedUnsafeTemporaryAllocation<
+  T: ~Copyable, R: ~Copyable,
+  E: Error
+>(
+  of type: T.Type,
+  capacity: Int,
+  _ body: (UnsafeMutableBufferPointer<T>) throws(E) -> R
+) throws(E) -> R {
+  return try _withUnprotectedUnsafeTemporaryAllocation(
+    of: type,
+    capacity: capacity,
+    alignment: MemoryLayout<T>.alignment
+  ) { (pointer: Builtin.RawPointer) throws(E) -> R in
+    Builtin.bindMemory(pointer, capacity._builtinWordValue, type)
+    let buffer = unsafe UnsafeMutableBufferPointer<T>(
+      start: .init(pointer),
+      count: capacity
+    )
+    return try unsafe body(buffer)
+  }
+}

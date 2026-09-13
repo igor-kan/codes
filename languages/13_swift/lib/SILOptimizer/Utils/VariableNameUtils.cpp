@@ -1,0 +1,1031 @@
+//===--- VariableNameUtils.cpp --------------------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2024 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
+#define DEBUG_TYPE "sil-variable-name-inference"
+
+#include "swift/Basic/Assertions.h"
+#include "swift/SILOptimizer/Utils/VariableNameUtils.h"
+#include "swift/SIL/AddressWalker.h"
+#include "swift/SIL/Test.h"
+
+using namespace swift;
+
+namespace {
+struct AddressWalkerState {
+  bool foundError = false;
+  InstructionSet writes;
+  AddressWalkerState(SILFunction *fn) : writes(fn) {}
+};
+} // namespace
+
+static SILValue
+findRootValueForNonTupleTempAllocation(AllocationInst *allocInst,
+                                       AddressWalkerState &state) {
+  // These are instructions which we are ok with looking through when
+  // identifying our allocation. It must always refer to the entire allocation.
+  auto isAlloc = [&](SILValue value) -> bool {
+    if (auto *ieai = dyn_cast<InitExistentialAddrInst>(value))
+      value = ieai->getOperand();
+    return value == SILValue(allocInst);
+  };
+
+  // Walk from our allocation to one of our writes. Then make sure that the
+  // write writes to our entire value.
+  for (auto &inst : allocInst->getParent()->getRangeStartingAtInst(allocInst)) {
+    // See if we have a full tuple value.
+
+    if (!state.writes.contains(&inst))
+      continue;
+
+    if (auto *copyAddr = dyn_cast<CopyAddrInst>(&inst)) {
+      if (isAlloc(copyAddr->getDest()) &&
+          copyAddr->isInitializationOfDest()) {
+        return copyAddr->getSrc();
+      }
+    }
+
+    if (auto *si = dyn_cast<StoreInst>(&inst)) {
+      if (isAlloc(si->getDest()) &&
+          si->getOwnershipQualifier() != StoreOwnershipQualifier::Assign) {
+        return si->getSrc();
+      }
+    }
+
+    if (auto *sbi = dyn_cast<StoreBorrowInst>(&inst)) {
+      if (isAlloc(sbi->getDest()))
+        return sbi->getSrc();
+    }
+
+    // If we do not identify the write... return SILValue(). We weren't able
+    // to understand the write.
+    break;
+  }
+
+  return SILValue();
+}
+
+static SILValue findRootValueForTupleTempAllocation(AllocationInst *allocInst,
+                                                    AddressWalkerState &state) {
+  SmallVector<SILValue, 8> tupleValues;
+
+  for (unsigned i : range(allocInst->getType().getNumTupleElements())) {
+    (void)i;
+    tupleValues.push_back(nullptr);
+  }
+
+  unsigned numEltsLeft = tupleValues.size();
+
+  // If we have an empty tuple, just return SILValue() for now.
+  //
+  // TODO: What does this pattern look like out of SILGen?
+  if (!numEltsLeft)
+    return SILValue();
+
+  // Walk from our allocation to one of our writes. Then make sure that the
+  // write writes to our entire value.
+  DestructureTupleInst *foundDestructure = nullptr;
+  SILValue foundRootAddress;
+  for (auto &inst : allocInst->getParent()->getRangeStartingAtInst(allocInst)) {
+    if (!state.writes.contains(&inst))
+      continue;
+
+    if (auto *copyAddr = dyn_cast<CopyAddrInst>(&inst)) {
+      if (copyAddr->isInitializationOfDest()) {
+        if (auto *tei = dyn_cast<TupleElementAddrInst>(copyAddr->getDest())) {
+          if (tei->getOperand() == allocInst) {
+            unsigned i = tei->getFieldIndex();
+            if (auto *otherTei = dyn_cast_or_null<TupleElementAddrInst>(
+                    copyAddr->getSrc()->getDefiningInstruction())) {
+              // If we already were processing destructures, then we have a mix
+              // of struct/destructures... we do not support that, so bail.
+              if (foundDestructure)
+                return SILValue();
+
+              // Otherwise, update our root address. If we already had a root
+              // address and it doesn't match our tuple_element_addr's operand,
+              // bail. There is some sort of mix/match of tuple addresses that
+              // we do not support. We are looking for a specific SILGen
+              // pattern.
+              if (!foundRootAddress) {
+                foundRootAddress = otherTei->getOperand();
+              } else if (foundRootAddress != otherTei->getOperand()) {
+                return SILValue();
+              }
+
+              if (i != otherTei->getFieldIndex())
+                return SILValue();
+              if (tupleValues[i])
+                return SILValue();
+              tupleValues[i] = otherTei;
+
+              // If we have completely covered the tuple, break.
+              --numEltsLeft;
+              if (!numEltsLeft)
+                break;
+
+              // Otherwise, continue so we keep processing.
+              continue;
+            }
+          }
+        }
+      }
+    }
+
+    if (auto *si = dyn_cast<StoreInst>(&inst)) {
+      if (si->getOwnershipQualifier() != StoreOwnershipQualifier::Assign) {
+        // Check if we are updating the entire tuple value.
+        if (si->getDest() == allocInst) {
+          // If we already found a root address (meaning we were processing
+          // tuple_elt_addr), bail. We have some sort of unhandled mix of
+          // copy_addr and store.
+          if (foundRootAddress)
+            return SILValue();
+
+          // If we already found a destructure, return SILValue(). We are
+          // initializing twice.
+          if (foundDestructure)
+            return SILValue();
+
+          // We are looking for a pattern where we construct a tuple from
+          // destructured parts.
+          if (auto *ti = dyn_cast<TupleInst>(si->getSrc())) {
+            for (auto p : llvm::enumerate(ti->getOperandValues())) {
+              SILValue value = lookThroughOwnershipInsts(p.value());
+              if (auto *dti = dyn_cast_or_null<DestructureTupleInst>(
+                      value->getDefiningInstruction())) {
+                // We should always go through the same dti.
+                if (foundDestructure && foundDestructure != dti)
+                  return SILValue();
+                if (!foundDestructure)
+                  foundDestructure = dti;
+
+                // If we have a mixmatch of indices, we cannot look through.
+                if (p.index() != dti->getIndexOfResult(value))
+                  return SILValue();
+                if (tupleValues[p.index()])
+                  return SILValue();
+                tupleValues[p.index()] = value;
+
+                // If we have completely covered the tuple, break.
+                --numEltsLeft;
+                if (!numEltsLeft)
+                  break;
+              }
+            }
+
+            // If we haven't completely covered the tuple, return SILValue(). We
+            // should completely cover the tuple.
+            if (numEltsLeft)
+              return SILValue();
+
+            // Otherwise, break since we are done.
+            break;
+          }
+        }
+
+        // If we store to a tuple_element_addr, update for a single value.
+        if (auto *tei = dyn_cast<TupleElementAddrInst>(si->getDest())) {
+          if (tei->getOperand() == allocInst) {
+            unsigned i = tei->getFieldIndex();
+            if (auto *dti = dyn_cast_or_null<DestructureTupleInst>(
+                    si->getSrc()->getDefiningInstruction())) {
+              // If we already found a root address (meaning we were processing
+              // tuple_elt_addr), bail. We have some sort of unhandled mix of
+              // copy_addr and store [init].
+              if (foundRootAddress)
+                return SILValue();
+              if (!foundDestructure) {
+                foundDestructure = dti;
+              } else if (foundDestructure != dti) {
+                return SILValue();
+              }
+
+              if (i != dti->getIndexOfResult(si->getSrc()))
+                return SILValue();
+              if (tupleValues[i])
+                return SILValue();
+              tupleValues[i] = si->getSrc();
+
+              // If we have completely covered the tuple, break.
+              --numEltsLeft;
+              if (!numEltsLeft)
+                break;
+
+              // Otherwise, continue so we keep processing.
+              continue;
+            }
+          }
+        }
+      }
+    }
+
+    // Found a write that we did not understand... bail.
+    break;
+  }
+
+  // Now check if we have a complete tuple with all elements coming from the
+  // same destructure_tuple. In such a case, we can look through the
+  // destructure_tuple.
+  if (numEltsLeft)
+    return SILValue();
+
+  if (foundDestructure)
+    return foundDestructure->getOperand();
+  if (foundRootAddress)
+    return foundRootAddress;
+
+  return SILValue();
+}
+
+SILValue VariableNameInferrer::getRootValueForTemporaryAllocation(
+    AllocationInst *allocInst) {
+  struct AddressWalker final : public TransitiveAddressWalker<AddressWalker> {
+    AddressWalkerState &state;
+
+    AddressWalker(AddressWalkerState &state) : state(state) {}
+
+    bool visitUse(Operand *use) {
+      if (use->getUser()->mayWriteToMemory())
+        state.writes.insert(use->getUser());
+      return true;
+    }
+
+    TransitiveUseVisitation visitTransitiveUseAsEndPointUse(Operand *use) {
+      if (isa<StoreBorrowInst>(use->getUser()))
+        return TransitiveUseVisitation::OnlyUser;
+      return TransitiveUseVisitation::OnlyUses;
+    }
+
+    void onError(Operand *use) { state.foundError = true; }
+  };
+
+  AddressWalkerState state(allocInst->getFunction());
+  AddressWalker walker(state);
+  if (std::move(walker).walk(allocInst) == AddressUseKind::Unknown ||
+      state.foundError)
+    return SILValue();
+
+  if (allocInst->getType().is<TupleType>())
+    return findRootValueForTupleTempAllocation(allocInst, state);
+  return findRootValueForNonTupleTempAllocation(allocInst, state);
+}
+
+SILValue
+VariableNameInferrer::findDebugInfoProvidingValue(SILValue searchValue) {
+  // NOTE: This should only return a non-empty SILValue if we actually have a
+  // full path (including base name) in the variable name path.
+  if (!searchValue)
+    return SILValue();
+
+  LLVM_DEBUG(llvm::dbgs() << "Searching for debug info providing value for: "
+                          << searchValue);
+  ValueSet valueSet(searchValue->getFunction());
+  SILValue result = findDebugInfoProvidingValueHelper(searchValue, valueSet);
+  if (result) {
+    LLVM_DEBUG(llvm::dbgs() << "Result: " << result);
+  } else {
+    LLVM_DEBUG(llvm::dbgs() << "Result: None\n");
+  }
+  return result;
+}
+
+SILValue VariableNameInferrer::findDebugInfoProvidingValuePhiArg(
+    SILValue incomingValue, ValueSet &visitedValues) {
+  // We use pushSnapShot to run recursively and if we fail to find a
+  // value, we just pop our list to the last snapshot end of list. If we
+  // succeed, we do not pop and just return recusive value. Our user
+  // will consume variableNamePath at this point.
+  LLVM_DEBUG(llvm::dbgs() << "Before pushing a snap shot!\n";
+             variableNamePath.print(llvm::dbgs()));
+
+  unsigned oldSnapShotIndex = variableNamePath.pushSnapShot();
+  // Also save firstNameProvidingLoc so we can restore it on failure --
+  // otherwise a failed phi branch could leave us pointing at a loc that
+  // never contributed to the final name path.
+  SourceLoc oldFirstNameProvidingLoc = firstNameProvidingLoc;
+  LLVM_DEBUG(llvm::dbgs() << "After pushing a snap shot!\n";
+             variableNamePath.print(llvm::dbgs()));
+
+  if (SILValue recursiveValue =
+          findDebugInfoProvidingValueHelper(incomingValue, visitedValues)) {
+    LLVM_DEBUG(llvm::dbgs() << "Returned: " << recursiveValue);
+    variableNamePath.returnSnapShot(oldSnapShotIndex);
+    return recursiveValue;
+  }
+
+  variableNamePath.popSnapShot(oldSnapShotIndex);
+  firstNameProvidingLoc = oldFirstNameProvidingLoc;
+  LLVM_DEBUG(llvm::dbgs() << "After popping a snap shot!\n";
+             variableNamePath.print(llvm::dbgs()));
+  return SILValue();
+}
+
+static BeginBorrowInst *hasOnlyBorrowingNonDestroyUse(SILValue searchValue) {
+  BeginBorrowInst *result = nullptr;
+  for (auto *use : searchValue->getUses()) {
+    if (isIncidentalUse(use->getUser()))
+      continue;
+    if (use->isConsuming()) {
+      if (!isa<DestroyValueInst>(use->getUser()))
+        return nullptr;
+      continue;
+    }
+
+    auto *bbi = dyn_cast<BeginBorrowInst>(use->getUser());
+    if (!bbi || !bbi->isFromVarDecl())
+      return nullptr;
+    if (result)
+      return nullptr;
+    result = bbi;
+  }
+  return result;
+}
+
+namespace {
+
+constexpr StringLiteral UnknownDeclString = "<unknown decl>";
+
+} // namespace
+
+/// Helper that names the result of a call. Looks through partial_apply and
+/// closure-forming / conversion instructions on the callee to recover the
+/// underlying function reference, and recovers the call's self value (directly
+/// or as captured by a partial_apply) so the result can be named 'self.member'.
+///
+/// Holds a back-reference to its owning inferrer so it can push path components
+/// and (in the future) stash state across queries.
+struct VariableNameInferrer::CallResultNamer {
+  VariableNameInferrer &owner;
+
+  explicit CallResultNamer(VariableNameInferrer &owner) : owner(owner) {}
+
+  /// The call (apply / try_apply / begin_apply) that produces \p value, if
+  /// any. 'apply' and 'begin_apply' produce their result as the defining
+  /// instruction; a 'try_apply' delivers its result as the normal successor's
+  /// block argument, so look through the terminator in that case.
+  static FullApplySite getCallProducing(SILValue value) {
+    if (auto *inst = value->getDefiningInstruction())
+      return FullApplySite::isa(inst);
+    if (auto *arg = dyn_cast<SILArgument>(value))
+      if (auto *term = arg->getTerminatorForResult())
+        return FullApplySite::isa(term);
+    return FullApplySite();
+  }
+
+  /// Strip closure-forming / conversion / ownership-forwarding instructions
+  /// from a callee value (everything except partial_apply itself).
+  static SILValue stripCalleeConversions(SILValue v) {
+    while (isa<ThinToThickFunctionInst>(v) || isa<ConvertFunctionInst>(v) ||
+           isa<ConvertEscapeToNoEscapeInst>(v) || isa<CopyValueInst>(v) ||
+           isa<BeginBorrowInst>(v) || isa<MoveValueInst>(v)) {
+      v = cast<SingleValueInstruction>(v)->getOperand(0);
+    }
+    return v;
+  }
+
+  /// User-facing name of the function/method invoked by \p call. Returns
+  /// the name's textual rendering and (when one can be determined) the
+  /// invoked \c ValueDecl, so callers can push the decl directly through
+  /// \c pushPathComponent and preserve decl-kind-aware rendering. Returns
+  /// an empty \c StringRef if no name can be determined; \c decl is null
+  /// when only a SIL function name (with no AST decl) is available.
+  /// Looks through an immediately-invoked partial_apply to the underlying
+  /// function reference.
+  struct CalleeNameAndDecl {
+    StringRef name;
+    ValueDecl *decl = nullptr;
+  };
+  CalleeNameAndDecl getCalleeNameAndDecl(FullApplySite call) const {
+    SILValue callee = stripCalleeConversions(call.getCallee());
+    while (auto *pai = dyn_cast<PartialApplyInst>(callee))
+      callee = stripCalleeConversions(pai->getCallee());
+
+    // A dynamically dispatched method (class_method, witness_method, ...): use
+    // the referenced member's name (which also handles accessors).
+    if (auto *mi = dyn_cast<MethodInst>(callee)) {
+      auto *decl = mi->getMember().getDecl();
+      if (auto *vd = dyn_cast_or_null<ValueDecl>(decl))
+        return {getNameFromDecl(decl), vd};
+      return {getNameFromDecl(decl), nullptr};
+    }
+
+    // A direct call: prefer the referenced function's own decl name.
+    if (auto *f = dyn_cast<FunctionRefBaseInst>(callee)) {
+      auto *fn = f->getInitiallyReferencedFunction();
+      if (auto declRef = fn->getDeclRef())
+        if (auto *decl = declRef.getDecl())
+          return {getNameFromDecl(decl), decl};
+      // Fall back to the SILFunction's name (e.g. for SIL-only declarations
+      // that carry no AST decl).
+      return {fn->getName(), nullptr};
+    }
+
+    return {};
+  }
+
+  /// The self value associated with \p call, if any: either the call's own
+  /// self argument (a direct method call) or, when the callee is a
+  /// partial_apply that captured self, that captured self. Self is always the
+  /// last parameter, so a non-empty partial_apply of a method captures it as
+  /// its last applied argument.
+  SILValue getCalleeSelfValue(FullApplySite call) const {
+    if (call.hasSelfArgument())
+      return call.getSelfArgument();
+    SILValue callee = stripCalleeConversions(call.getCallee());
+    if (auto *pai = dyn_cast<PartialApplyInst>(callee)) {
+      ApplySite site(pai);
+      if (site.getSubstCalleeType()->hasSelfParam() &&
+          site.getNumArguments() >= 1)
+        return site.getArgument(site.getNumArguments() - 1);
+    }
+    return SILValue();
+  }
+
+  /// If \p call can be named, push the callee (member) name and return its
+  /// self value so the walk continues into it -- producing 'self.member'.
+  /// Returns SILValue() if there is no name or no self.
+  SILValue nameThroughSelf(FullApplySite call) {
+    auto cnd = getCalleeNameAndDecl(call);
+    if (cnd.name.empty())
+      return SILValue();
+    auto self = getCalleeSelfValue(call);
+    if (!self)
+      return SILValue();
+    if (cnd.decl)
+      owner.pushPathComponent(cnd.decl, call.getLoc());
+    else
+      owner.pushPathComponent(cnd.name, call.getLoc());
+    return self;
+  }
+};
+
+SILValue VariableNameInferrer::findDebugInfoProvidingValueHelper(
+    SILValue searchValue, ValueSet &visitedValues) {
+  assert(searchValue);
+
+  CallResultNamer namer(*this);
+
+  while (true) {
+    assert(searchValue);
+
+    // If we already visited the value, return SILValue(). This prevents issues
+    // caused by looping phis. We treat this as a failure and visit the either
+    // phi values.
+    if (!visitedValues.insert(searchValue))
+      return SILValue();
+
+    LLVM_DEBUG(llvm::dbgs() << "Value: " << *searchValue);
+
+    // Before we do anything, lets see if we have an explicit match due to a
+    // debug_value use.
+    if (auto *use = getAnyDebugUse(searchValue)) {
+      if (auto debugVar = DebugVarCarryingInst(use->getUser())) {
+        assert(debugVar.getKind() == DebugVarCarryingInst::Kind::DebugValue);
+        pushPathComponent(debugVar.getName(), searchValue.getLoc());
+
+        // We return the value, not the debug_info.
+        return searchValue;
+      }
+    }
+
+    // If we are in Ownership SSA, see if we have an owned value that has one
+    // use, a move_value [var decl]. In such a case, check the move_value [var
+    // decl] for a debug_value.
+    //
+    // This pattern comes up if we are asked to get a name for an apply that is
+    // used to initialize a value. The name will not yet be associated with the
+    // value so we have to compensate.
+    //
+    // NOTE: This is a heuristic. Feel free to tweak accordingly.
+    if (auto *singleUse = searchValue->getSingleUse()) {
+      if (auto *mvi = dyn_cast<MoveValueInst>(singleUse->getUser())) {
+        if (mvi->isFromVarDecl()) {
+          if (auto *debugUse = getAnyDebugUse(mvi)) {
+            if (auto debugVar = DebugVarCarryingInst(debugUse->getUser())) {
+              assert(debugVar.getKind() ==
+                     DebugVarCarryingInst::Kind::DebugValue);
+
+              // The variable being initialized is normally the better name,
+              // since it is what the user wrote for this value. A client that
+              // needs to explain where the value came from asks for the callee
+              // instead. Only override when this really is a call result whose
+              // callee can be named; otherwise there is nothing better to say.
+              if (options.contains(Flag::NameCallResultAfterCallee)) {
+                if (auto fas = CallResultNamer::getCallProducing(searchValue)) {
+                  auto cnd = namer.getCalleeNameAndDecl(fas);
+
+                  // An accessor's name is its storage's name, because in source
+                  // the user writes the property rather than a call. Spelling
+                  // that as 'slot()' would name something they never wrote, so
+                  // leave property reads to the normal naming path.
+                  bool calleeIsAccessor =
+                      cnd.decl && isa<AccessorDecl>(cnd.decl);
+
+                  if (!cnd.name.empty() && !calleeIsAccessor) {
+                    // Spell the component as a call, so the name reads as the
+                    // result of calling the function rather than as a value
+                    // that happens to share the function's name. Push it as
+                    // text rather than as the decl: the decl overload renders
+                    // the bare base name, which is exactly the ambiguity the
+                    // parens resolve. Interning keeps the StringRef alive past
+                    // this scope.
+                    SmallString<64> calleeCall;
+                    llvm::raw_svector_ostream calleeCallStream(calleeCall);
+
+                    // An initializer's base name is 'init', which names nothing
+                    // the reader can look for, and a type can have several
+                    // initializers. Qualify it with the type and keep the
+                    // argument labels -- 'KlassPair.init(_:_:)' -- so the
+                    // component names the initializer that actually ran.
+                    auto *ctor = dyn_cast_or_null<ConstructorDecl>(cnd.decl);
+                    auto *nominal =
+                        ctor ? ctor->getDeclContext()->getSelfNominalTypeDecl()
+                             : nullptr;
+                    if (ctor && nominal)
+                      calleeCallStream << nominal->getName() << '.'
+                                       << ctor->getName();
+                    else
+                      calleeCallStream << cnd.name << "()";
+
+                    pushPathComponent(
+                        astContext.getIdentifier(calleeCall).str(),
+                        fas.getLoc());
+                    nameIsCallResult = true;
+                    return searchValue;
+                  }
+                }
+              }
+
+              pushPathComponent(debugVar.getName(), searchValue.getLoc());
+
+              // We return the value, not the debug_info.
+              return searchValue;
+            }
+          }
+        }
+      }
+    }
+
+    if (auto *bbi = hasOnlyBorrowingNonDestroyUse(searchValue)) {
+      if (auto *debugUse = getAnyDebugUse(bbi)) {
+        if (auto debugVar = DebugVarCarryingInst(debugUse->getUser())) {
+          assert(debugVar.getKind() == DebugVarCarryingInst::Kind::DebugValue);
+          pushPathComponent(debugVar.getName(), searchValue.getLoc());
+
+          // We return the value, not the debug_info.
+          return searchValue;
+        }
+      }
+    }
+
+    if (auto *allocInst = dyn_cast<AllocationInst>(searchValue)) {
+      // If the instruction itself doesn't carry any variable info, see
+      // whether it's copied from another place that does.
+      auto allocInstHasInfo = [](AllocationInst *allocInst) {
+        if (allocInst->getDecl())
+          return true;
+        auto debugVar = DebugVarCarryingInst(allocInst);
+        return debugVar && debugVar.maybeGetName().has_value();
+      };
+
+      if (!allocInstHasInfo(allocInst)) {
+        if (auto value = getRootValueForTemporaryAllocation(allocInst)) {
+          searchValue = value;
+          continue;
+        }
+
+        return SILValue();
+      }
+
+      pushPathComponent(DebugVarCarryingInst(allocInst).getName(),
+                        allocInst->getLoc());
+      return allocInst;
+    }
+
+    if (auto *abi = dyn_cast<AllocBoxInst>(searchValue)) {
+      pushPathComponent(DebugVarCarryingInst(abi).getName(), abi->getLoc());
+      return abi;
+    }
+
+    // If we have a store_borrow, always look at the dest. We are going to see
+    // if we can determine if dest is a temporary alloc_stack.
+    if (auto *sbi = dyn_cast<StoreBorrowInst>(searchValue)) {
+      searchValue = sbi->getDest();
+      continue;
+    }
+
+    if (auto *globalAddrInst = dyn_cast<GlobalAddrInst>(searchValue)) {
+      pushPathComponent(VarDeclCarryingInst(globalAddrInst).getName(),
+                        globalAddrInst->getLoc());
+      return globalAddrInst;
+    }
+
+    if (auto *oeInst = dyn_cast<OpenExistentialAddrInst>(searchValue)) {
+      searchValue = oeInst->getOperand();
+      continue;
+    }
+
+    if (auto *rei = dyn_cast<RefElementAddrInst>(searchValue)) {
+      pushPathComponent(rei->getField(), rei->getLoc());
+      searchValue = rei->getOperand();
+      continue;
+    }
+
+    if (auto *sei = dyn_cast<StructExtractInst>(searchValue)) {
+      pushPathComponent(sei->getField(), sei->getLoc());
+      searchValue = sei->getOperand();
+      continue;
+    }
+
+    if (auto *uedi = dyn_cast<UncheckedEnumDataInst>(searchValue)) {
+      pushPathComponent(uedi->getElement(), uedi->getLoc());
+      searchValue = uedi->getOperand();
+      continue;
+    }
+
+    if (auto *tei = dyn_cast<TupleExtractInst>(searchValue)) {
+      pushPathComponent(getStringRefForIndex(tei->getFieldIndex()),
+                        tei->getLoc());
+      searchValue = tei->getOperand();
+      continue;
+    }
+
+    if (auto *sei = dyn_cast<StructElementAddrInst>(searchValue)) {
+      pushPathComponent(sei->getField(), sei->getLoc());
+      searchValue = sei->getOperand();
+      continue;
+    }
+
+    if (auto *tei = dyn_cast<TupleElementAddrInst>(searchValue)) {
+      pushPathComponent(getStringRefForIndex(tei->getFieldIndex()),
+                        tei->getLoc());
+      searchValue = tei->getOperand();
+      continue;
+    }
+
+    if (auto *utedai = dyn_cast<UncheckedEnumDataAddrInstBase>(searchValue)) {
+      pushPathComponent(utedai->getElement(), utedai->getLoc());
+      searchValue = utedai->getEnum();
+      continue;
+    }
+
+    // Enums only have a single possible parent and is used sometimes like a
+    // transformation (e.x.: constructing an optional). We want to look through
+    // them and add the case to the variableNamePath.
+    if (auto *e = dyn_cast<EnumInst>(searchValue)) {
+      if (e->hasOperand()) {
+        // Do not push a path component for Optional.some wrapping — the
+        // programmer never writes 'x.some' in source, so adding '.some' to the
+        // inferred name produces confusing diagnostics like
+        // "'negotiator.some' cannot be returned".
+        if (!e->getType().getOptionalObjectType())
+          pushPathComponent(e->getElement(), e->getLoc());
+        searchValue = e->getOperand();
+        continue;
+      }
+    }
+
+    if (auto *dti = dyn_cast_or_null<DestructureTupleInst>(
+            searchValue->getDefiningInstruction())) {
+      pushPathComponent(
+          getStringRefForIndex(*dti->getIndexOfResult(searchValue)),
+          dti->getLoc());
+      searchValue = dti->getOperand();
+      continue;
+    }
+
+    if (auto *dsi = dyn_cast_or_null<DestructureStructInst>(
+            searchValue->getDefiningInstruction())) {
+      unsigned index = *dsi->getIndexOfResult(searchValue);
+      pushPathComponent(dsi->getStructDecl()->getStoredProperties()[index],
+                        dsi->getLoc());
+      searchValue = dsi->getOperand();
+      continue;
+    }
+
+    if (auto *fArg = dyn_cast<SILFunctionArgument>(searchValue)) {
+      if (auto *decl = fArg->getDecl()) {
+        pushPathComponent(decl, decl->getLoc());
+        return fArg;
+      }
+    }
+
+    // If we have a phi argument, visit each of the incoming values and pick the
+    // first one that gives us a name.
+    if (auto *phiArg = dyn_cast<SILPhiArgument>(searchValue)) {
+      if (auto *term = phiArg->getSingleTerminator()) {
+        if (auto *swi = dyn_cast<SwitchEnumInst>(term)) {
+          if (auto value = findDebugInfoProvidingValuePhiArg(swi->getOperand(),
+                                                             visitedValues))
+            return value;
+        }
+      }
+
+      SmallVector<SILValue, 8> incomingValues;
+      if (phiArg->getIncomingPhiValues(incomingValues)) {
+        for (auto value : incomingValues) {
+          if (auto resultValue =
+                  findDebugInfoProvidingValuePhiArg(value, visitedValues))
+            return resultValue;
+        }
+      }
+    }
+
+    // Name a call result (apply / try_apply / begin_apply). Read/modify
+    // (begin_apply) accessors are always looked through; other calls only when
+    // InferSelfThroughAllAccessors is set.
+    if (auto fas = CallResultNamer::getCallProducing(searchValue)) {
+      bool isBeginApply = isa<BeginApplyInst>(fas.getInstruction());
+      if (isBeginApply ||
+          options.contains(Flag::InferSelfThroughAllAccessors)) {
+        if (auto cnd = namer.getCalleeNameAndDecl(fas); !cnd.name.empty()) {
+          if (cnd.decl)
+            pushPathComponent(cnd.decl, fas.getLoc());
+          else
+            pushPathComponent(cnd.name, fas.getLoc());
+
+          // If there is a self value (directly, or captured by a
+          // partial_apply), continue into it to produce 'self.member'.
+          if (auto self = namer.getCalleeSelfValue(fas)) {
+            searchValue = self;
+            continue;
+          }
+
+          // Otherwise treat the result as the root, naming it after the
+          // callee.
+          return searchValue;
+        }
+      }
+    }
+
+    // Borrow/mutate accessor
+    if (searchValue->isBorrowAccessorResult()) {
+      if (auto fas =
+              FullApplySite::isa(searchValue->getDefiningInstruction())) {
+        if (auto selfParam = namer.nameThroughSelf(fas)) {
+          searchValue = selfParam;
+          continue;
+        }
+      }
+    }
+
+    // Addressor accessor.
+    if (auto ptrToAddr =
+            dyn_cast<PointerToAddressInst>(stripAccessMarkers(searchValue))) {
+      // The addressor can either produce the raw pointer itself or an
+      // `UnsafePointer` stdlib type wrapping it.
+      ApplyInst *addressorInvocation;
+      if (auto structExtract =
+              dyn_cast<StructExtractInst>(ptrToAddr->getOperand())) {
+        addressorInvocation = dyn_cast<ApplyInst>(structExtract->getOperand());
+      } else {
+        addressorInvocation = dyn_cast<ApplyInst>(ptrToAddr->getOperand());
+      }
+
+      if (addressorInvocation) {
+        if (auto selfParam = namer.nameThroughSelf(addressorInvocation)) {
+          searchValue = selfParam;
+          continue;
+        }
+        // For a top-level global addressor there is no self, but we can still
+        // recover the global variable's name from the callee (the addressor's
+        // AccessorDecl points back to the VarDecl via getStorage()).
+        auto fas = FullApplySite(addressorInvocation);
+        if (auto cnd = namer.getCalleeNameAndDecl(fas); !cnd.name.empty()) {
+          if (cnd.decl)
+            pushPathComponent(cnd.decl, fas.getLoc());
+          else
+            pushPathComponent(cnd.name, fas.getLoc());
+          return searchValue;
+        }
+      }
+    }
+
+    // Look through a function conversion thunk if we have one.
+    if (auto *pai = dyn_cast<PartialApplyInst>(searchValue)) {
+      if (auto *fn = pai->getCalleeFunction()) {
+        if (fn->isThunk() && ApplySite(pai).getNumArguments() == 1) {
+          SILValue value = ApplySite(pai).getArgument(0);
+          if (value->getType().isFunction()) {
+            searchValue = value;
+            continue;
+          }
+        }
+      }
+    }
+
+    // Otherwise, try to see if we have a single value instruction we can look
+    // through.
+    if (isa<BeginBorrowInst>(searchValue) || isa<LoadInst>(searchValue) ||
+        isa<LoadBorrowInst>(searchValue) || isa<BeginAccessInst>(searchValue) ||
+        isa<MarkUnresolvedNonCopyableValueInst>(searchValue) ||
+        isa<ProjectBoxInst>(searchValue) || isa<CopyValueInst>(searchValue) ||
+        isa<ExplicitCopyValueInst>(searchValue) ||
+        isa<ConvertFunctionInst>(searchValue) ||
+        isa<MarkUninitializedInst>(searchValue) ||
+        isa<MarkDependenceInst>(searchValue) ||
+        isa<CopyableToMoveOnlyWrapperAddrInst>(searchValue) ||
+        isa<MoveOnlyWrapperToCopyableAddrInst>(searchValue) ||
+        isa<MoveOnlyWrapperToCopyableValueInst>(searchValue) ||
+        isa<CopyableToMoveOnlyWrapperValueInst>(searchValue) ||
+        isa<EndInitLetRefInst>(searchValue) ||
+        isa<ConvertEscapeToNoEscapeInst>(searchValue) ||
+        isa<ConvertFunctionInst>(searchValue) ||
+        // Look through existential type-erasure wrappers so that name inference
+        // can reach the concrete value underneath. For example, when a named
+        // variable of a concrete class type is wrapped in `any Protocol` before
+        // being stored into an indirect return slot, init_existential_ref sits
+        // between the concrete copy_value and the enum wrapping. Without
+        // looking through it the inferrer gives up and the diagnostic falls
+        // back to the generic "unknown pattern" catch-all.
+        isa<InitExistentialRefInst>(searchValue) ||
+        isa<InitExistentialAddrInst>(searchValue) ||
+        // A `move_value [var_decl]` with no attached debug_value means the
+        // debug info for this var decl was never emitted (e.g. a capture-list
+        // entry synthesized directly from a member-access initializer, as in
+        // `[sending ns]` capturing `self.ns`). Fall through to the value's
+        // initializer instead of giving up, so e.g. a getter call underneath
+        // can still be named via the call-result path below.
+        isa<MoveValueInst>(searchValue)) {
+      searchValue = cast<SingleValueInstruction>(searchValue)->getOperand(0);
+      continue;
+    }
+
+    // Return SILValue() if we ever get to the bottom to signal we failed to
+    // find anything.
+    return SILValue();
+  }
+}
+
+StringRef VariableNameInferrer::getNameFromDecl(Decl *d) {
+  if (d) {
+    if (auto accessor = dyn_cast<AccessorDecl>(d)) {
+      return accessor->getStorage()->getBaseName().userFacingName();
+    }
+    if (auto vd = dyn_cast<ValueDecl>(d)) {
+      return vd->getBaseName().userFacingName();
+    }
+  }
+
+  return UnknownDeclString;
+}
+
+StringRef VariableNameInferrer::InferredNameComponent::getStringRef() const {
+  if (auto *str = std::get_if<StringRef>(&subject))
+    return *str;
+  return VariableNameInferrer::getNameFromDecl(std::get<ValueDecl *>(subject));
+}
+
+void VariableNameInferrer::drainVariableNamePath() {
+  if (variableNamePath.empty())
+    return;
+
+  // The leaf-most component is the first one pushed during the walk (the
+  // deepest projection / the access we started from). Stash its decl so a
+  // post-walk consumer can recover decl-kind-aware info (e.g. to feed
+  // %kind in a diagnostic when the leaf is a function called inline).
+  auto components = variableNamePath.getData();
+  if (auto *d = std::get_if<ValueDecl *>(&components.front().subject))
+    leafDecl = *d;
+
+  // Walk backwards, constructing our string.
+  while (true) {
+    resultingString += variableNamePath.pop_back_val().getStringRef();
+
+    if (variableNamePath.empty())
+      return;
+
+    resultingString += '.';
+  }
+}
+
+std::optional<Identifier> VariableNameInferrer::inferName(SILValue value) {
+  auto *fn = value->getFunction();
+  if (!fn)
+    return {};
+  VariableNameInferrer::Options options;
+  options |= VariableNameInferrer::Flag::InferSelfThroughAllAccessors;
+  SmallString<64> resultingName;
+  VariableNameInferrer inferrer(fn, options, resultingName);
+  if (!inferrer.inferByWalkingUsesToDefsReturningRoot(value))
+    return {};
+  return fn->getASTContext().getIdentifier(resultingName);
+}
+
+std::optional<std::pair<Identifier, SILValue>>
+VariableNameInferrer::inferNameAndRoot(SILValue value) {
+  auto *fn = value->getFunction();
+  if (!fn)
+    return {};
+  VariableNameInferrer::Options options;
+  options |= VariableNameInferrer::Flag::InferSelfThroughAllAccessors;
+  SmallString<64> resultingName;
+  VariableNameInferrer inferrer(fn, options, resultingName);
+  SILValue rootValue = inferrer.inferByWalkingUsesToDefsReturningRoot(value);
+  if (!rootValue)
+    return {};
+  return {{fn->getASTContext().getIdentifier(resultingName), rootValue}};
+}
+
+std::optional<std::pair<Identifier, SourceLoc>>
+VariableNameInferrer::inferNameAndFirstPathComponent(SILValue value,
+                                                     Options extraOptions,
+                                                     bool *nameIsCallResult) {
+  auto *fn = value->getFunction();
+  if (!fn)
+    return {};
+  VariableNameInferrer::Options options;
+  options |= VariableNameInferrer::Flag::InferSelfThroughAllAccessors;
+  options |= extraOptions;
+  SmallString<64> resultingName;
+  VariableNameInferrer inferrer(fn, options, resultingName);
+  if (!inferrer.inferByWalkingUsesToDefs(value))
+    return {};
+  if (nameIsCallResult)
+    *nameIsCallResult = inferrer.isNameACallResult();
+  return {{fn->getASTContext().getIdentifier(resultingName),
+           inferrer.getFirstNameProvidingLoc()}};
+}
+
+std::optional<VariableNameInferrer::InferredNameAndLeafDecl>
+VariableNameInferrer::inferNameAndLeafDecl(SILValue value) {
+  auto *fn = value->getFunction();
+  if (!fn)
+    return {};
+  VariableNameInferrer::Options options;
+  options |= VariableNameInferrer::Flag::InferSelfThroughAllAccessors;
+  SmallString<64> resultingName;
+  VariableNameInferrer inferrer(fn, options, resultingName);
+  if (!inferrer.inferByWalkingUsesToDefs(value))
+    return {};
+  return InferredNameAndLeafDecl{
+      fn->getASTContext().getIdentifier(resultingName),
+      inferrer.getFirstNameProvidingLoc(), inferrer.getLeafDecl()};
+}
+
+//===----------------------------------------------------------------------===//
+//                                MARK: Tests
+//===----------------------------------------------------------------------===//
+
+namespace swift::test {
+
+// Arguments:
+// - SILValue: value to emit a name for.
+// Dumps:
+// - The inferred name
+// - The inferred value.
+static FunctionTest VariableNameInferrerTests(
+    "variable_name_inference", [](auto &function, auto &arguments, auto &test) {
+      auto value = arguments.takeValue();
+      SmallString<64> finalString;
+      VariableNameInferrer::Options options;
+      options |= VariableNameInferrer::Flag::InferSelfThroughAllAccessors;
+      VariableNameInferrer inferrer(&function, options, finalString);
+      SILValue rootValue =
+          inferrer.inferByWalkingUsesToDefsReturningRoot(value);
+      llvm::outs() << "Input Value: " << *value;
+      if (!rootValue) {
+        llvm::outs() << "Name: 'unknown'\nRoot: 'unknown'\n";
+        return;
+      }
+      llvm::outs() << "Name: '" << finalString << "'\nRoot: " << rootValue;
+    });
+
+// Arguments:
+// - SILValue: value to emit a name + leaf decl for.
+// Dumps:
+// - The inferred name
+// - The leaf-most ValueDecl's user-facing base name and descriptive kind,
+//   or "<none>" when the walk landed on a StringRef-only leaf (e.g. a
+//   debug_value's name attribute that didn't carry a decl).
+static FunctionTest VariableNameInferrerLeafDeclTests(
+    "variable_name_inference_leaf_decl",
+    [](auto &function, auto &arguments, auto &test) {
+      auto value = arguments.takeValue();
+      llvm::outs() << "Input Value: " << *value;
+      auto result = VariableNameInferrer::inferNameAndLeafDecl(value);
+      if (!result) {
+        llvm::outs() << "Name: 'unknown'\nLeaf decl: <none>\n";
+        return;
+      }
+      llvm::outs() << "Name: '" << result->name.str() << "'\n";
+      if (result->leafDecl) {
+        auto kind = Decl::getDescriptiveKindName(
+            result->leafDecl->getDescriptiveKind());
+        llvm::outs() << "Leaf decl: '"
+                     << VariableNameInferrer::getNameFromDecl(result->leafDecl)
+                     << "' kind: '" << kind << "'\n";
+      } else {
+        llvm::outs() << "Leaf decl: <none>\n";
+      }
+    });
+} // namespace swift::test

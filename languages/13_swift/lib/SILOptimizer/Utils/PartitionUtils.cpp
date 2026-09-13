@@ -1,0 +1,1198 @@
+//===--- PartitionUtils.cpp -----------------------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2023 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
+#include "swift/SILOptimizer/Utils/PartitionUtils.h"
+
+// We only use this so we can implement print on our type erased errors.
+#include "swift/SILOptimizer/Analysis/RegionAnalysis.h"
+#include "swift/SILOptimizer/Utils/VariableNameUtils.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/Statistic.h"
+
+#define DEBUG_TYPE "region-isolation"
+
+STATISTIC(NumPartitionMerge, "# of calls to Partition::merge");
+STATISTIC(NumHorizontalUpdate, "# of calls to Partition::horizontalUpdate");
+STATISTIC(NumHorizontalUpdateScans,
+          "# of element-region pairs scanned inside horizontalUpdate loops");
+STATISTIC(NumPartitionJoin, "# of calls to Partition::join");
+
+using namespace swift;
+using namespace swift::PartitionPrimitives;
+
+//===----------------------------------------------------------------------===//
+//                           MARK: PartitionOpError
+//===----------------------------------------------------------------------===//
+
+void PartitionOpError::UnknownCodePatternError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: Unknown Code Pattern Error\n"
+     << "        Inst: " << *op->getSourceInst();
+}
+
+void PartitionOpError::LocalUseAfterSendError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: Use After Send\n"
+     << "        Sending Inst: " << *sendingOp->getUser()
+     << "        Sending Op Value: " << sendingOp->get()
+     << "        Require Inst: " << *op->getSourceInst() << "        ID:  %%"
+     << sentElement << "\n"
+     << "        Rep: " << valueMap.getRepresentativeValue(sentElement)
+     << "        Sending Op Num: " << sendingOp->getOperandNumber() << '\n';
+}
+
+void PartitionOpError::SentNeverSendableError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &info) const {
+  os << "    Emitting Error. Kind: Sent Non Sendable\n"
+     << "        ID:  %%" << sentElement << "\n"
+     << "        Rep: " << *info.getRepresentative(sentElement)
+     << "        Dynamic Isolation Region: ";
+  isolationRegionInfo.printForOneLineLogging(info.getFunction(), os);
+  os << '\n';
+  if (auto isolatedValue = isolationRegionInfo->maybeGetIsolatedValue()) {
+    os << "        Isolated Value: " << isolatedValue;
+    auto name = VariableNameInferrer::inferName(isolatedValue);
+    os << "        Isolated Value Name: "
+       << (name.has_value() ? name->get() : "none") << '\n';
+  } else {
+    os << "        Isolated Value: none\n";
+  };
+}
+
+void PartitionOpError::AssignNeverSendableIntoSendingResultError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: Assign Isolated Into Sending Result!\n"
+     << "        Assign Inst: " << *op->getSourceInst()
+     << "        Dest Value: " << *destValue
+     << "        Dest Element: " << destElement << '\n'
+     << "        Src Value: " << srcValue
+     << "        Src Element: " << srcElement << '\n'
+     << "        Src Rep: " << valueMap.getRepresentativeValue(srcElement)
+     << "        Src Isolation: " << srcIsolationRegionInfo << '\n';
+}
+
+void PartitionOpError::InOutSendingNotInitializedAtExitError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: InOut Not Reinitialized At End Of "
+        "Function\n"
+     << "        Sending Inst: " << *sendingOp->getUser()
+     << "        Sending Op Value: " << sendingOp->get()
+     << "        Require Inst: " << *op->getSourceInst() << "        ID:  %%"
+     << sentElement << "\n"
+     << "        Rep: " << valueMap.getRepresentativeValue(sentElement)
+     << "        Sending Op Num: " << sendingOp->getOperandNumber() << '\n';
+}
+
+void PartitionOpError::InOutSendingNotDisconnectedAtExitError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: InOut Sending ActorIsolated "
+        "at end of "
+        "Function Error!\n"
+     << "        ID:  %%" << inoutSendingElement << "\n"
+     << "        Rep: " << valueMap.getRepresentativeValue(inoutSendingElement)
+     << "        Dynamic Isolation Region: ";
+  isolationInfo.printForOneLineLogging(valueMap.getFunction(), os);
+  os << '\n';
+}
+
+void PartitionOpError::NonSendableIsolationCrossingResultError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: NonSendableIsolationCrossingResultError\n"
+        "        Inst: "
+     << *op->getSourceInst() << "        Result ID: %%" << returnValueElement
+     << '\n';
+}
+
+void PartitionOpError::InOutSendingReturnedError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: InOutSendingReturnedError!\n"
+     << "        ID:  %%" << inoutSendingElement << '\n'
+     << "        Rep: " << valueMap.getRepresentativeValue(inoutSendingElement)
+     << "        Returned Value ID:  %%" << returnedValue << '\n'
+     << "        Rep: " << valueMap.getRepresentativeValue(returnedValue);
+}
+
+void PartitionOpError::InOutSendingParametersInSameRegionError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: InOutSendingParametersInSameRegion!\n"
+     << "        First ID:  %%" << firstInoutSendingParam
+     << "        First Rep: "
+     << valueMap.getRepresentativeValue(firstInoutSendingParam);
+  for (auto other : otherInOutSendingParams) {
+    os << "        Other ID:  %%" << other
+       << "        Other Rep: " << valueMap.getRepresentativeValue(other);
+  }
+}
+
+void PartitionOpError::IncompatibleRegionMergeError::print(
+    llvm::raw_ostream &os, RegionAnalysisValueMap &valueMap) const {
+  os << "    Emitting Error. Kind: IncompatibleRegionMergeError!\n"
+     << "        Src ID:  %%" << srcRegionElt
+     << "        Src Rep: " << valueMap.getRepresentativeValue(srcRegionElt)
+     << "        Dst ID:  %%" << dstRegionElt
+     << "        Dst Rep: " << valueMap.getRepresentativeValue(dstRegionElt)
+     << "        Reason: ";
+  switch (reason) {
+  case Reason::Unknown:
+    os << "unknown\n";
+    return;
+  case Reason::Assign:
+    os << "assign\n";
+    return;
+  case Reason::ActorIntroducingInst:
+    os << "isolated_function\n";
+    return;
+  case Reason::NonisolatedClosure:
+    os << "nonisolated_closure\n";
+    return;
+  case Reason::Builtin:
+    os << "builtin\n";
+    return;
+  case Reason::NonisolatedFunction:
+    os << "nonisolated_function\n";
+    return;
+  case Reason::Cast:
+    os << "cast\n";
+    return;
+  }
+  llvm_unreachable("Unhandled case");
+}
+
+//===----------------------------------------------------------------------===//
+//                             MARK: PartitionOp
+//===----------------------------------------------------------------------===//
+
+void PartitionOp::print(llvm::raw_ostream &os, bool extraSpace) const {
+  constexpr static char extraSpaceLiteral[10] = "     ";
+  switch (opKind) {
+  case PartitionOpKind::AssignDirect: {
+    os << "assign_direct ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1() << " = %%" << getOpArg2();
+    break;
+  }
+  case PartitionOpKind::AssignIndirect: {
+    os << "assign_indirect ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1() << " = %%" << getOpArg2()
+       << ". Overwritten Value: " << getOpArg3();
+    break;
+  }
+  case PartitionOpKind::AssignFresh:
+    os << "assign_fresh %%" << getOpArg1();
+    break;
+  case PartitionOpKind::Send: {
+    os << "send ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1();
+    break;
+  }
+  case PartitionOpKind::UndoSend: {
+    os << "undo_send ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1();
+    break;
+  }
+  case PartitionOpKind::Merge: {
+    os << "merge ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1() << " with %%" << getOpArg2();
+    break;
+  }
+  case PartitionOpKind::Require: {
+    os << "require ";
+    if (getOptions().containsOnly(
+            PartitionOp::Flag::RequireOfMutableBaseOfSendableValue))
+      os << "[mutable_base_of_sendable_val] ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1();
+    break;
+  }
+  case PartitionOpKind::UnknownPatternError:
+    os << "unknown pattern error ";
+    os << "%%" << getOpArg1();
+    break;
+  case PartitionOpKind::InOutSendingAtFunctionExit:
+    os << "inout_sending_at_function_exit ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1();
+    break;
+  case PartitionOpKind::NonSendableIsolationCrossingResult:
+    os << "nonsendable_isolationcrossing_result ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1();
+    break;
+  case PartitionOpKind::AssignFreshAssign:
+    os << "assign_fresh_assign ";
+    if (extraSpace)
+      os << extraSpaceLiteral;
+    os << "%%" << getOpArg1() << " = %%" << getOpArg2();
+    break;
+  }
+  os << ": " << *getSourceInst();
+}
+
+//===----------------------------------------------------------------------===//
+//                              MARK: Partition
+//===----------------------------------------------------------------------===//
+
+Partition Partition::singleRegion(SILLocation loc, ArrayRef<Element> indices,
+                                  IsolationHistory inputHistory) {
+  Partition p(inputHistory);
+  if (indices.empty()) {
+    assert(p.is_canonical_correct());
+    return p;
+  }
+  
+    // Callers must pass distinct elements: pushing AddNewRegionForElement /
+    // merge nodes for the same element more than once is unrecoverable in
+    // popHistory (the second pop's removeElement asserts because the first pop
+    // already extracted the element), so a duplicate is a caller bug we trap
+    // here rather than silently absorb.
+#ifndef NDEBUG
+    SmallVector<Element, 8> sortedIndices(indices.begin(), indices.end());
+    llvm::sort(sortedIndices);
+    auto dup = std::adjacent_find(sortedIndices.begin(), sortedIndices.end());
+    if (dup != sortedIndices.end()) {
+      llvm::errs() << "Partition::singleRegion does not support duplicate "
+                      "indices, but element "
+                   << unsigned(*dup) << " appears more than once in {";
+      llvm::interleaveComma(indices, llvm::errs(),
+                            [](Element e) { llvm::errs() << unsigned(e); });
+      llvm::errs() << "}\n";
+      llvm_unreachable("Partition::singleRegion given duplicate indices");
+    }
+#endif
+
+    // The lowest element is our region representative and the value that our
+    // region takes. Canonicality requires the region label to be <= every
+    // element in the region (see is_canonical_correct), so we must use the
+    // minimum element here rather than indices[0]: callers are not required to
+    // pass indices in sorted order.
+    Element repElement = *llvm::min_element(indices);
+    Region repElementRegion = Region(repElement);
+    p.nextAvailableRegionNum = Region(repElementRegion + 1);
+
+    // Place all of the operations until end of scope into one history
+    // sequence.
+    p.pushHistorySequenceBoundary(loc);
+
+    // First create a region for repElement. We are going to merge each other
+    // element into its region one at a time.
+    p.pushNewElementRegion(repElement);
+    for (Element index : indices) {
+      // Map every element (including repElement) into the region;
+      // pushNewElementRegion only records history, it does not populate
+      // elementToRegionMap.
+      p.elementToRegionMap.insert_or_assign(index, repElementRegion);
+      if (index == repElement)
+        continue;
+      p.pushNewElementRegion(index);
+      p.pushMergeElementRegions(repElement, index);
+    }
+
+  assert(p.is_canonical_correct());
+  return p;
+}
+
+void Partition::markSent(Element val, SendingOperandSet *sendingOperandSet) {
+  // First see if our val is tracked. If it is not tracked, insert it and mark
+  // its new region as sent.
+  if (!isTrackingElement(val)) {
+    elementToRegionMap.insert_or_assign(val, nextAvailableRegionNum);
+    pushNewElementRegion(val);
+    regionToSendingOpMap.insert({nextAvailableRegionNum, sendingOperandSet});
+    nextAvailableRegionNum = Region(nextAvailableRegionNum + 1);
+    canonical = false;
+    return;
+  }
+
+  // Canonicalize so that our elementToRegionMap.
+  canonicalize();
+
+  // Otherwise, we already have this value in the map. Try to insert it.
+  auto iter1 = elementToRegionMap.find(val);
+  assert(iter1 != elementToRegionMap.end());
+  auto iter2 = regionToSendingOpMap.insert({iter1->second, sendingOperandSet});
+
+  // If we did insert, just return. We were not tracking any state.
+  if (iter2.second)
+    return;
+
+  // Otherwise, we need to merge the sets.
+  iter2.first->second = iter2.first->second->merge(sendingOperandSet);
+}
+
+bool Partition::undoSend(Element val) {
+  canonicalize();
+
+  // First see if our val is tracked. If it is not tracked, insert it.
+  if (!isTrackingElement(val)) {
+    elementToRegionMap.insert_or_assign(val, nextAvailableRegionNum);
+    pushNewElementRegion(val);
+    nextAvailableRegionNum = Region(nextAvailableRegionNum + 1);
+    canonical = false;
+    return true;
+  }
+
+  // Otherwise, we already have this value in the map. Remove it from the
+  // "sending operand" map.
+  auto iter1 = elementToRegionMap.find(val);
+  assert(iter1 != elementToRegionMap.end());
+  return regionToSendingOpMap.erase(iter1->second);
+}
+
+void Partition::trackNewElement(Element newElt, bool updateHistory) {
+  SWIFT_DEFER { validateRegionToSendingOpMapRegions(); };
+
+  // First try to emplace newElt with fresh_label.
+  auto iter = elementToRegionMap.try_emplace(newElt, nextAvailableRegionNum);
+
+  // If we did insert, then we know that the value is completely new. We can
+  // just update the fresh_label, set canonical to false, and return.
+  if (iter.second) {
+    // Since the value is completely new, add a completely new history node to
+    // the history.
+    if (updateHistory)
+      pushNewElementRegion(newElt);
+
+    // Increment the fresh label so it remains fresh.
+    nextAvailableRegionNum = Region(nextAvailableRegionNum + 1);
+    canonical = false;
+    return;
+  }
+
+  // Otherwise, we have a bit more work that we need to perform:
+  //
+  // 1. We of course need to update iter to point at fresh_label.
+  //
+  // 2. We need to see if this value was the last element in its current
+  // region. If so, then we need to remove the region from the sending op
+  // map.
+  //
+  // This is important to ensure that every region in the sendingOpMap is
+  // also in elementToRegionMap.
+  auto oldRegion = iter.first->second;
+  iter.first->second = nextAvailableRegionNum;
+
+  auto getValueFromOtherRegion = [&]() -> std::optional<Element> {
+    for (auto pair : elementToRegionMap) {
+      if (pair.second == oldRegion)
+        return pair.first;
+    }
+    return {};
+  };
+
+  if (auto matchingElt = getValueFromOtherRegion()) {
+    if (updateHistory) {
+      pushRemoveElementFromRegion(*matchingElt, newElt);
+      pushNewElementRegion(newElt);
+    }
+  } else {
+    regionToSendingOpMap.erase(oldRegion);
+    if (updateHistory) {
+      pushRemoveLastElementFromRegion(newElt);
+      pushNewElementRegion(newElt);
+    }
+  }
+
+  // Increment the fresh label so it remains fresh.
+  nextAvailableRegionNum = Region(nextAvailableRegionNum + 1);
+  canonical = false;
+}
+
+/// Assigns \p oldElt to the region associated with \p newElt.
+void Partition::assignElement(Element oldElt, Element newElt,
+                              bool updateHistory) {
+  // If the old/new elt at the same, just return.
+  if (oldElt == newElt)
+    return;
+
+  SWIFT_DEFER { validateRegionToSendingOpMapRegions(); };
+
+  // First try to emplace oldElt with the newRegion.
+  auto newRegion = elementToRegionMap.at(newElt);
+  auto iter = elementToRegionMap.try_emplace(oldElt, newRegion);
+
+  // If we did an insert, then we know that oldElt was new to this
+  // partition. This means that we update our history for a completely new
+  // value in newElt's region. We also set canonical to false to ensure when
+  // ever we do a merge/etc, we renumber indices as appropriate.
+  if (iter.second) {
+    if (updateHistory) {
+      pushNewElementRegion(oldElt);
+      pushMergeElementRegions(newElt, oldElt);
+    }
+    canonical = false;
+    return;
+  }
+
+  // Otherwise, we did an assign.
+  auto oldRegion = iter.first->second;
+
+  // First check if oldRegion and newRegion are the same. In such a case, just
+  // return.
+  if (oldRegion == newRegion)
+    return;
+
+  // Otherwise, we need to actually assign. In such a case, we need to see if
+  // oldElt was the last element in oldRegion. If so, we need to erase the
+  // oldRegion from regionToSendingOpMap.
+  iter.first->second = newRegion;
+
+  auto getValueFromOtherRegion = [&]() -> std::optional<Element> {
+    for (auto pair : elementToRegionMap) {
+      if (pair.second == oldRegion)
+        return pair.first;
+    }
+    return {};
+  };
+
+  if (auto otherElt = getValueFromOtherRegion()) {
+    if (updateHistory) {
+      pushRemoveElementFromRegion(*otherElt, oldElt);
+      pushNewElementRegion(oldElt);
+      pushMergeElementRegions(newElt, oldElt);
+    }
+  } else {
+    regionToSendingOpMap.erase(oldRegion);
+    if (updateHistory) {
+      pushRemoveLastElementFromRegion(oldElt);
+      pushNewElementRegion(oldElt);
+      pushMergeElementRegions(newElt, oldElt);
+    }
+  }
+
+  canonical = false;
+}
+
+Partition Partition::join(const Partition &fst, Partition &mutableSnd,
+                          SILBasicBlock *sndBlock) {
+  ++NumPartitionJoin;
+  // READ THIS! Remember, we cannot touch mutableSnd after this point. We just
+  // use it to canonicalize to avoid having to copy snd. After this point,
+  // please use the const reference snd to keep each other honest.
+  mutableSnd.canonicalize();
+  const auto &snd = mutableSnd;
+
+  // First copy fst into result and canonicalize the result.and canonicalize
+  // fst.
+  Partition result = fst;
+  result.canonicalize();
+
+  // Push a history join recording the predecessor block whose exit partition
+  // (snd) we are merging in, so the join can later be rewound by recovering
+  // that block's exit partition.
+  result.pushCFGHistoryJoin(sndBlock);
+
+  // For each (sndEltNumber, sndRegionNumber) in snd_reduced...
+  for (auto pair : snd.elementToRegionMap) {
+    auto sndEltNumber = pair.first;
+    auto sndRegionNumber = pair.second;
+
+    // Check if result has sndEltNumber already within it...
+    {
+      auto resultIter = result.elementToRegionMap.find(sndEltNumber);
+      if (result.elementToRegionMap.end() != resultIter) {
+        auto resultRegion = resultIter->second;
+
+        // If we do and Element(sndRegionNumber) isn't the same element as
+        // sndEltNumber, then we know that sndEltNumber isn't the
+        // representative element of its region in sndReduced. We need to
+        // ensure that in result, that representative and our current
+        // value are in the same region. If they are the same value, we can
+        // just reuse sndEltNumber's region in result for the sending
+        // check.
+        if (sndEltNumber != Element(sndRegionNumber)) {
+          // NOTE: History is updated by Partition::merge(...).
+          resultRegion = result.merge(sndEltNumber, Element(sndRegionNumber));
+        }
+
+        // Then if sndRegionNumber is sent in sndReduced, make sure mergedRegion
+        // is sent in result.
+        auto sndIter = snd.regionToSendingOpMap.find(sndRegionNumber);
+        if (sndIter != snd.regionToSendingOpMap.end()) {
+          auto resultIter = result.regionToSendingOpMap.insert(
+              {resultRegion, sndIter->second});
+          if (!resultIter.second) {
+            resultIter.first->second =
+                resultIter.first->second->merge(sndIter->second);
+          }
+        }
+        continue;
+      }
+    }
+
+    // At this point, we know that sndEltNumber is not in result.
+    //
+    // Check if the representative element number
+    // (i.e. Element(sndRegionNumber)) for this element in snd is in result. In
+    // that case, we know that we visited the representative number before we
+    // visited this elt number (since we are processing in order) so what ever
+    // is mapped to that number in snd must be the correct region for this
+    // element as well since this number is guaranteed to be greater than our
+    // representative and the number mapped to our representative in result must
+    // be
+    // <= our representative.
+    //
+    // In this case, we do not need to propagate 'send' into resultRegion
+    // since we would have handled that already when we visited our earlier
+    // representative element number.
+    {
+      auto iter = result.elementToRegionMap.find(Element(sndRegionNumber));
+      if (iter != result.elementToRegionMap.end()) {
+        result.elementToRegionMap.insert({sndEltNumber, iter->second});
+        // Record sndEltNumber as a brand-new element first, then merge it
+        // into its rep's region. This mirrors how Partition::assignElement
+        // records "new element added to existing region" —
+        // pushNewElementRegion(newElt) followed by
+        // pushMergeElementRegions(existingRep, [newElt]). Crucially, the
+        // merge primary is the *existing* rep, not the new element: pop
+        // then extracts the new element back into a fresh region (on its
+        // own, satisfying the AddNew undo's "should have been last" assert)
+        // while leaving the existing region's other members untouched.
+        result.pushNewElementRegion(sndEltNumber);
+        result.pushMergeElementRegions(Element(sndRegionNumber), sndEltNumber);
+        // We want fresh_label to always be one element larger than our
+        // maximum element.
+        if (result.nextAvailableRegionNum <= Region(sndEltNumber))
+          result.nextAvailableRegionNum = Region(sndEltNumber + 1);
+        continue;
+      }
+    }
+
+    // Otherwise, we have an element that is not in result and its
+    // representative is not in result. This means that we must be our
+    // representative in snd since we should have visited our representative
+    // earlier if we were not due to our traversal being in order. Thus just add
+    // this to result.
+    assert(sndEltNumber == Element(sndRegionNumber));
+    result.elementToRegionMap.insert({sndEltNumber, sndRegionNumber});
+    result.pushNewElementRegion(sndEltNumber);
+    auto sndIter = snd.regionToSendingOpMap.find(sndRegionNumber);
+    if (sndIter != snd.regionToSendingOpMap.end()) {
+      auto fstIter = result.regionToSendingOpMap.insert(
+          {sndRegionNumber, sndIter->second});
+      if (!fstIter.second)
+        fstIter.first->second = fstIter.first->second->merge(sndIter->second);
+    }
+    if (result.nextAvailableRegionNum <= sndRegionNumber)
+      result.nextAvailableRegionNum = Region(sndEltNumber + 1);
+  }
+
+  // We should have preserved canonicality during the computation above. It
+  // would be wasteful to need to canonicalize twice.
+  assert(result.is_canonical_correct());
+
+  // result is now the join.
+  return result;
+}
+
+void Partition::print(llvm::raw_ostream &os,
+                      std::function<bool(llvm::raw_ostream &, Region)>
+                          printRegionIsolation) const {
+  // Group by region, so the region numbers have to be the canonical ones or the
+  // grouping is against labels that happen to be stale. Canonicalizing is safe
+  // from a const printer: it relabels regions without changing which elements
+  // share one, so it does not change what this partition means.
+  //
+  // Use dump_labels() to see the labels as they stand instead.
+  canonicalize();
+
+  SmallFrozenMultiMap<Region, Element, 8> multimap;
+
+  for (auto [eltNo, regionNo] : elementToRegionMap)
+    multimap.insert(regionNo, eltNo);
+
+  multimap.setFrozen();
+
+  os << "[";
+  for (auto [regionNo, elementNumbers] : multimap.getRange()) {
+    auto iter = regionToSendingOpMap.find(regionNo);
+    bool wasSent = iter != regionToSendingOpMap.end();
+    if (wasSent) {
+      os << '{';
+    } else {
+      os << '(';
+    }
+
+    if (printRegionIsolation && printRegionIsolation(os, regionNo)) {
+      os << ": ";
+    }
+
+    int j = 0;
+    for (Element i : elementNumbers) {
+      os << (j++ ? " " : "") << i;
+    }
+    if (wasSent) {
+      os << '}';
+    } else {
+      os << ')';
+    }
+  }
+  os << "]\n";
+}
+
+void Partition::printVerbose(llvm::raw_ostream &os) const {
+  // Canonical region numbers, for the same reason as print.
+  canonicalize();
+
+  SmallFrozenMultiMap<Region, Element, 8> multimap;
+
+  for (auto [eltNo, regionNo] : elementToRegionMap)
+    multimap.insert(regionNo, eltNo);
+
+  multimap.setFrozen();
+
+  for (auto [regionNo, elementNumbers] : multimap.getRange()) {
+    auto iter = regionToSendingOpMap.find(regionNo);
+    bool wasSent = iter != regionToSendingOpMap.end();
+
+    os << "Region: " << regionNo << ". ";
+    if (wasSent) {
+      os << '{';
+    } else {
+      os << '(';
+    }
+
+    int j = 0;
+    for (Element i : elementNumbers) {
+      os << (j++ ? " " : "") << i;
+    }
+    if (wasSent) {
+      os << '}';
+    } else {
+      os << ')';
+    }
+    os << "\n";
+    os << "SentInsts:\n";
+    if (wasSent) {
+      for (auto op : iter->second->data()) {
+        os << "    ";
+        op->print(os);
+      }
+    } else {
+      os << "None.\n";
+    }
+  }
+}
+
+void Partition::printHistory(llvm::raw_ostream &os) const {
+  llvm::dbgs() << "History Dump!\n";
+  const auto *head = history.head;
+
+  if (!head)
+    return;
+
+  do {
+    switch (head->getKind()) {
+    case IsolationHistory::Node::AddNewRegionForElement:
+      os << "AddNewRegionForElement: " << head->getFirstArgAsElement();
+      break;
+    case IsolationHistory::Node::RemoveLastElementFromRegion:
+      os << "RemoveLastElementFromRegion: " << head->getFirstArgAsElement();
+      break;
+    case IsolationHistory::Node::RemoveElementFromRegion: {
+      os << "RemoveElementFromRegion: " << head->getFirstArgAsElement();
+      auto extraArgs = head->getAdditionalElementArgs();
+      if (extraArgs.empty())
+        break;
+      llvm::interleaveComma(extraArgs, os);
+      break;
+    }
+    case IsolationHistory::Node::MergeElementRegions: {
+      os << "MergeElementRegions: " << head->getFirstArgAsElement();
+      auto extraArgs = head->getAdditionalElementArgs();
+      if (extraArgs.empty())
+        break;
+      os << ", ";
+      llvm::interleaveComma(extraArgs, os);
+      break;
+    }
+    case IsolationHistory::Node::CFGHistoryJoin:
+      os << "CFGHistoryJoin";
+      break;
+    case IsolationHistory::Node::SequenceBoundary:
+      os << "SequenceBoundary";
+      break;
+    }
+    os << "\n";
+
+  } while ((head = head->getNext()));
+}
+
+bool Partition::is_canonical_correct() {
+#ifdef NDEBUG
+  return true;
+#else
+  if (!canonical)
+    return true; // vacuously correct
+
+  auto fail = [&](Element i, int type) {
+    llvm::errs() << "FAIL(i=" << i << "; type=" << type << "): ";
+    print(llvm::errs());
+    return false;
+  };
+
+  for (auto &[eltNo, regionNo] : elementToRegionMap) {
+    // Labels should not exceed fresh_label.
+    if (regionNo >= nextAvailableRegionNum)
+      return fail(eltNo, 0);
+
+    // The label of a region should be at most as large as each index in it.
+    if ((unsigned)regionNo > eltNo)
+      return fail(eltNo, 1);
+
+    // Each region label should also be an element of the partition.
+    if (!elementToRegionMap.count(Element(regionNo)))
+      return fail(eltNo, 2);
+
+    // Each element that is also a region label should be mapped to itself.
+    if (elementToRegionMap.at(Element(regionNo)) != regionNo)
+      return fail(eltNo, 3);
+  }
+
+  // Before we do anything, validate region to region to sending op map.
+  validateRegionToSendingOpMapRegions();
+
+  return true;
+#endif
+}
+
+Region Partition::merge(Element fst, Element snd, bool updateHistory) {
+  ++NumPartitionMerge;
+  canonicalize();
+
+  assert(elementToRegionMap.count(fst) && elementToRegionMap.count(snd));
+
+  // Remember: fstRegion and sndRegion are actually elements in
+  // elementToRegionMap... they are just the representative of the region
+  // (which is the smallest element number).
+  auto fstRegion = elementToRegionMap.at(fst);
+  auto sndRegion = elementToRegionMap.at(snd);
+
+  // Our value reps are the same... we can return either. Just return fstRegion.
+  if (fstRegion == sndRegion)
+    return fstRegion;
+
+  // To maintain canonicality, we require that fstRegion is always less than
+  // sndRegion. If we do not have that, swap first and second state.
+  if (fstRegion > sndRegion) {
+    std::swap(fst, snd);
+    std::swap(fstRegion, sndRegion);
+  }
+
+  Region result = fstRegion;
+
+  // Rename snd and snd's entire region to fst's region.
+  SmallVector<Element, 32> mergedElements;
+  horizontalUpdate(snd, fstRegion, mergedElements);
+  auto iter = regionToSendingOpMap.find(sndRegion);
+  if (iter != regionToSendingOpMap.end()) {
+    auto operand = iter->second;
+    regionToSendingOpMap.erase(iter);
+    regionToSendingOpMap.insert({fstRegion, operand});
+  }
+
+  assert(is_canonical_correct());
+  assert(elementToRegionMap.at(fst) == elementToRegionMap.at(snd));
+
+  // Now that we are correct/canonicalized, add the merge to our history.
+  //
+  // horizontalUpdate moved snd's *entire* region into fstRegion, so the
+  // elements it carried along have to be recorded too: popHistoryOnce reverses
+  // a merge by extracting the recorded elements, and an unrecorded passenger is
+  // left stranded in fstRegion for the rest of the rewind.
+  if (updateHistory)
+    pushMergeElementRegions(fst, snd, mergedElements);
+  return result;
+}
+
+void Partition::canonicalize() const {
+  // Canonicalization is a lazy normalization of the region labels, so running it
+  // from a const query does not change what the partition means. See the
+  // declaration.
+  const_cast<Partition *>(this)->canonicalizeImpl();
+}
+
+void Partition::canonicalizeImpl() {
+  if (canonical)
+    return;
+  canonical = true;
+
+  validateRegionToSendingOpMapRegions();
+  SmallVector<std::pair<Region, Region>, 8> oldRegionToRelabeledRegionMap;
+
+  // Walk over elementToRegionMap, mapping regionNo to region(eltNo). Since we
+  // are walking linearly in order, we know that lower eltNo should be before
+  // earlier.
+  for (auto &[eltNo, regionNo] : elementToRegionMap) {
+    oldRegionToRelabeledRegionMap.emplace_back(regionNo, Region(eltNo));
+
+    // After canonicalization, all region labels are element numbers, so the
+    // max region label in use is at most maxEltNo. Setting this to eltNo + 1
+    // (which after the loop equals maxEltNo + 1) is sufficient.
+    nextAvailableRegionNum = Region(eltNo + 1);
+  }
+
+  // Sort the array by (oldRegion, newRegion). This ensures that for each
+  // oldRegion, the smallest newRegion (i.e., the smallest element) comes first.
+  llvm::sort(oldRegionToRelabeledRegionMap);
+
+  // Now walk our map again and update the eltRegionNo with the new element.
+  // Since we sorted by (oldRegion, newRegion), lower_bound finds the first
+  // entry for each oldRegion, which has the smallest newRegion.
+  for (auto &[eltNo, eltRegionNo] : elementToRegionMap) {
+    auto iter =
+        std::lower_bound(oldRegionToRelabeledRegionMap.begin(),
+                         oldRegionToRelabeledRegionMap.end(), eltRegionNo,
+                         [](const std::pair<Region, Region> &lhs, Region rhs) {
+                           return lhs.first < rhs;
+                         });
+    assert(iter != oldRegionToRelabeledRegionMap.end() &&
+           iter->first == eltRegionNo);
+    eltRegionNo = iter->second;
+  }
+
+  // Then relabel our regionToSendingOpMap map if we need to by swapping out the
+  // old map and updating.
+  //
+  // TODO: If we just used an array for this, we could just rewrite and
+  // re-sort and not have to deal with potential allocations.
+  decltype(regionToSendingOpMap) oldMap = std::move(regionToSendingOpMap);
+  for (auto &[oldReg, op] : oldMap) {
+    auto iter = std::lower_bound(oldRegionToRelabeledRegionMap.begin(),
+                                 oldRegionToRelabeledRegionMap.end(), oldReg,
+                                 [](const std::pair<Region, Region> &lhs,
+                                    Region rhs) { return lhs.first < rhs; });
+    assert(iter != oldRegionToRelabeledRegionMap.end() &&
+           iter->first == oldReg);
+    regionToSendingOpMap[iter->second] = op;
+  }
+
+  assert(is_canonical_correct());
+}
+
+void Partition::horizontalUpdate(
+    Element elementInOldRegion, Region newRegion,
+    llvm::SmallVectorImpl<Element> &mergedElements) {
+  ++NumHorizontalUpdate;
+  // It is on our caller to make sure a value is in elementToRegionMap.
+  Region oldRegion = elementToRegionMap.at(elementInOldRegion);
+
+  // If our old region is the same as our new region, we do not have anything
+  // to do.
+  if (oldRegion == newRegion)
+    return;
+
+  for (auto [element, region] : elementToRegionMap) {
+    ++NumHorizontalUpdateScans;
+    if (region == oldRegion) {
+      elementToRegionMap.insert_or_assign(element, newRegion);
+      if (elementInOldRegion == element)
+        continue;
+      mergedElements.push_back(element);
+    }
+  }
+}
+
+const IsolationHistory::Node *
+Partition::popHistoryOnce(SmallVectorImpl<SILBasicBlock *> &foundJoinedBlocks) {
+  // Rewinding a history that was never recorded silently finds nothing, which
+  // would read as "this value was never merged" rather than as a missing
+  // feature. Recording is gated on swift::shouldEmitIsolationHistoryFor and so
+  // is the only client that rewinds, so the two agreeing is an invariant, not a
+  // thing to handle.
+  assert(history.isEnabled() &&
+         "Rewinding an isolation history that was never recorded. The Factory "
+         "was built with recording off, but something is walking the history "
+         "anyway -- the recording gate and the consumer gate have drifted.");
+
+  const auto *head = history.pop();
+  if (!head)
+    return nullptr;
+
+  // When popping, we /always/ want to canonicalize.
+  canonicalize();
+
+  switch (head->getKind()) {
+  case IsolationHistory::Node::SequenceBoundary:
+    break;
+
+  case IsolationHistory::Node::AddNewRegionForElement: {
+    // We added an element to its own region... so we should remove it and it
+    // should be the last element in the region.
+    auto iter = elementToRegionMap.find(head->getFirstArgAsElement());
+    assert(iter != elementToRegionMap.end());
+    Region oldRegion = iter->second;
+    regionToSendingOpMap.erase(oldRegion);
+    elementToRegionMap.erase(iter);
+    assert(llvm::none_of(elementToRegionMap,
+                         [&](std::pair<Element, Region> pair) {
+                           return pair.second == oldRegion;
+                         }) &&
+           "Should have been last element?!");
+    break;
+  }
+  case IsolationHistory::Node::RemoveLastElementFromRegion:
+    // We removed an element from a region and it was the last element. Just
+    // add new.
+    trackNewElement(head->getFirstArgAsElement(), false /*update history*/);
+    break;
+  case IsolationHistory::Node::RemoveElementFromRegion:
+    // We removed an element from a specific region. So, we need to add it
+    // back. pushRemoveElementFromRegion stores the surviving sibling at
+    // additionalElementArgs[0] (the only additional arg), so reverse the
+    // remove by re-assigning the popped element to that sibling's region.
+    assignElement(head->getFirstArgAsElement(),
+                  head->getAdditionalElementArgs()[0],
+                  false /*update history*/);
+    break;
+
+  case IsolationHistory::Node::MergeElementRegions: {
+    // We merged two regions together. We need to remove all elements from the
+    // previous region into their own new region.
+    auto elementsToExtract = head->getAdditionalElementArgs();
+    assert(elementsToExtract.size());
+
+    removeElement(elementsToExtract[0]);
+    trackNewElement(elementsToExtract[0], false /*update history*/);
+
+    for (auto e : elementsToExtract.drop_front()) {
+      assert(head->getFirstArgAsElement() != e &&
+             "We assume that we are never removing all values when undoing "
+             "merging");
+      removeElement(e);
+      trackNewElement(e, false /*update history*/);
+      merge(e, elementsToExtract[0], false /*update history*/);
+    }
+
+    break;
+  }
+  case IsolationHistory::Node::CFGHistoryJoin:
+    // When we have a CFG history join, we cannot simply pop: the joined branch
+    // lives in a predecessor block's exit partition, not in this linear
+    // history. Signal the predecessor block to the caller so it can recover
+    // that exit partition and keep rewinding.
+    foundJoinedBlocks.push_back(head->getFirstArgAsBlock());
+    break;
+  }
+
+  return head;
+}
+
+//===----------------------------------------------------------------------===//
+//                           MARK: IsolationHistory
+//===----------------------------------------------------------------------===//
+
+// Push onto the history list that \p value should be added into its own
+// independent region.
+IsolationHistory::Node *
+IsolationHistory::pushNewElementRegion(Element element) {
+  if (!isEnabled())
+    return nullptr;
+
+  unsigned size = Node::totalSizeToAlloc<Element>(0);
+  void *mem = factory->allocator.Allocate(size, alignof(Node));
+  head = new (mem) Node(Node::AddNewRegionForElement, head, element);
+  return getHead();
+}
+
+IsolationHistory::Node *
+IsolationHistory::pushHistorySequenceBoundary(SILLocation loc,
+                                              SILInstruction *inst) {
+  if (!isEnabled())
+    return nullptr;
+
+  unsigned size = Node::totalSizeToAlloc<Element>(0);
+  void *mem = factory->allocator.Allocate(size, alignof(Node));
+  head = new (mem) Node(Node::SequenceBoundary, head, loc, inst);
+  return getHead();
+}
+
+// Push onto the history that \p value should be removed from any region that it
+// is apart of and placed within its own separate region.
+void IsolationHistory::pushRemoveLastElementFromRegion(Element element) {
+  if (!isEnabled())
+    return;
+
+  unsigned size = Node::totalSizeToAlloc<Element>(0);
+  void *mem = factory->allocator.Allocate(size, alignof(Node));
+  head = new (mem) Node(Node::RemoveLastElementFromRegion, head, element);
+}
+
+void IsolationHistory::pushRemoveElementFromRegion(
+    Element otherElementInOldRegion, Element element) {
+  if (!isEnabled())
+    return;
+
+  unsigned size = Node::totalSizeToAlloc<Element>(1);
+  void *mem = factory->allocator.Allocate(size, alignof(Node));
+  head = new (mem) Node(Node::RemoveElementFromRegion, head, element,
+                        {otherElementInOldRegion});
+}
+
+void IsolationHistory::pushMergeElementRegions(Element elementInNewRegion,
+                                               Element elementInOldRegion,
+                                               ArrayRef<Element> eltsToMerge) {
+  if (!isEnabled())
+    return;
+
+  assert(elementInNewRegion != elementInOldRegion);
+  assert(llvm::none_of(eltsToMerge, [&](Element elt) {
+    return elt == elementInNewRegion || elt == elementInOldRegion;
+  }));
+  unsigned size = Node::totalSizeToAlloc<Element>(1 + eltsToMerge.size());
+  void *mem = factory->allocator.Allocate(size, alignof(Node));
+  head = new (mem) Node(Node::MergeElementRegions, head, elementInNewRegion,
+                        elementInOldRegion, eltsToMerge);
+}
+
+// Record that \p predBlock's exit partition was merged into this history at a
+// control-flow merge point. The joined history is not copied in; it is
+// recovered on demand as predBlock's exit-partition isolation history.
+void IsolationHistory::pushCFGHistoryJoin(SILBasicBlock *predBlock) {
+  if (!isEnabled())
+    return;
+
+  // Without a predecessor block there is nothing to recover the joined history
+  // from later, so there is nothing to record.
+  if (!predBlock)
+    return;
+
+  unsigned size = Node::totalSizeToAlloc<Element>(0);
+  void *mem = factory->allocator.Allocate(size, alignof(Node));
+  head = new (mem) Node(Node::CFGHistoryJoin, head, predBlock);
+}
+
+IsolationHistory::Node *IsolationHistory::pop() {
+  if (!head)
+    return nullptr;
+
+  auto *result = head;
+  head = head->next;
+  return result;
+}
+
+void IsolationHistory::print(ASTContext &ctx, llvm::raw_ostream &os) const {
+  os << "IsolationHistory Dump!\n";
+  if (!head) {
+    os << "Empty!\n";
+    return;
+  }
+
+  unsigned eltNo = 1;
+  for (auto *iter = head; iter; iter = iter->getNext()) {
+    os << "Node Number: " << eltNo++ << '\n';
+    iter->print(ctx, os);
+    os << '\n';
+  }
+}
+
+void IsolationHistory::Node::print(ASTContext &ctx, llvm::raw_ostream &os,
+                                   unsigned whitespacePrefix) const {
+  llvm::SmallString<64> prefix;
+  for (unsigned i = 0; i < whitespacePrefix; ++i)
+    prefix.append(" ");
+
+  os << "IsolationHistory::Node.\n"
+     << prefix << "Next: " << getNext() << '\n'
+     << prefix << "Kind: ";
+  switch (getKind()) {
+  case AddNewRegionForElement:
+    os << "AddNewRegionForElement\n"
+       << prefix << "Element: " << getFirstArgAsElement() << '\n';
+    break;
+  case RemoveLastElementFromRegion:
+    os << "RemoveLastElementFromRegion\n"
+       << prefix << "Element: " << getFirstArgAsElement() << '\n';
+    break;
+  case RemoveElementFromRegion:
+    os << "RemoveElementFromRegion\n"
+       << prefix << "Old Region Element: " << getFirstArgAsElement() << '\n'
+       << prefix << "Element To Remove: " << getAdditionalElementArgs()[0]
+       << '\n';
+    break;
+  case MergeElementRegions:
+    os << "MergeElementRegions\n"
+       << prefix
+       << "Element in Region To Merge Into: " << getFirstArgAsElement() << '\n'
+       << prefix << "Element To Merge: " << getAdditionalElementArgs()[0]
+       << '\n';
+    break;
+  case CFGHistoryJoin: {
+    auto *predBlock = getFirstArgAsBlock();
+    os << "CFGHistoryJoin\n" << prefix << "Pred Block: ";
+    if (predBlock)
+      os << "bb" << predBlock->getDebugID() << '\n';
+    else
+      os << "<none>\n";
+    break;
+  }
+  case SequenceBoundary:
+    os << "SequenceBoundary\n" << prefix << "Value: ";
+    getHistoryBoundaryLoc()->print(os);
+    break;
+  }
+}
+
+void IsolationHistory::Node::printOneLine(
+    llvm::raw_ostream &os, const SourceManager &sourceMgr) const {
+  switch (getKind()) {
+  case AddNewRegionForElement:
+    os << "AddNewRegionForElement: %%" << getFirstArgAsElement();
+    return;
+  case RemoveLastElementFromRegion:
+    os << "RemoveLastElementFromRegion: %%" << getFirstArgAsElement();
+    return;
+  case RemoveElementFromRegion:
+    os << "RemoveElementFromRegion: %%" << getAdditionalElementArgs()[0]
+       << " from region of %%" << getFirstArgAsElement();
+    return;
+  case MergeElementRegions: {
+    os << "MergeElementRegions: into region of %%" << getFirstArgAsElement()
+       << " merged [";
+    bool isFirst = true;
+    for (Element e : getAdditionalElementArgs()) {
+      if (!isFirst)
+        os << ", ";
+      isFirst = false;
+      os << "%%" << e;
+    }
+    os << ']';
+    return;
+  }
+  case CFGHistoryJoin:
+    os << "CFGHistoryJoin: pred ";
+    if (auto *predBlock = getFirstArgAsBlock())
+      os << "bb" << predBlock->getDebugID();
+    else
+      os << "<none>";
+    return;
+  case SequenceBoundary:
+    os << "SequenceBoundary: ";
+    if (auto loc = getHistoryBoundaryLoc())
+      loc->print(os, sourceMgr);
+    else
+      os << "<no loc>";
+    return;
+  }
+  llvm_unreachable("Covered switch isn't covered?!");
+}
