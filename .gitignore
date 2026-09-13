@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / C++ / Fortran
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.exe
+*.out
+*.mod
+
+# Rust
+target/
+**/*.rs.bk
+
+# Go
+bin/
+
+# Java / Kotlin / Scala
+*.class
+*.jar
+*.war
+.gradle/
+build/
+
+# Node / JS / TS
+node_modules/
+dist/
+
+# Editor & OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
