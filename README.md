@@ -8,6 +8,14 @@ Directory navigation index.
 
 ```
 .
+├── algorithms/
+│   ├── dijkstra_shortest_path/
+│   ├── dynamic_programming/
+│   ├── fast_fourier_transform/
+│   ├── formal_verification/
+│   ├── matrix_multiplication/
+│   ├── primality_factorization/
+│   └── strongly_connected_components/
 ├── languages/
 │   ├── 01_python/
 │   ├── 02_c/
@@ -46,6 +54,34 @@ Directory navigation index.
 ---
 
 ## File Navigation
+
+### `algorithms/`
+
+| Path | File | Format |
+|:---|:---|:---|
+| `algorithms/dijkstra_shortest_path/` | `Dijkstra.java` | Java source (`.java`) |
+| `algorithms/dijkstra_shortest_path/` | `dijkstra.cpp` | C++ source (`.cpp`) |
+| `algorithms/dijkstra_shortest_path/` | `dijkstra.go` | Go source (`.go`) |
+| `algorithms/dijkstra_shortest_path/` | `dijkstra.py` | Python script (`.py`) |
+| `algorithms/dijkstra_shortest_path/` | `dijkstra.rs` | Rust source (`.rs`) |
+| `algorithms/dynamic_programming/` | `knapsack.cs` | C# source (`.cs`) |
+| `algorithms/dynamic_programming/` | `levenshtein.ts` | TypeScript source (`.ts`) |
+| `algorithms/dynamic_programming/` | `LCS.scala` | Scala source (`.scala`) |
+| `algorithms/dynamic_programming/` | `LCS.hs` | Haskell source (`.hs`) |
+| `algorithms/fast_fourier_transform/` | `fft.cpp` | C++ source (`.cpp`) |
+| `algorithms/fast_fourier_transform/` | `fft.jl` | Julia script (`.jl`) |
+| `algorithms/fast_fourier_transform/` | `fft.py` | Python script (`.py`) |
+| `algorithms/fast_fourier_transform/` | `fft.rs` | Rust source (`.rs`) |
+| `algorithms/formal_verification/` | `EuclidGCD.lean` | Lean 4 source (`.lean`) |
+| `algorithms/matrix_multiplication/` | `matmul_blocked.f90` | Fortran source (`.f90`) |
+| `algorithms/matrix_multiplication/` | `matmul_tiled.c` | C source (`.c`) |
+| `algorithms/matrix_multiplication/` | `strassen.py` | Python script (`.py`) |
+| `algorithms/primality_factorization/` | `miller_rabin.c` | C source (`.c`) |
+| `algorithms/primality_factorization/` | `miller_rabin.py` | Python script (`.py`) |
+| `algorithms/primality_factorization/` | `miller_rabin.rs` | Rust source (`.rs`) |
+| `algorithms/strongly_connected_components/` | `kosaraju.cpp` | C++ source (`.cpp`) |
+| `algorithms/strongly_connected_components/` | `kosaraju.go` | Go source (`.go`) |
+| `algorithms/strongly_connected_components/` | `kosaraju.py` | Python script (`.py`) |
 
 ### `languages/`
 
@@ -101,10 +137,12 @@ Directory navigation index.
 ## Commands
 
 ```bash
-# Execute test suite
+# Execute full test suite
 make test
 
-# Target specific directories
+# Target specific modules
+make test-algorithms
+make test-scripts
 make test-python
 make test-c
 make test-cpp
@@ -114,7 +152,6 @@ make test-rust
 make test-fortran
 make test-js
 make test-go
-make test-scripts
 
 # Clean build artifacts
 make clean
