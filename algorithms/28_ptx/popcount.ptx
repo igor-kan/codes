@@ -1,0 +1,42 @@
+//
+// popcount.ptx -- population count and bit operations
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 popcount.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry popcount_kernel(
+    .param .u64 in,
+    .param .u64 out,
+    .param .u32 n
+)
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [in];
+    ld.param.u64    %rd2, [out];
+    ld.param.u32    %r1, [n];
+    mov.u32         %r2, %tid.x;
+    setp.ge.u32     %p1, %r2, %r1;
+    @%p1 bra        $L_exit;
+
+    mul.wide.u32    %rd3, %r2, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r3, [%rd4];
+
+    popc.b32        %r4, %r3;               // population count
+    clz.b32         %r5, %r3;               // count leading zeros
+    brev.b32        %r6, %r3;               // bit reverse
+    bfind.u32       %r7, %r3;               // index of most significant set bit
+
+    add.s64         %rd5, %rd2, %rd3;
+    st.global.v4.u32    [%rd5], {%r4, %r5, %r6, %r7};
+$L_exit:
+    ret;
+}
