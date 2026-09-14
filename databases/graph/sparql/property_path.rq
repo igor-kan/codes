@@ -1,0 +1,8 @@
+# Property paths for transitive relationships.
+PREFIX ex: <https://example.com/>
+
+SELECT ?descendant
+WHERE {
+  ex:root ex:parentOf+ ?descendant .
+}
+ORDER BY ?descendant
