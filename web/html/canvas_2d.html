@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas 2D</title>
+</head>
+<body>
+  <canvas id="scene" width="320" height="200">
+    A falling ball animation.
+  </canvas>
+  <script>
+    const ctx = document.getElementById("scene").getContext("2d");
+    let x = 0;
+    function draw() {
+      ctx.clearRect(0, 0, 320, 200);
+      ctx.fillStyle = "#0af";
+      ctx.beginPath();
+      ctx.arc(x, 100, 20, 0, Math.PI * 2);
+      ctx.fill();
+      x = (x + 2) % 320;
+      requestAnimationFrame(draw);
+    }
+    draw();
+  </script>
+</body>
+</html>
