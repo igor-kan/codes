@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <appSettings>
+    <add key="Environment" value="production"/>
+    <add key="Retries" value="3"/>
+  </appSettings>
+  <connectionStrings>
+    <add name="Default" providerName="Npgsql"
+         connectionString="Host=localhost;Database=app"/>
+  </connectionStrings>
+  <logging level="info">
+    <appender type="console"/>
+    <appender type="file" path="/var/log/app.log"/>
+  </logging>
+</configuration>
