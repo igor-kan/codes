@@ -1,0 +1,9 @@
+// Design tokens module (referenced with @use).
+$space-1: 0.25rem;
+$space-2: 0.5rem;
+$space-4: 1rem;
+$radius: 0.5rem;
+$shadow: 0 4px 12px rgb(0 0 0 / 0.1);
+$color-accent: #2563eb;
+
+$breakpoints: ("sm": 36rem, "md": 48rem, "lg": 64rem);
