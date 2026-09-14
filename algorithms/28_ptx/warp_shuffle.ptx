@@ -1,0 +1,46 @@
+//
+// warp_shuffle.ptx -- warp shuffle (shfl.sync) prefix sum
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 warp_shuffle.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry warp_scan(
+    .param .u64 out,
+    .param .u32 n
+)
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<6>;
+
+    ld.param.u64    %rd1, [out];
+    ld.param.u32    %r1, [n];
+
+    mov.u32         %r2, %tid.x;
+    and.b32         %r3, %r2, 31;           // lane id
+    setp.lt.u32     %p1, %r2, %r1;
+    @!%p1 bra       $L_exit;
+    mov.u32         %r4, 1;                 // value = 1 for all lanes
+    shr.u32         %r5, %r3, 1;
+    shfl.sync.down.b32  %r6, %r4, 1, 0x1f, 0xffffffff;
+    @%p1 add.u32    %r4, %r4, %r6;
+    shfl.sync.down.b32  %r6, %r4, 2, 0x1f, 0xffffffff;
+    add.u32         %r4, %r4, %r6;
+    shfl.sync.down.b32  %r6, %r4, 4, 0x1f, 0xffffffff;
+    add.u32         %r4, %r4, %r6;
+    shfl.sync.down.b32  %r6, %r4, 8, 0x1f, 0xffffffff;
+    add.u32         %r4, %r4, %r6;
+    shfl.sync.down.b32  %r6, %r4, 16, 0x1f, 0xffffffff;
+    add.u32         %r4, %r4, %r6;
+
+    mul.wide.u32    %rd2, %r2, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r4;
+$L_exit:
+    ret;
+}
