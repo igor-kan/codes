@@ -108,6 +108,9 @@ from its own sources; they are not copied from external repositories.
 | `algorithms/31_wasm/` | Hand-written WebAssembly text | *WebAssembly Core Specification*, W3C |
 | `web/` | Hand-written HTML, CSS, Sass, Tailwind, JavaScript, TypeScript, React, Vue, Web Components, JSON, XML, GraphQL examples | WHATWG HTML, W3C CSS, Sass, Tailwind CSS, ECMAScript, TypeScript, React, Vue, JSON Schema, W3C XML, GraphQL specifications |
 | `databases/` | Hand-written queries and schemas | Cypher (Neo4j), Gremlin (Apache TinkerPop), SPARQL (W3C), Datalog, MongoDB MQL, Cassandra CQL, Redis, Elasticsearch Query DSL, Flux (InfluxData), PromQL (Prometheus), pgvector |
+| `architectures/enterprise_patterns/`, `ddd_patterns/`, `cloud_patterns/`, `system_design/`, `principles/`, `clean_architecture/`, `templates/`, `api_design/` | Hand-written pattern implementations, system design notes, templates and guidelines | Hohpe & Woolf *Enterprise Integration Patterns*; Evans *Domain-Driven Design*; Nygard *Release It!*; Newman *Building Microservices*; Martin *Clean Architecture*; fielding/HTTP RFCs; W3C/CNCF documentation |
+| `devops/` | Hand-written CI/CD, container, orchestration, IaC, configuration and monitoring examples | GitHub Actions, GitLab CI, Jenkins, Docker, Kubernetes, Terraform (HashiCorp), Ansible (Red Hat), Helm, Prometheus, Grafana, OpenTelemetry, Loki, Blackbox Exporter |
+| Additional algorithms in `algorithms/01_python`, `02_c`, `03_cpp`, `04_java`, `09_rust`, `11_golang` | Hand-written implementations (radix/bucket/shell sort, Floyd-Warshall, Bellman-Ford, Prim, Kruskal, Fenwick tree, LRU cache, skip list, Rabin-Karp, edit distance, coin change) | *Introduction to Algorithms* (CLRS); standard algorithm references |
 
 ---
 
