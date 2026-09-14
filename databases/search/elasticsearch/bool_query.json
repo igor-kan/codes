@@ -1,0 +1,20 @@
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "body": "replication" } }
+      ],
+      "filter": [
+        { "term": { "tags": "systems" } },
+        { "range": { "publishedAt": { "gte": "2025-01-01" } } }
+      ],
+      "should": [
+        { "term": { "featured": true } }
+      ],
+      "must_not": [
+        { "term": { "status": "draft" } }
+      ],
+      "minimum_should_match": 1
+    }
+  }
+}
