@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/user.json",
+  "title": "User",
+  "type": "object",
+  "required": ["id", "email"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "email": { "type": "string", "format": "email" },
+    "age": { "type": "integer", "minimum": 13, "maximum": 130 },
+    "roles": {
+      "type": "array",
+      "items": { "enum": ["admin", "editor", "viewer"] },
+      "uniqueItems": true
+    }
+  }
+}
