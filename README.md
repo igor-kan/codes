@@ -37,8 +37,8 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 
 | Top-Level Directory | Description | Primary Languages |
 |:---|:---|:---|
-| `algorithms/` | Multi-language algorithmic test suites & reference implementations | Python, C, C++, Rust, Go, Java, Fortran |
-| `architectures/` | System design patterns, distributed systems, compilers, OS designs | C, C++, Go, Dart, Rust |
+| `algorithms/` | Multi-language algorithmic test suites & reference implementations across all 25 canonical programming languages | Polyglot (Python, C, C++, Java, C#, JS, TS, R, Rust, SQL, Go, PHP, Swift, Julia, Ruby, Kotlin, MATLAB, OCaml, Lua, Lisp, Scala, Haskell, Elixir, Fortran, Lean 4) |
+| `architectures/` | System design patterns, distributed systems, compilers, OS designs | C, C++, Go, Dart, Rust, Java, TypeScript, Python |
 | `scripts/` | Ingestion utilities and sparse-checkout helpers | Python, Bash |
 | `languages/01_python/` | SymPy, SciPy, Astropy, CPython objects | Python |
 | `languages/02_c/` | Linux kernel, curl, gcc, SQLite, PostgreSQL, CPython VM | C |
@@ -65,6 +65,42 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 | `languages/23_elixir/` | Elixir stdlib | Elixir |
 | `languages/24_fortran/` | Fortran stdlib | Fortran |
 | `languages/25_lean4/` | Lean 4 mathlib4, std | Lean 4 |
+
+---
+
+## Multi-Language Algorithms Suite
+
+The `algorithms/` directory hosts standalone, production-ready algorithm implementations categorized across all 25 canonical languages:
+
+| Directory | Language | Algorithm Categories Covered |
+|:---|:---|:---|
+| `algorithms/01_python/` | Python | Sorting, Graphs (BFS/DFS/Dijkstra/Bellman-Ford/Floyd-Warshall/MST), Dynamic Programming (LCS, Knapsack, Edit Distance), Strings (KMP, Rabin-Karp), Data Structures (Trie, Segment Tree, Fenwick), Number Theory |
+| `algorithms/02_c/` | C | Sorting, Graph Traversals, Shortest Paths, 0-1 Knapsack, LCS, KMP, Data Structures (Linked List, Stack, Queue, BST), Sieve |
+| `algorithms/03_cpp/` | C++ | Introspective Sorting, In-place Merge, Priority Queue Dijkstra, Multi-threaded Traversals, Fast Power Modulo |
+| `algorithms/04_java/` | Java | Generic Sorts, PriorityQueue Dijkstra, Matrix DP, KMP Pattern Matching, Extended Euclid & Modular Exponentiation |
+| `algorithms/05_csharp/` | C# | Generic Sorting, BFS/DFS, PriorityQueue Dijkstra, LCS, Knapsack, KMP, Trie, Number Theory |
+| `algorithms/06_javascript/` | JavaScript | Functional and In-place Sorts, Graph BFS/Dijkstra, Dynamic Programming, TypedArray Sieve |
+| `algorithms/07_typescript/` | TypeScript | Type-safe Sorting, Graph Search, LCS, Knapsack, KMP String Matching |
+| `algorithms/08_r/` | R | Vectorized and Procedural Sorts, Graph Search, Matrix LCS, Knapsack, Sieve |
+| `algorithms/09_rust/` | Rust | Memory-safe Sorting, BinaryHeap Dijkstra, In-place Knapsack, Zero-allocation String Matching, Trie |
+| `algorithms/10_sql/` | SQL | Recursive CTEs, Hierarchical Lineage, Analytical Window Ranking, Gaps & Islands, Moving Averages, Cross-tabs |
+| `algorithms/11_golang/` | Go | Heap-based Dijkstra, Generic Sorting, Slice-based DP, Concurrent Channels, Trie |
+| `algorithms/12_php/` | PHP | SplQueue BFS, SplPriorityQueue Dijkstra, LCS, Knapsack, Sieve |
+| `algorithms/13_swift/` | Swift | Value-type Array Sorts, Set BFS, Matrix DP, Euclidean GCD |
+| `algorithms/14_julia/` | Julia | JIT-compiled Sorting, Queue BFS, Multidimensional DP, Sieve of Eratosthenes |
+| `algorithms/15_ruby/` | Ruby | Block-based Sorts, Graph Search, Hash Dijkstra, Dynamic Programming, KMP |
+| `algorithms/16_kotlin/` | Kotlin | Null-safe Collections, Comparable Sorts, Queue BFS, Matrix LCS, Number Theory |
+| `algorithms/17_matlab/` | MATLAB | Vectorized Bubble Sort, Recursive Merge Sort, Matrix Dynamic Programming, Extended GCD |
+| `algorithms/18_ocaml/` | OCaml | Tail-recursive Merge Sort, Functional Set BFS, Matrix LCS, Integer Number Theory |
+| `algorithms/19_lua/` | Lua | Metatable-friendly Sorts, Table-based BFS, Matrix LCS, Euclidean GCD |
+| `algorithms/20_lisp/` | Common Lisp | Sequence Sorts, Hash-table BFS, Number-theoretic Primitives |
+| `algorithms/21_scala/` | Scala | Functional List Sorting, Mutable Queue BFS, Matrix DP, Number Theory |
+| `algorithms/22_haskell/` | Haskell | Pure Functional Sorts, Map/Set Graph BFS, Pattern-matching LCS, Custom GCD/LCM |
+| `algorithms/23_elixir/` | Elixir | Tail-recursive Pattern-matched Sorts, Erlang `:queue` BFS, Binary String LCS |
+| `algorithms/24_fortran/` | Fortran | Modular Sorting Routines, Recursive Integer GCD and LCM |
+| `algorithms/25_lean4/` | Lean 4 | Verified Nat GCD with Termination Proof, Linear Tail-recursive Fibonacci |
+
+---
 
 ## Polyglot Language Directory Index
 
