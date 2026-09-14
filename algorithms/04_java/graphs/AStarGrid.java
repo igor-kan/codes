@@ -1,6 +1,6 @@
 import java.util.*;
 
-public class AStar {
+public class AStarGrid {
 
     public static class Point {
         public final int r, c;

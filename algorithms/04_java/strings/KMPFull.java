@@ -2,7 +2,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-public class KMP {
+public class KMPFull {
 
     public static int[] computeLPS(String pattern) {
         int m = pattern.length();

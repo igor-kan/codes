@@ -1,6 +1,6 @@
 import java.util.*;
 
-public class Dijkstra {
+public class DijkstraFull {
     static class Edge {
         int to;
         int weight;
