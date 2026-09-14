@@ -20,7 +20,7 @@ BUILD_DIR = build
 	test-dsu test-binary-search test-dp-advanced test-number-theory \
 	test-strings-advanced test-graphs-advanced test-techniques test-datastructures \
 	test-competitive test-algorithms test-sparse \
-	test-asm test-llvm-ir test-wasm test-web test-cuda
+	test-asm test-llvm-ir test-wasm test-web test-cuda test-devops
 
 all: test
 
@@ -57,6 +57,7 @@ help:
 	@echo "  make test-wasm          Validate WebAssembly text modules"
 	@echo "  make test-web           Validate JSON, XML and Sass web assets"
 	@echo "  make test-cuda          Build a CUDA sample (requires nvcc; skipped when absent)"
+	@echo "  make test-devops        Validate DevOps YAML and shell scripts"
 	@echo "  make test-algorithms    Execute all core algorithm suites"
 	@echo "  make test               Run full regression verification"
 
@@ -366,13 +367,19 @@ test-cuda:
 		echo "nvcc not found; skipping CUDA build (sources are reference-only)."; \
 	fi
 
+test-devops:
+	@echo ">>> Validating DevOps configuration..."
+	@python3 -c "import glob, yaml; fs=glob.glob('devops/**/*.yml', recursive=True); [list(yaml.safe_load_all(open(f))) for f in fs if '/helm/templates/' not in f]; print('DevOps YAML validated (%d files).' % len(fs))"
+	@for f in devops/scripts/*.sh; do bash -n "$$f" || exit 1; done
+	@echo "DevOps shell scripts validated."
+
 # --- Aggregate targets ---
 
 test-algorithms: test-fft test-dijkstra test-primality test-matrix test-scc test-astar test-kmp test-convexhull test-huffman test-toposort
 	@echo ""
 	@echo "ALGORITHM SUITES VERIFIED SUCCESSFULLY!"
 
-test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures test-asm test-llvm-ir test-wasm test-web test-cuda
+test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures test-asm test-llvm-ir test-wasm test-web test-cuda test-devops
 	@echo ""
 	@echo "================================================================="
 	@echo "ALL REPOSITORY TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
