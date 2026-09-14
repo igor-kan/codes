@@ -1,0 +1,13 @@
+/* 3D transforms and perspective. */
+.scene { perspective: 800px; }
+.flip-card {
+  transform-style: preserve-3d;
+  transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.flip-card:hover { transform: rotateY(180deg); }
+.flip-card__face {
+  backface-visibility: hidden;
+  position: absolute;
+  inset: 0;
+}
+.flip-card__back { transform: rotateY(180deg); }
