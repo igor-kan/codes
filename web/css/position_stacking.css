@@ -1,0 +1,22 @@
+/* Positioning and stacking contexts. */
+.shell { position: relative; }
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #fff;
+}
+.badge {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.5rem;
+  z-index: 10;
+}
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.5);
+}
