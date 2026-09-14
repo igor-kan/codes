@@ -1,0 +1,7 @@
+# Sorted sets for leaderboards and range queries.
+ZADD leaderboard 100 "ada" 95 "grace" 90 "alan"
+ZINCRBY leaderboard 5 "alan"
+ZREVRANGE leaderboard 0 2 WITHSCORES
+ZRANGEBYSCORE leaderboard 90 100
+ZRANK leaderboard "grace"
+ZSCORE leaderboard "ada"
