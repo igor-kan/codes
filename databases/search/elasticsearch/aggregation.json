@@ -1,0 +1,17 @@
+{
+  "size": 0,
+  "aggs": {
+    "by_tag": {
+      "terms": { "field": "tags", "size": 10 },
+      "aggs": {
+        "avg_views": { "avg": { "field": "views" } }
+      }
+    },
+    "views_over_time": {
+      "date_histogram": { "field": "publishedAt", "calendar_interval": "month" }
+    },
+    "top_articles": {
+      "top_hits": { "size": 3, "_source": ["title"] }
+    }
+  }
+}
