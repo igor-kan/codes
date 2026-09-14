@@ -1,0 +1,17 @@
+PYTHON ?= python3
+VENV := .venv
+
+$(VENV)/bin/activate:
+	$(PYTHON) -m venv $(VENV) && $(VENV)/bin/pip install -U pip
+
+install: $(VENV)/bin/activate
+	$(VENV)/bin/pip install -r requirements.txt
+
+test:
+	$(VENV)/bin/pytest -q --cov=app
+
+format:
+	$(VENV)/bin/ruff format . && $(VENV)/bin/ruff check --fix .
+
+lint:
+	$(VENV)/bin/ruff check . && $(VENV)/bin/mypy app
