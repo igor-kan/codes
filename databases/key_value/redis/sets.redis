@@ -1,0 +1,11 @@
+# Sets for membership and set algebra.
+SADD post:1:likes user:1 user:2 user:3
+SREM post:1:likes user:2
+SMEMBERS post:1:likes
+SISMEMBER post:1:likes user:1
+SCARD post:1:likes
+
+SADD post:2:likes user:2 user:4
+SINTER post:1:likes post:2:likes
+SUNION post:1:likes post:2:likes
+SDIFF post:1:likes post:2:likes
