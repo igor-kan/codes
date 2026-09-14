@@ -1,0 +1,15 @@
+/* Container queries: style based on the parent width. */
+.card-wrapper {
+  container-type: inline-size;
+  container-name: card;
+}
+.card { padding: 1rem; }
+
+@container card (min-width: 30rem) {
+  .card {
+    display: grid;
+    grid-template-columns: 10rem 1fr;
+    gap: 1rem;
+    align-items: center;
+  }
+}
