@@ -1,0 +1,17 @@
+// User-defined functions and built-in color math.
+@use "sass:color";
+@use "sass:math";
+
+@function rem($px, $base: 16) {
+  @return math.div($px, $base) * 1rem;
+}
+
+@function tint($color, $amount: 20%) {
+  @return color.mix(white, $color, $amount);
+}
+
+.title {
+  font-size: rem(32);
+  color: tint(#2563eb, 40%);
+  margin-bottom: rem(12);
+}
