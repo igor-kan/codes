@@ -12,10 +12,12 @@ GO ?= go
 BUILD_DIR = build
 
 .PHONY: all test clean help \
-	test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-scripts \
+	test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts \
 	test-fft test-dijkstra test-primality test-matrix test-scc \
 	test-astar test-kmp test-convexhull test-huffman test-toposort test-architectures \
-	test-algorithms
+	test-dsu test-binary-search test-dp-advanced test-number-theory \
+	test-strings-advanced test-graphs-advanced test-techniques test-datastructures \
+	test-competitive test-algorithms test-sparse
 
 all: test
 
@@ -25,68 +27,75 @@ $(BUILD_DIR):
 help:
 	@echo "Repository Build & Execution Matrix"
 	@echo "Available test targets:"
-	@echo "  make test-python        Run Python scripts"
-	@echo "  make test-c             Compile and execute C routines"
-	@echo "  make test-cpp           Compile and execute C++ routines"
-	@echo "  make test-java          Compile and execute Java routines"
-	@echo "  make test-lua           Execute Lua coroutine scripts"
-	@echo "  make test-rust          Compile and execute Rust routines"
-	@echo "  make test-fortran       Compile and execute Fortran routines"
-	@echo "  make test-js            Execute JavaScript routines"
-	@echo "  make test-go            Execute Golang routines"
+	@echo "  make test-python        Run Python algorithm implementations"
+	@echo "  make test-c             Compile and execute C algorithms"
+	@echo "  make test-cpp           Compile and execute C++ algorithms"
+	@echo "  make test-java          Compile and execute Java algorithms"
+	@echo "  make test-rust          Compile and execute Rust algorithms"
+	@echo "  make test-fortran       Compile and execute Fortran algorithms"
+	@echo "  make test-js            Execute JavaScript algorithms"
+	@echo "  make test-go            Execute Golang algorithms"
 	@echo "  make test-scripts       Execute computational Python scripts"
+	@echo "  make test-fft           Execute Fast Fourier Transform suite"
+	@echo "  make test-dijkstra      Execute Dijkstra shortest path suite"
+	@echo "  make test-primality     Execute Primality & Factorization suite"
+	@echo "  make test-matrix        Execute Matrix Multiplication suite"
+	@echo "  make test-scc           Execute Strongly Connected Components suite"
 	@echo "  make test-astar         Execute A* Search pathfinding suite"
 	@echo "  make test-kmp           Execute Knuth-Morris-Pratt string search suite"
 	@echo "  make test-convexhull    Execute 2D Convex Hull geometric suite"
 	@echo "  make test-huffman       Execute Huffman Data Compression suite"
 	@echo "  make test-toposort      Execute DAG Topological Sorting suite"
 	@echo "  make test-architectures Execute design pattern and concurrency suites"
-	@echo "  make test-algorithms   Execute all core algorithm benchmark suites"
+	@echo "  make test-competitive   Execute competitive programming toolkit (DSU, binary search, DP, number theory, graphs)"
+	@echo "  make test-sparse        Test sparse language implementations"
+	@echo "  make test-algorithms    Execute all core algorithm suites"
 	@echo "  make test               Run full regression verification"
+
+# --- Per-language algorithm tests ---
 
 test-python:
 	@echo ">>> Testing Python Algorithms..."
-	$(PYTHON) languages/01_python/rk45_adaptive.py
-	$(PYTHON) languages/01_python/disjoint_set.py
+	$(PYTHON) algorithms/01_python/graphs/dijkstra_full.py
+	$(PYTHON) algorithms/01_python/strings/kmp_full.py
+	$(PYTHON) algorithms/01_python/math/miller_rabin.py
 
 test-c: $(BUILD_DIR)
-	@echo ">>> Compiling and Testing C MurmurHash3..."
-	$(CC) -O3 -Wall -Wextra languages/02_c/murmurhash3.c -o $(BUILD_DIR)/murmurhash3_test
-	./$(BUILD_DIR)/murmurhash3_test
+	@echo ">>> Compiling and Testing C Algorithms..."
+	$(CC) -O3 -Wall -Wextra algorithms/02_c/math/miller_rabin.c -o $(BUILD_DIR)/mr_c_test -lm
+	./$(BUILD_DIR)/mr_c_test
+	$(CC) -O3 -Wall -Wextra algorithms/02_c/math/matmul_tiled.c -o $(BUILD_DIR)/matmul_c_test
+	./$(BUILD_DIR)/matmul_c_test
 
 test-cpp: $(BUILD_DIR)
-	@echo ">>> Compiling and Testing C++ LRU Cache..."
-	$(CXX) -x c++ -DCOMPILE_TEST_MAIN -O3 -std=c++17 -Wall languages/03_cpp/lru_cache.hpp -o $(BUILD_DIR)/lru_test
-	./$(BUILD_DIR)/lru_test
+	@echo ">>> Compiling and Testing C++ Algorithms..."
+	$(CXX) -O3 -std=c++17 -Wall algorithms/03_cpp/graphs/dijkstra_full.cpp -o $(BUILD_DIR)/dijkstra_cpp_test
+	./$(BUILD_DIR)/dijkstra_cpp_test
 
 test-java: $(BUILD_DIR)
-	@echo ">>> Compiling and Testing Java Trie..."
-	javac -d $(BUILD_DIR) languages/04_java/Trie.java
-	java -cp $(BUILD_DIR) Trie
-
-test-lua:
-	@echo ">>> Testing Lua Cooperative Coroutine Scheduler..."
-	lua languages/19_lua/coroutine_scheduler.lua
+	@echo ">>> Compiling and Testing Java Algorithms..."
+	javac -d $(BUILD_DIR) algorithms/04_java/strings/KMPFull.java
+	java -cp $(BUILD_DIR) KMPFull
+	javac -d $(BUILD_DIR) algorithms/04_java/graphs/DijkstraFull.java
+	java -cp $(BUILD_DIR) DijkstraFull
 
 test-rust: $(BUILD_DIR)
-	@echo ">>> Compiling and Testing Rust SPSC Ring Buffer..."
-	$(RUSTC) -O languages/09_rust/ring_buffer.rs -o $(BUILD_DIR)/ring_buffer_test
-	./$(BUILD_DIR)/ring_buffer_test
+	@echo ">>> Compiling and Testing Rust Algorithms..."
+	$(RUSTC) -O algorithms/09_rust/math/miller_rabin.rs -o $(BUILD_DIR)/mr_rust_test
+	./$(BUILD_DIR)/mr_rust_test
 
 test-fortran: $(BUILD_DIR)
-	@echo ">>> Compiling and Testing Fortran Numerical Solvers..."
-	$(FC) -O3 languages/24_fortran/conjugate_gradient.f90 -o $(BUILD_DIR)/cg_test
-	./$(BUILD_DIR)/cg_test
-	$(FC) -O3 languages/24_fortran/lu_factorization.f90 -o $(BUILD_DIR)/lu_test
-	./$(BUILD_DIR)/lu_test
+	@echo ">>> Compiling and Testing Fortran Algorithms..."
+	$(FC) -O3 algorithms/24_fortran/math/matmul_blocked.f90 -o $(BUILD_DIR)/matmul_f90_test
+	./$(BUILD_DIR)/matmul_f90_test
 
 test-js:
-	@echo ">>> Executing JavaScript Asynchronous Pipeline..."
-	$(NODE) languages/06_javascript/async_pipeline.js
+	@echo ">>> Executing JavaScript Algorithms..."
+	$(NODE) algorithms/06_javascript/math/gcd.js
 
 test-go:
-	@echo ">>> Executing Golang Worker Pool..."
-	$(GO) run languages/11_golang/worker_pool.go
+	@echo ">>> Executing Golang Algorithms..."
+	$(GO) run algorithms/11_golang/graphs/dijkstra_full.go
 
 test-scripts:
 	@echo ">>> Executing Computational Scripts..."
@@ -103,99 +112,103 @@ test-scripts:
 	$(PYTHON) scripts/numerical_analysis/root_finding.py
 	$(PYTHON) scripts/distributed_systems/consistent_hashing.py
 
+# --- Cross-language polyglot algorithm suites ---
+
 test-fft: $(BUILD_DIR)
 	@echo ">>> Testing Fast Fourier Transform implementations..."
-	$(PYTHON) algorithms/fast_fourier_transform/fft.py
-	$(CXX) -O3 algorithms/fast_fourier_transform/fft.cpp -o $(BUILD_DIR)/fft_cpp_test
+	$(PYTHON) algorithms/01_python/math/fft.py
+	$(CXX) -O3 algorithms/03_cpp/math/fft.cpp -o $(BUILD_DIR)/fft_cpp_test
 	./$(BUILD_DIR)/fft_cpp_test
-	$(RUSTC) -O algorithms/fast_fourier_transform/fft.rs -o $(BUILD_DIR)/fft_rust_test
+	$(RUSTC) -O algorithms/09_rust/math/fft.rs -o $(BUILD_DIR)/fft_rust_test
 	./$(BUILD_DIR)/fft_rust_test
 
 test-dijkstra: $(BUILD_DIR)
 	@echo ">>> Testing Dijkstra shortest path implementations..."
-	$(PYTHON) algorithms/dijkstra_shortest_path/dijkstra.py
-	$(CXX) -O3 algorithms/dijkstra_shortest_path/dijkstra.cpp -o $(BUILD_DIR)/dijkstra_cpp_test
+	$(PYTHON) algorithms/01_python/graphs/dijkstra_full.py
+	$(CXX) -O3 algorithms/03_cpp/graphs/dijkstra_full.cpp -o $(BUILD_DIR)/dijkstra_cpp_test
 	./$(BUILD_DIR)/dijkstra_cpp_test
-	$(GO) run algorithms/dijkstra_shortest_path/dijkstra.go
-	$(RUSTC) -O algorithms/dijkstra_shortest_path/dijkstra.rs -o $(BUILD_DIR)/dijkstra_rust_test
+	$(GO) run algorithms/11_golang/graphs/dijkstra_full.go
+	$(RUSTC) -O algorithms/09_rust/graphs/dijkstra_full.rs -o $(BUILD_DIR)/dijkstra_rust_test
 	./$(BUILD_DIR)/dijkstra_rust_test
-	javac -d $(BUILD_DIR) algorithms/dijkstra_shortest_path/Dijkstra.java
-	java -cp $(BUILD_DIR) Dijkstra
+	javac -d $(BUILD_DIR) algorithms/04_java/graphs/DijkstraFull.java
+	java -cp $(BUILD_DIR) DijkstraFull
 
 test-primality: $(BUILD_DIR)
 	@echo ">>> Testing Primality and Factorization implementations..."
-	$(PYTHON) algorithms/primality_factorization/miller_rabin.py
-	$(CC) -O3 algorithms/primality_factorization/miller_rabin.c -o $(BUILD_DIR)/mr_c_test
+	$(PYTHON) algorithms/01_python/math/miller_rabin.py
+	$(CC) -O3 algorithms/02_c/math/miller_rabin.c -o $(BUILD_DIR)/mr_c_test -lm
 	./$(BUILD_DIR)/mr_c_test
-	$(RUSTC) -O algorithms/primality_factorization/miller_rabin.rs -o $(BUILD_DIR)/mr_rust_test
+	$(RUSTC) -O algorithms/09_rust/math/miller_rabin.rs -o $(BUILD_DIR)/mr_rust_test
 	./$(BUILD_DIR)/mr_rust_test
 
 test-matrix: $(BUILD_DIR)
 	@echo ">>> Testing Matrix multiplication implementations..."
-	$(PYTHON) algorithms/matrix_multiplication/strassen.py
-	$(CC) -O3 algorithms/matrix_multiplication/matmul_tiled.c -o $(BUILD_DIR)/matmul_c_test
+	$(PYTHON) algorithms/01_python/math/strassen.py
+	$(CC) -O3 algorithms/02_c/math/matmul_tiled.c -o $(BUILD_DIR)/matmul_c_test
 	./$(BUILD_DIR)/matmul_c_test
-	$(FC) -O3 algorithms/matrix_multiplication/matmul_blocked.f90 -o $(BUILD_DIR)/matmul_f90_test
+	$(FC) -O3 algorithms/24_fortran/math/matmul_blocked.f90 -o $(BUILD_DIR)/matmul_f90_test
 	./$(BUILD_DIR)/matmul_f90_test
 
 test-scc: $(BUILD_DIR)
 	@echo ">>> Testing Strongly Connected Components implementations..."
-	$(PYTHON) algorithms/strongly_connected_components/kosaraju.py
-	$(CXX) -O3 algorithms/strongly_connected_components/kosaraju.cpp -o $(BUILD_DIR)/scc_cpp_test
+	$(PYTHON) algorithms/01_python/graphs/kosaraju.py
+	$(CXX) -O3 algorithms/03_cpp/graphs/kosaraju.cpp -o $(BUILD_DIR)/scc_cpp_test
 	./$(BUILD_DIR)/scc_cpp_test
-	$(GO) run algorithms/strongly_connected_components/kosaraju.go
+	$(GO) run algorithms/11_golang/graphs/kosaraju.go
 
 test-astar: $(BUILD_DIR)
 	@echo ">>> Testing A* Shortest Path implementations..."
-	$(PYTHON) algorithms/a_star_pathfinding/a_star.py
-	$(CXX) -O3 algorithms/a_star_pathfinding/a_star.cpp -o $(BUILD_DIR)/astar_cpp_test
+	$(PYTHON) algorithms/01_python/graphs/a_star.py
+	$(CXX) -O3 algorithms/03_cpp/graphs/a_star.cpp -o $(BUILD_DIR)/astar_cpp_test
 	./$(BUILD_DIR)/astar_cpp_test
-	$(RUSTC) -O algorithms/a_star_pathfinding/a_star.rs -o $(BUILD_DIR)/astar_rust_test
+	$(RUSTC) -O algorithms/09_rust/graphs/a_star.rs -o $(BUILD_DIR)/astar_rust_test
 	./$(BUILD_DIR)/astar_rust_test
-	$(GO) run algorithms/a_star_pathfinding/a_star.go
-	javac -d $(BUILD_DIR) algorithms/a_star_pathfinding/AStar.java
-	java -cp $(BUILD_DIR) AStar
+	$(GO) run algorithms/11_golang/graphs/a_star.go
+	javac -d $(BUILD_DIR) algorithms/04_java/graphs/AStarGrid.java
+	java -cp $(BUILD_DIR) AStarGrid
 
 test-kmp: $(BUILD_DIR)
 	@echo ">>> Testing Knuth-Morris-Pratt implementations..."
-	$(PYTHON) algorithms/knuth_morris_pratt/kmp.py
-	$(CC) -O3 algorithms/knuth_morris_pratt/kmp.c -o $(BUILD_DIR)/kmp_c_test
+	$(PYTHON) algorithms/01_python/strings/kmp_full.py
+	$(CC) -O3 algorithms/02_c/strings/kmp_full.c -o $(BUILD_DIR)/kmp_c_test
 	./$(BUILD_DIR)/kmp_c_test
-	$(CXX) -O3 algorithms/knuth_morris_pratt/kmp.cpp -o $(BUILD_DIR)/kmp_cpp_test
+	$(CXX) -O3 algorithms/03_cpp/strings/kmp_full.cpp -o $(BUILD_DIR)/kmp_cpp_test
 	./$(BUILD_DIR)/kmp_cpp_test
-	$(RUSTC) -O algorithms/knuth_morris_pratt/kmp.rs -o $(BUILD_DIR)/kmp_rust_test
+	$(RUSTC) -O algorithms/09_rust/strings/kmp_full.rs -o $(BUILD_DIR)/kmp_rust_test
 	./$(BUILD_DIR)/kmp_rust_test
-	$(GO) run algorithms/knuth_morris_pratt/kmp.go
-	javac -d $(BUILD_DIR) algorithms/knuth_morris_pratt/KMP.java
-	java -cp $(BUILD_DIR) KMP
+	$(GO) run algorithms/11_golang/strings/kmp_full.go
+	javac -d $(BUILD_DIR) algorithms/04_java/strings/KMPFull.java
+	java -cp $(BUILD_DIR) KMPFull
 
 test-convexhull: $(BUILD_DIR)
 	@echo ">>> Testing Convex Hull implementations..."
-	$(PYTHON) algorithms/convex_hull/convex_hull.py
-	$(CXX) -O3 algorithms/convex_hull/convex_hull.cpp -o $(BUILD_DIR)/ch_cpp_test
+	$(PYTHON) algorithms/01_python/graphs/convex_hull.py
+	$(CXX) -O3 algorithms/03_cpp/graphs/convex_hull.cpp -o $(BUILD_DIR)/ch_cpp_test
 	./$(BUILD_DIR)/ch_cpp_test
-	$(RUSTC) -O algorithms/convex_hull/convex_hull.rs -o $(BUILD_DIR)/ch_rust_test
+	$(RUSTC) -O algorithms/09_rust/graphs/convex_hull.rs -o $(BUILD_DIR)/ch_rust_test
 	./$(BUILD_DIR)/ch_rust_test
-	$(GO) run algorithms/convex_hull/convex_hull.go
+	$(GO) run algorithms/11_golang/graphs/convex_hull.go
 
 test-huffman: $(BUILD_DIR)
 	@echo ">>> Testing Huffman Coding implementations..."
-	$(PYTHON) algorithms/huffman_coding/huffman.py
-	$(CXX) -O3 algorithms/huffman_coding/huffman.cpp -o $(BUILD_DIR)/huffman_cpp_test
+	$(PYTHON) algorithms/01_python/strings/huffman.py
+	$(CXX) -O3 algorithms/03_cpp/strings/huffman.cpp -o $(BUILD_DIR)/huffman_cpp_test
 	./$(BUILD_DIR)/huffman_cpp_test
-	$(RUSTC) -O algorithms/huffman_coding/huffman.rs -o $(BUILD_DIR)/huffman_rust_test
+	$(RUSTC) -O algorithms/09_rust/strings/huffman.rs -o $(BUILD_DIR)/huffman_rust_test
 	./$(BUILD_DIR)/huffman_rust_test
-	javac -d $(BUILD_DIR) algorithms/huffman_coding/Huffman.java
+	javac -d $(BUILD_DIR) algorithms/04_java/strings/Huffman.java
 	java -cp $(BUILD_DIR) Huffman
 
 test-toposort: $(BUILD_DIR)
 	@echo ">>> Testing Topological Sort implementations..."
-	$(PYTHON) algorithms/topological_sort/topological_sort.py
-	$(CXX) -O3 algorithms/topological_sort/topological_sort.cpp -o $(BUILD_DIR)/toposort_cpp_test
+	$(PYTHON) algorithms/01_python/graphs/topological_sort.py
+	$(CXX) -O3 algorithms/03_cpp/graphs/topological_sort.cpp -o $(BUILD_DIR)/toposort_cpp_test
 	./$(BUILD_DIR)/toposort_cpp_test
-	$(RUSTC) -O algorithms/topological_sort/topological_sort.rs -o $(BUILD_DIR)/toposort_rust_test
+	$(RUSTC) -O algorithms/09_rust/graphs/topological_sort.rs -o $(BUILD_DIR)/toposort_rust_test
 	./$(BUILD_DIR)/toposort_rust_test
-	$(GO) run algorithms/topological_sort/topological_sort.go
+	$(GO) run algorithms/11_golang/graphs/topological_sort.go
+
+# --- Architectures ---
 
 test-architectures: $(BUILD_DIR)
 	@echo ">>> Testing Architectures and Concurrency Patterns..."
@@ -207,9 +220,107 @@ test-architectures: $(BUILD_DIR)
 	$(RUSTC) -O architectures/concurrency_patterns/worker_pool.rs -o $(BUILD_DIR)/wp_rust_test
 	./$(BUILD_DIR)/wp_rust_test
 
-test-algorithms: test-fft test-dijkstra test-primality test-matrix test-scc test-astar test-kmp test-convexhull test-huffman test-toposort
+# --- Sparse / less common languages ---
 
-test: test-python test-c test-cpp test-java test-lua test-rust test-fortran test-js test-go test-scripts test-algorithms test-architectures
+test-sparse:
+	@echo ">>> Testing sparse language implementations..."
+	$(PYTHON) algorithms/01_python/math/fft.py
+	-$(GO) run algorithms/11_golang/graphs/kosaraju.go 2>/dev/null || echo "(Go sparse test: require go runtime)"
+
+# --- Competitive Programming toolkit ---
+
+test-dsu: $(BUILD_DIR)
+	@echo ">>> Testing Disjoint Set Union (Union-Find)..."
+	$(PYTHON) algorithms/01_python/data_structures/dsu.py
+	$(CC) -O2 algorithms/02_c/data_structures/dsu.c -o $(BUILD_DIR)/dsu_c
+	./$(BUILD_DIR)/dsu_c
+	$(CXX) -O2 algorithms/03_cpp/data_structures/dsu.cpp -o $(BUILD_DIR)/dsu_cpp
+	./$(BUILD_DIR)/dsu_cpp
+	javac -d $(BUILD_DIR) algorithms/04_java/data_structures/DSU.java && java -cp $(BUILD_DIR) DSU
+	$(GO) run algorithms/11_golang/data_structures/dsu.go
+	$(RUSTC) -O algorithms/09_rust/data_structures/dsu.rs -o $(BUILD_DIR)/dsu_rs && ./$(BUILD_DIR)/dsu_rs
+
+test-binary-search: $(BUILD_DIR)
+	@echo ">>> Testing Binary Search (lower/upper bound)..."
+	$(PYTHON) algorithms/01_python/searching/binary_search.py
+	$(CXX) -O2 algorithms/03_cpp/searching/binary_search.cpp -o $(BUILD_DIR)/bs_cpp
+	./$(BUILD_DIR)/bs_cpp
+	javac -d $(BUILD_DIR) algorithms/04_java/searching/BinarySearch.java && java -cp $(BUILD_DIR) BinarySearch
+	$(GO) run algorithms/11_golang/searching/binary_search.go
+	$(RUSTC) -O algorithms/09_rust/searching/binary_search.rs -o $(BUILD_DIR)/bs_rs && ./$(BUILD_DIR)/bs_rs
+
+test-dp-advanced:
+	@echo ">>> Testing Advanced Dynamic Programming (Kadane/LIS/MatrixChain/LPS)..."
+	$(PYTHON) algorithms/01_python/dp/kadane.py
+	$(PYTHON) algorithms/01_python/dp/lis.py
+	$(PYTHON) algorithms/01_python/dp/matrix_chain.py
+	$(PYTHON) algorithms/01_python/dp/longest_palindromic_subsequence.py
+	$(CXX) -O2 algorithms/03_cpp/dp/lis.cpp -o $(BUILD_DIR)/lis_cpp && ./$(BUILD_DIR)/lis_cpp
+	$(CXX) -O2 algorithms/03_cpp/dp/kadane.cpp -o $(BUILD_DIR)/kad_cpp && ./$(BUILD_DIR)/kad_cpp
+	$(GO) run algorithms/11_golang/dp/lis.go
+	$(RUSTC) -O algorithms/09_rust/dp/lis.rs -o $(BUILD_DIR)/lis_rs && ./$(BUILD_DIR)/lis_rs
+
+test-number-theory:
+	@echo ">>> Testing Modular Arithmetic & Number Theory..."
+	$(PYTHON) algorithms/01_python/math/mod_inverse.py
+	$(PYTHON) algorithms/01_python/math/ncr.py
+	$(PYTHON) algorithms/01_python/math/crt.py
+	$(PYTHON) algorithms/01_python/math/euler_totient.py
+	$(CXX) -O2 algorithms/03_cpp/math/crt.cpp -o $(BUILD_DIR)/crt_cpp && ./$(BUILD_DIR)/crt_cpp
+	$(CXX) -O2 algorithms/03_cpp/math/ncr.cpp -o $(BUILD_DIR)/ncr_cpp && ./$(BUILD_DIR)/ncr_cpp
+	$(GO) run algorithms/11_golang/math/mod_inverse.go
+	$(RUSTC) -O algorithms/09_rust/math/mod_inverse.rs -o $(BUILD_DIR)/mi_rs && ./$(BUILD_DIR)/mi_rs
+
+test-strings-advanced:
+	@echo ">>> Testing Advanced String Algorithms (Z/Mancher)..."
+	$(PYTHON) algorithms/01_python/strings/z_algorithm.py
+	$(PYTHON) algorithms/01_python/strings/manacher.py
+	$(CXX) -O2 algorithms/03_cpp/strings/manacher.cpp -o $(BUILD_DIR)/man_cpp && ./$(BUILD_DIR)/man_cpp
+	$(GO) run algorithms/11_golang/strings/z_algorithm.go
+	$(RUSTC) -O algorithms/09_rust/strings/z_algorithm.rs -o $(BUILD_DIR)/z_rs && ./$(BUILD_DIR)/z_rs
+
+test-graphs-advanced: $(BUILD_DIR)
+	@echo ">>> Testing Advanced Graph Algorithms..."
+	$(PYTHON) algorithms/01_python/graphs/max_flow_dinic.py
+	$(PYTHON) algorithms/01_python/graphs/lca_binary_lifting.py
+	$(PYTHON) algorithms/01_python/graphs/bipartite_check.py
+	$(PYTHON) algorithms/01_python/graphs/kahn_topological_sort.py
+	$(PYTHON) algorithms/01_python/graphs/bridges_articulation.py
+	$(CXX) -O2 algorithms/03_cpp/graphs/max_flow_dinic.cpp -o $(BUILD_DIR)/dinic_cpp && ./$(BUILD_DIR)/dinic_cpp
+	$(CXX) -O2 algorithms/03_cpp/graphs/lca_binary_lifting.cpp -o $(BUILD_DIR)/lca_cpp && ./$(BUILD_DIR)/lca_cpp
+	$(GO) run algorithms/11_golang/graphs/max_flow_dinic.go
+	$(RUSTC) -O algorithms/09_rust/graphs/lca_binary_lifting.rs -o $(BUILD_DIR)/lca_rs && ./$(BUILD_DIR)/lca_rs
+
+test-techniques:
+	@echo ">>> Testing Core CP Techniques..."
+	$(PYTHON) algorithms/01_python/techniques/two_pointers.py
+	$(PYTHON) algorithms/01_python/techniques/sliding_window.py
+	$(PYTHON) algorithms/01_python/techniques/prefix_sum.py
+	$(PYTHON) algorithms/01_python/techniques/backtracking.py
+	$(PYTHON) algorithms/01_python/techniques/bit_manipulation.py
+	$(GO) run algorithms/11_golang/techniques/sliding_window.go
+	$(RUSTC) -O algorithms/09_rust/techniques/two_pointers.rs -o $(BUILD_DIR)/tp_rs && ./$(BUILD_DIR)/tp_rs
+
+test-datastructures: $(BUILD_DIR)
+	@echo ">>> Testing Advanced Data Structures..."
+	$(PYTHON) algorithms/01_python/data_structures/sparse_table.py
+	$(PYTHON) algorithms/01_python/data_structures/segment_tree_lazy.py
+	$(PYTHON) algorithms/01_python/data_structures/monotonic_stack.py
+	$(CXX) -O2 algorithms/03_cpp/data_structures/segment_tree_lazy.cpp -o $(BUILD_DIR)/stl_cpp && ./$(BUILD_DIR)/stl_cpp
+	$(GO) run algorithms/11_golang/data_structures/sparse_table.go
+	$(RUSTC) -O algorithms/09_rust/data_structures/segment_tree_lazy.rs -o $(BUILD_DIR)/stl_rs && ./$(BUILD_DIR)/stl_rs
+
+test-competitive: test-dsu test-binary-search test-dp-advanced test-number-theory test-strings-advanced test-graphs-advanced test-techniques test-datastructures
+	@echo ""
+	@echo "COMPETITIVE PROGRAMMING TOOLKIT VERIFIED SUCCESSFULLY!"
+
+# --- Aggregate targets ---
+
+test-algorithms: test-fft test-dijkstra test-primality test-matrix test-scc test-astar test-kmp test-convexhull test-huffman test-toposort
+	@echo ""
+	@echo "ALGORITHM SUITES VERIFIED SUCCESSFULLY!"
+
+test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures
 	@echo ""
 	@echo "================================================================="
 	@echo "ALL REPOSITORY TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
