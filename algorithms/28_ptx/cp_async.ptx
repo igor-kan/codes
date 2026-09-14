@@ -1,0 +1,41 @@
+//
+// cp_async.ptx -- asynchronous copy global -> shared (cp.async)
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 cp_async.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry cp_async_kernel(
+    .param .u64 src,
+    .param .u32 n
+)
+{
+    .shared .align 16 .b8 smem[4096];
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<6>;
+
+    ld.param.u64    %rd1, [src];
+    ld.param.u32    %r1, [n];
+    mov.u32         %r2, %tid.x;
+    setp.ge.u32     %p1, %r2, %r1;
+    @%p1 bra        $L_exit;
+
+    mul.wide.u32    %rd2, %r2, 16;
+    add.s64         %rd3, %rd1, %rd2;
+    mul.lo.u32      %r3, %r2, 16;
+
+    cp.async.cg.shared.global   [smem+%r3], [%rd3], 16;
+    cp.async.commit_group;
+    cp.async.wait_group 0;
+$L_exit:
+    ret;
+}
