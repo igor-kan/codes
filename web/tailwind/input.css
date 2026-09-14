@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 font-medium;
+  }
+  .btn-primary {
+    @apply btn bg-brand-500 text-white hover:bg-brand-700;
+  }
+}
