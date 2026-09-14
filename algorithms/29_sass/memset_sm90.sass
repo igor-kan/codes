@@ -1,0 +1,12 @@
+// memset_sm90.sass -- SASS for a byte memset using STG.E.U8 (sm_90).
+
+        /*0000*/                   MOV R1, c[0x0][0x28] ;
+        /*0010*/                   S2R R0, SR_CTAID.X ;
+        /*0020*/                   S2R R3, SR_TID.X ;
+        /*0030*/                   IMAD R0, R0, c[0x0][0x0], R3 ;
+        /*0040*/                   ISETP.GE.AND P0, PT, R0, c[0x0][0x8], PT ;
+        /*0050*/               @P0 EXIT ;
+        /*0060*/                   IMAD.WIDE.U32 R2, R0, 0x1, c[0x0][0x160] ;
+        /*0070*/                   LDC.U8 R5, c[0x0][0x168] ;
+        /*0080*/                   STG.E.U8 [R2.64], R5 ;
+        /*0090*/                   EXIT ;
