@@ -1,0 +1,7 @@
+%% C4 Level 1: System Context (Mermaid)
+flowchart TB
+    user["Customer\n[Person]"] -->|places orders, views history| sys["Shop Platform\n[Software System]"]
+    admin["Operations\n[Person]"] -->|manages catalogue| sys
+    sys -->|charges cards| pay["Payment Provider\n[External System]"]
+    sys -->|sends email| mail["Email Service\n[External System]"]
+    sys -->|ships parcels| ship["Logistics Provider\n[External System]"]
