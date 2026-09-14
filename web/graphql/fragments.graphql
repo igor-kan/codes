@@ -1,0 +1,20 @@
+# Reusable fragments and inline fragments.
+fragment UserSummary on User {
+  id
+  name
+  avatarUrl
+}
+
+fragment PostCard on Post {
+  id
+  title
+  author {
+    ...UserSummary
+  }
+}
+
+query Feed {
+  posts {
+    ...PostCard
+  }
+}
