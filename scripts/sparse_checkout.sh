@@ -7,14 +7,15 @@ set -e
 
 CORE_PATHS=(
   "algorithms"
-  "architectures"
+  "architectures/concurrency_patterns"
+  "architectures/cpp_patterns"
+  "architectures/distributed_patterns"
+  "architectures/go_patterns"
+  "architectures/java_patterns"
+  "architectures/python_patterns"
+  "architectures/rust_patterns"
+  "architectures/typescript_patterns"
   "scripts"
-  "Makefile"
-  "README.md"
-  "SOURCES.md"
-  ".gitattributes"
-  ".gitignore"
-  "LICENSE"
 )
 
 show_help() {
