@@ -1,0 +1,8 @@
+// Recursive ancestor relation.
+.decl parent(p: symbol, c: symbol)
+.decl ancestor(a: symbol, d: symbol)
+
+ancestor(a, d) :- parent(a, d).
+ancestor(a, d) :- parent(a, c), ancestor(c, d).
+
+.output ancestor
