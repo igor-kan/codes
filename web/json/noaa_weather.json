@@ -1,0 +1,14 @@
+{
+  "properties": {
+    "periods": [
+      {
+        "number": 1,
+        "name": "Today",
+        "temperature": 18,
+        "temperatureUnit": "C",
+        "windSpeed": "10 km/h",
+        "shortForecast": "Partly Sunny"
+      }
+    ]
+  }
+}
