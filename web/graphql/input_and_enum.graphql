@@ -1,0 +1,27 @@
+# Input objects, enums and interfaces.
+enum Role {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+input CreateUserInput {
+  name: String!
+  email: String!
+  role: Role = VIEWER
+  tags: [String!] = []
+}
+
+type Mutation {
+  createUser(input: CreateUserInput!): UserPayload!
+}
+
+type UserPayload {
+  user: User
+  errors: [UserError!]!
+}
+
+type UserError {
+  field: String
+  message: String!
+}
