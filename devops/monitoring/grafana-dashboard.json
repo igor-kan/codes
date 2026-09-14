@@ -1,0 +1,25 @@
+{
+  "title": "API Overview",
+  "uid": "api-overview",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Requests / second",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total[5m])) by (status)", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "p99 latency",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))" }
+      ]
+    }
+  ]
+}
