@@ -1,0 +1,7 @@
+// Aggregation over relations.
+.decl sale(product: symbol, amount: number)
+.decl total(product: symbol, sum: number)
+
+total(p, sum(a)) :- sale(p, a).
+
+.output total
