@@ -1,0 +1,19 @@
+# Subscriptions stream events over a persistent connection.
+subscription OnPostCreated($authorId: ID!) {
+  postCreated(authorId: $authorId) {
+    id
+    title
+    author {
+      id
+      name
+    }
+  }
+}
+
+subscription OnMessage($roomId: ID!) {
+  messageSent(roomId: $roomId) {
+    id
+    body
+    sentAt
+  }
+}
