@@ -1,0 +1,13 @@
+// Maps for themes and configuration.
+$themes: (
+  "light": (bg: #ffffff, fg: #0f172a, accent: #2563eb),
+  "dark":  (bg: #0f172a, fg: #e2e8f0, accent: #60a5fa),
+);
+
+@each $name, $tokens in $themes {
+  [data-theme="#{$name}"] {
+    @each $key, $value in $tokens {
+      --color-#{$key}: #{$value};
+    }
+  }
+}
