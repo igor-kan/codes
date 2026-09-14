@@ -17,6 +17,7 @@ CORE_PATHS=(
   "architectures/typescript_patterns"
   "databases"
   "devops"
+  "interview_prep"
   "scripts"
   "web"
 )
@@ -127,6 +128,7 @@ cmd_list() {
   echo "  web                       (HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, JSON, XML, GraphQL)"
   echo "  databases                 (Cypher, Gremlin, SPARQL, MongoDB, Cassandra, Redis, Elasticsearch)"
   echo "  devops                    (CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring)"
+  echo "  interview_prep            (Algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math)"
   echo "  architectures/dart_systems (Dart SDK Packages & Core Libraries)"
 }
 
