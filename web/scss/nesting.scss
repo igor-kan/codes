@@ -1,0 +1,12 @@
+// Selector nesting and the parent selector (&).
+.card {
+  padding: 1rem;
+
+  .card__title { font-weight: 600; }
+
+  &:hover { box-shadow: 0 4px 12px rgb(0 0 0 / 0.1); }
+
+  &.is-active { border-color: #2563eb; }
+
+  & + & { margin-top: 1rem; }
+}
