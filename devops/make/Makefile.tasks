@@ -1,0 +1,18 @@
+# Self-documenting task runner with defaults.
+.DEFAULT_GOAL := help
+SHELL := /usr/bin/env bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+NAMESPACE ?= default
+
+help: ## List tasks
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+logs: ## Tail application logs
+	kubectl -n $(NAMESPACE) logs -f deploy/api
+
+port-forward: ## Forward the API port locally
+	kubectl -n $(NAMESPACE) port-forward svc/api 8080:80
+
+psql: ## Open a database shell
+	kubectl -n $(NAMESPACE) exec -it statefulset/postgres -- psql -U app
