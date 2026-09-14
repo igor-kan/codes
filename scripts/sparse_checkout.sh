@@ -15,7 +15,9 @@ CORE_PATHS=(
   "architectures/python_patterns"
   "architectures/rust_patterns"
   "architectures/typescript_patterns"
+  "databases"
   "scripts"
+  "web"
 )
 
 show_help() {
@@ -115,6 +117,14 @@ cmd_list() {
   echo "  languages/23_elixir       (Elixir Stdlib)"
   echo "  languages/24_fortran      (Fortran-lang Stdlib, BLAS)"
   echo "  languages/25_lean4        (Lean 4 Mathlib Formal Mathematics)"
+  echo "  algorithms/26_cuda        (NVIDIA CUDA Samples)"
+  echo "  algorithms/27_assembly    (x86-64 / AArch64 / RISC-V assembly)"
+  echo "  algorithms/28_ptx         (PTX kernels)"
+  echo "  algorithms/29_sass        (SASS disassembly reference)"
+  echo "  algorithms/30_llvm_ir     (LLVM IR)"
+  echo "  algorithms/31_wasm        (WebAssembly text)"
+  echo "  web                       (HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, JSON, XML, GraphQL)"
+  echo "  databases                 (Cypher, Gremlin, SPARQL, MongoDB, Cassandra, Redis, Elasticsearch)"
   echo "  architectures/dart_systems (Dart SDK Packages & Core Libraries)"
 }
 
