@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Inline SVG</title>
+</head>
+<body>
+  <svg viewBox="0 0 100 100" role="img" aria-label="Blue circle" width="120" height="120">
+    <defs>
+      <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#38bdf8"/>
+        <stop offset="100%" stop-color="#1d4ed8"/>
+      </linearGradient>
+    </defs>
+    <circle cx="50" cy="50" r="40" fill="url(#g)"/>
+  </svg>
+</body>
+</html>
