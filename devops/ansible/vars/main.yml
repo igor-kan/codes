@@ -1,0 +1,5 @@
+app_dir: /srv/app
+app_user: app
+app_service: app
+nginx_port: 80
+nginx_worker_processes: auto
