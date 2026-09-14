@@ -1,0 +1,8 @@
+# Lists as queues and stacks.
+RPUSH queue:emails "a@example.com" "b@example.com"
+LPUSH queue:emails "urgent@example.com"
+LRANGE queue:emails 0 -1
+LPOP queue:emails
+RPOPLPUSH queue:emails queue:processing
+LLEN queue:emails
+LTRIM queue:emails 0 99
