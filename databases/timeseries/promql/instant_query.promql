@@ -1,0 +1,6 @@
+# Selectors, labels and matchers.
+http_requests_total
+http_requests_total{job="api", status="200"}
+http_requests_total{env=~"prod|staging"}
+http_requests_total{path!~"/health.*"}
+node_memory_MemAvailable_bytes{instance="host:9100"}
