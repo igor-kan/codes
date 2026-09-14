@@ -1,0 +1,5 @@
+# Rates and increase over time windows.
+rate(http_requests_total[5m])
+irate(node_cpu_seconds_total{mode="idle"}[1m])
+increase(http_requests_total[1h])
+sum(rate(http_requests_total[5m])) by (job)
