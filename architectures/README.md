@@ -79,6 +79,66 @@ Design patterns, concurrency primitives, and distributed systems patterns across
 | Repository + Unit of Work | `repository_pattern.ts` |
 | |
 
+### Enterprise Integration Patterns (Python)
+
+| Pattern | File |
+|---------|------|
+| Message Router | `enterprise_patterns/message_router.py` |
+| Content-Based Router | `enterprise_patterns/content_based_router.py` |
+| Splitter | `enterprise_patterns/splitter.py` |
+| Aggregator | `enterprise_patterns/aggregator.py` |
+| Transactional Outbox | `enterprise_patterns/outbox.py` |
+| Saga (compensating transactions) | `enterprise_patterns/saga.py` |
+| Idempotent Receiver | `enterprise_patterns/idempotent_receiver.py` |
+| Dead Letter Channel | `enterprise_patterns/dead_letter_channel.py` |
+
+### Domain-Driven Design Patterns (Python)
+
+| Pattern | File |
+|---------|------|
+| Entity | `ddd_patterns/entity.py` |
+| Value Object | `ddd_patterns/value_object.py` |
+| Aggregate | `ddd_patterns/aggregate.py` |
+| Repository | `ddd_patterns/repository.py` |
+| Domain Event | `ddd_patterns/domain_event.py` |
+| Specification | `ddd_patterns/specification.py` |
+| Domain Service | `ddd_patterns/domain_service.py` |
+
+### Cloud & Resilience Patterns
+
+| Pattern | Format | File |
+|---------|--------|------|
+| Circuit Breaker | Python | `cloud_patterns/circuit_breaker.py` |
+| Bulkhead | Python | `cloud_patterns/bulkhead.py` |
+| Retry with Backoff + Jitter | Python | `cloud_patterns/retry_backoff.py` |
+| Cache-Aside | Python | `cloud_patterns/cache_aside.py` |
+| Sidecar | Doc | `cloud_patterns/sidecar.md` |
+| Ambassador | Doc | `cloud_patterns/ambassador.md` |
+| Strangler Fig | Doc | `cloud_patterns/strangler_fig.md` |
+| Gateway Offloading | Doc | `cloud_patterns/gateway_offloading.md` |
+
+### System Design Building Blocks
+
+| Topic | Format | File |
+|---------|--------|------|
+| Token-Bucket Rate Limiter | Python | `system_design/rate_limiter.py` |
+| Load Balancing Strategies | Python | `system_design/load_balancer.py` |
+| LRU Cache | Python | `system_design/lru_cache.py` |
+| Write-Ahead Log | Python | `system_design/write_ahead_log.py` |
+| Sharding | Doc | `system_design/sharding.md` |
+| CDN | Doc | `system_design/cdn.md` |
+| CAP / PACELC | Doc | `system_design/cap_theorem.md` |
+| Bloom Filter Guard | Doc | `system_design/bloom_filter_guard.md` |
+
+### Principles, Clean Architecture, Templates & API Design
+
+| Area | Files |
+|---------|-------|
+| Engineering principles | `principles/`: SOLID, DRY/KISS/YAGNI, separation of concerns, Law of Demeter, composition over inheritance, Twelve-Factor |
+| Clean architecture | `clean_architecture/`: dependency inversion, ports & adapters, hexagonal, layered, onion |
+| Design templates | `templates/`: ADR, RFC, design doc, runbook, C4 context & container (Mermaid) |
+| API design | `api_design/`: REST guidelines, versioning, pagination, error handling, GraphQL vs REST |
+
 ---
 
 ## Directory Layout
@@ -93,7 +153,15 @@ architectures/
 ├── java_patterns/        Builder and Observer pattern demos
 ├── concurrency_patterns/ Actor models, thread/worker pools
 ├── distributed_patterns/ Consistent hashing, circuit breaker
-└── typescript_patterns/  Middleware pipeline, repository pattern
+├── typescript_patterns/  Middleware pipeline, repository pattern
+├── enterprise_patterns/  Messaging integration patterns (router, saga, outbox, …)
+├── ddd_patterns/         Entities, value objects, aggregates, repositories, events
+├── cloud_patterns/       Resilience and cloud-native patterns
+├── system_design/        Rate limiting, load balancing, caching, CAP, sharding
+├── principles/           Engineering principles and heuristics
+├── clean_architecture/   Hexagonal, onion, layered, dependency inversion
+├── templates/            ADR, RFC, design doc, runbook and C4 diagrams
+└── api_design/           REST/GraphQL guidelines, versioning, pagination, errors
 ```
 
 ---
