@@ -1,0 +1,12 @@
+# Basic graph pattern and projection.
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX schema: <https://schema.org/>
+
+SELECT ?name ?homepage
+WHERE {
+  ?person a foaf:Person ;
+          foaf:name ?name ;
+          foaf:homepage ?homepage .
+}
+ORDER BY ?name
+LIMIT 20
