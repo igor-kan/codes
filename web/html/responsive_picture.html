@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Responsive Images</title>
+</head>
+<body>
+  <picture>
+    <source media="(min-width: 900px)" srcset="hero-large.avif" type="image/avif">
+    <source media="(min-width: 600px)" srcset="hero-medium.webp" type="image/webp">
+    <img src="hero-small.jpg" alt="Mountain sunrise" width="800" height="450"
+         loading="lazy" decoding="async">
+  </picture>
+</body>
+</html>
