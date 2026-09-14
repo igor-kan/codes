@@ -20,7 +20,7 @@ BUILD_DIR = build
 	test-dsu test-binary-search test-dp-advanced test-number-theory \
 	test-strings-advanced test-graphs-advanced test-techniques test-datastructures \
 	test-competitive test-algorithms test-sparse \
-	test-asm test-llvm-ir test-wasm test-web test-cuda test-devops
+	test-asm test-llvm-ir test-wasm test-web test-cuda test-devops test-interview
 
 all: test
 
@@ -58,6 +58,7 @@ help:
 	@echo "  make test-web           Validate JSON, XML and Sass web assets"
 	@echo "  make test-cuda          Build a CUDA sample (requires nvcc; skipped when absent)"
 	@echo "  make test-devops        Validate DevOps YAML and shell scripts"
+	@echo "  make test-interview     Run interview-prep self-checks (Python + C++)"
 	@echo "  make test-algorithms    Execute all core algorithm suites"
 	@echo "  make test               Run full regression verification"
 
@@ -373,13 +374,23 @@ test-devops:
 	@for f in devops/scripts/*.sh; do bash -n "$$f" || exit 1; done
 	@echo "DevOps shell scripts validated."
 
+test-interview:
+	@echo ">>> Running interview-preparation self-checks..."
+	@for f in $$(find interview_prep -name '*.py' | sort); do timeout 60 $(PYTHON) $$f >/dev/null || { echo "FAIL $$f"; exit 1; }; done
+	@echo "Interview Python checks passed."
+	@if command -v g++ >/dev/null 2>&1; then \
+		g++ -std=c++20 interview_prep/cpp/stl_from_scratch/test_all.cpp -o $(BUILD_DIR)/interview_stl && $(BUILD_DIR)/interview_stl; \
+		g++ -std=c++20 -pthread interview_prep/concurrency/thread_pool.cpp -o $(BUILD_DIR)/interview_thread_pool && $(BUILD_DIR)/interview_thread_pool; \
+		echo "Interview C++ checks passed."; \
+	else echo "g++ not found; skipping C++ checks."; fi
+
 # --- Aggregate targets ---
 
 test-algorithms: test-fft test-dijkstra test-primality test-matrix test-scc test-astar test-kmp test-convexhull test-huffman test-toposort
 	@echo ""
 	@echo "ALGORITHM SUITES VERIFIED SUCCESSFULLY!"
 
-test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures test-asm test-llvm-ir test-wasm test-web test-cuda test-devops
+test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures test-asm test-llvm-ir test-wasm test-web test-cuda test-devops test-interview
 	@echo ""
 	@echo "================================================================="
 	@echo "ALL REPOSITORY TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
