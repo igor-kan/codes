@@ -1,0 +1,11 @@
+# SPARQL Update: insert and delete data.
+PREFIX schema: <https://schema.org/>
+PREFIX ex: <https://example.com/>
+
+INSERT DATA {
+  ex:ada a schema:Person ; schema:name "Ada Lovelace" .
+};
+
+DELETE WHERE {
+  ex:ada schema:nickname ?old .
+}
