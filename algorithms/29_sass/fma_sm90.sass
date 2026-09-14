@@ -1,0 +1,15 @@
+// fma_sm90.sass -- SASS for a vectorized FMA kernel using LDG.128 (sm_90).
+
+        /*0000*/                   MOV R1, c[0x0][0x28] ;
+        /*0010*/                   S2R R0, SR_CTAID.X ;
+        /*0020*/                   S2R R3, SR_TID.X ;
+        /*0030*/                   IMAD R0, R0, c[0x0][0x0], R3 ;
+        /*0040*/                   IMAD R6, R0, 0x2, RZ ;                // two floats per thread
+        /*0050*/                   IMAD.WIDE.U32 R2, R6, 0x4, c[0x0][0x160] ;
+        /*0060*/                   IMAD.WIDE.U32 R4, R6, 0x4, c[0x0][0x168] ;
+        /*0070*/                   LDG.E.128 R8, [R2.64] ;              // {a0, a1}
+        /*0080*/                   LDG.E.128 R10, [R4.64] ;             // {b0, b1}
+        /*0090*/                   FFMA R12, R8, R10, RZ ;
+        /*00a0*/                   FFMA R13, R9, R11, RZ ;
+        /*00b0*/                   STG.E.64 [R2.64], R12 ;              // store float2
+        /*00c0*/                   EXIT ;
