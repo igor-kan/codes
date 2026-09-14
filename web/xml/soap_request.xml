@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Header>
+    <auth:ApiKey xmlns:auth="https://example.com/auth">secret</auth:ApiKey>
+  </soap:Header>
+  <soap:Body>
+    <GetUser xmlns="https://example.com/users">
+      <UserId>u-123</UserId>
+    </GetUser>
+  </soap:Body>
+</soap:Envelope>
