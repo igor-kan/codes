@@ -1,0 +1,15 @@
+# Apollo Federation subgraph schema.
+extend schema @link(url: "https://specs.apollo.dev/federation/v2.3", import: ["@key", "@shareable", "@external"])
+
+type Product @key(fields: "upc") {
+  upc: String!
+  name: String! @shareable
+  price: Int @external
+  reviews: [Review!]!
+}
+
+type Review @key(fields: "id") {
+  id: ID!
+  body: String!
+  product: Product!
+}
