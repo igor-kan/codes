@@ -1,0 +1,13 @@
+/* Decorative pseudo-elements and counters. */
+blockquote::before { content: "\201C"; font-size: 3rem; color: #94a3b8; }
+blockquote::after  { content: "\201D"; font-size: 3rem; color: #94a3b8; }
+
+ol.steps { counter-reset: step; list-style: none; }
+ol.steps > li { counter-increment: step; }
+ol.steps > li::before {
+  content: counter(step) ". ";
+  font-weight: 700;
+  color: #2563eb;
+}
+
+.external::after { content: " ↗"; }
