@@ -1,6 +1,6 @@
 # Algorithms Reference Library
 
-Polyglot algorithm implementations across **25 canonical languages** — a comprehensive competitive-programming (LeetCode/Codeforces) toolkit plus foundational algorithms. Each language directory contains standalone implementations organized by category.
+Polyglot algorithm implementations across **25 canonical languages** — a comprehensive competitive-programming (LeetCode/Codeforces) toolkit plus foundational algorithms — extended with GPU and low-level tiers: **CUDA, assembly, PTX, SASS, LLVM IR and WebAssembly**. Each language directory contains standalone implementations organized by category.
 
 ## Coverage Matrix
 
@@ -161,6 +161,12 @@ _Auto-generated coverage: ✓ = implementation present._
 | 23 | `23_elixir/` | Elixir | 15 |
 | 24 | `24_fortran/` | Fortran | 7 |
 | 25 | `25_lean4/` | Lean 4 | 5 |
+| 26 | `26_cuda/` | CUDA | 669 |
+| 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 40 |
+| 28 | `28_ptx/` | PTX | 21 |
+| 29 | `29_sass/` | SASS | 10 |
+| 30 | `30_llvm_ir/` | LLVM IR | 48 |
+| 31 | `31_wasm/` | WebAssembly (WAT) | 19 |
 
 ## Testing
 

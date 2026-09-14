@@ -37,8 +37,10 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 
 | Top-Level Directory | Description | See |
 |:---|:---|:---|
-| `algorithms/` | Polyglot algorithm reference implementations across 25 languages | [algorithms/README.md](algorithms/README.md) |
+| `algorithms/` | Polyglot algorithms across 25 languages plus CUDA, assembly, PTX, SASS, LLVM IR and WebAssembly | [algorithms/README.md](algorithms/README.md) |
 | `architectures/` | Design patterns, concurrency primitives, distributed patterns | [architectures/README.md](architectures/README.md) |
+| `web/` | Web platform: HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, Web Components, JSON, XML, GraphQL | [web/README.md](web/README.md) |
+| `databases/` | Graph/NoSQL query languages: Cypher, Gremlin, SPARQL, Datalog, MongoDB, Cassandra, Redis, Elasticsearch, Flux, PromQL, pgvector | [databases/README.md](databases/README.md) |
 | `scripts/` | Computational scripts (math, physics, ML, finance) and utilities | `scripts/` |
 | `languages/` | Upstream source code from major open-source projects (sparse checkout) | `languages/` |
 
@@ -46,7 +48,7 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 
 ## Multi-Language Algorithms Suite
 
-The `algorithms/` directory hosts standalone, production-ready algorithm implementations across all 25 canonical languages. Each language directory (`01_python/` through `25_lean4/`) contains implementations organized by category: sorting, graphs, dynamic programming, strings, data structures, math, cryptography, and machine learning.
+The `algorithms/` directory hosts standalone, production-ready algorithm implementations across all 25 canonical languages, plus six systems/GPU tiers that go below the language level: CUDA, assembly (x86-64 / AArch64 / RISC-V), PTX, SASS, LLVM IR and WebAssembly. Each language directory (`01_python/` through `25_lean4/`, and `26_cuda/` through `31_wasm/`) contains implementations organized by category: sorting, graphs, dynamic programming, strings, data structures, math, cryptography, and machine learning.
 
 Full coverage matrix: [algorithms/README.md](algorithms/README.md)
 
@@ -77,6 +79,12 @@ Full coverage matrix: [algorithms/README.md](algorithms/README.md)
 | 23 | `algorithms/23_elixir/` | Elixir | 2 sorts, BFS, LCS, math |
 | 24 | `algorithms/24_fortran/` | Fortran | Bubble sort, BFS, Knapsack, GCD, matmul_blocked |
 | 25 | `algorithms/25_lean4/` | Lean 4 | GCD (computational + formal proof), Fibonacci, Insertion sort, BFS (with termination proofs) |
+| 26 | `algorithms/26_cuda/` | CUDA | 175 upstream NVIDIA samples: vectorAdd, reduction, scan, matrixMul, streams, cooperative groups, cuBLAS/cuFFT/Thrust, tensor-core kernels |
+| 27 | `algorithms/27_assembly/` | Assembly | x86-64 (25), AArch64 (8), RISC-V 64 (6) syscall programs: sorts, GCD, Fibonacci, SIMD, CPUID, RDTSC |
+| 28 | `algorithms/28_ptx/` | PTX | 20 kernels: vectorAdd, saxpy, reduction, tiled matmul, warp vote/shuffle, atomics, `cp.async` |
+| 29 | `algorithms/29_sass/` | SASS | 9 annotated sm_90 (Hopper) disassembly listings plus reference notes |
+| 30 | `algorithms/30_llvm_ir/` | LLVM IR | 47 modules lowered from the C reference suite |
+| 31 | `algorithms/31_wasm/` | WebAssembly (WAT) | 18 modules: control flow, linear memory, SIMD, tables, multi-value |
 
 ---
 
@@ -128,6 +136,61 @@ Design patterns across the Gang of Four (GoF), concurrency primitives, and distr
 
 ---
 
+## GPU, Assembly & Intermediate Representations
+
+Beyond the high-level language suites, `algorithms/` follows the GPU and systems toolchain from parallel source down to machine instructions.
+
+| Directory | Level | Description |
+|:---|:---|:---|
+| `algorithms/26_cuda/` | parallel C++ | Curated [NVIDIA/cuda-samples](https://github.com/NVIDIA/cuda-samples) (BSD-3-Clause) organized by sample category |
+| `algorithms/27_assembly/` | machine code | Hand-written Linux syscall programs for x86-64 (AT&T/Intel), AArch64 and RISC-V 64 |
+| `algorithms/28_ptx/` | virtual ISA | Standalone PTX 8.x kernels (thread indexing, shared memory, warp intrinsics, atomics, `cp.async`) |
+| `algorithms/29_sass/` | device ISA | Annotated sm_90 (Hopper) SASS disassembly listings (`nvdisasm` reference) |
+| `algorithms/30_llvm_ir/` | compiler IR | LLVM IR lowered from the C reference algorithms; verify with `opt`, run with `lli` |
+| `algorithms/31_wasm/` | stack machine | WebAssembly text modules validated with `wasmtime` |
+
+---
+
+## Web Platform
+
+The `web/` directory collects markup, styling, scripting, component and data-format examples.
+
+| Directory | Content |
+|:---|:---|
+| `web/html/` | Semantic HTML5, forms, ARIA, tables, canvas, inline SVG, responsive images, `<dialog>` |
+| `web/css/` | Reset, flexbox, grid, custom properties, animations, container queries, scroll-driven effects |
+| `web/scss/` | Sass variables, nesting, mixins, functions, placeholders, loops, maps, `@use` modules |
+| `web/tailwind/` | Tailwind configuration, `@apply` component layers and responsive utility components |
+| `web/webcomponents/` | Custom elements, shadow DOM, templates and adopted stylesheets |
+| `web/javascript/` | Modern JavaScript: DOM, fetch, promises, ESM, closures, classes, observers, workers |
+| `web/typescript/` | Generics, discriminated unions, utility/mapped/conditional types, decorators |
+| `web/react/` | React 19 function components, hooks, context, reducers and error boundaries |
+| `web/vue/` | Vue 3 Composition and Options APIs, props/emit, `v-model` |
+| `web/json/` | JSON/JSONL, JSON Schema, JSON-LD, GeoJSON, JSON Patch, OpenAPI |
+| `web/xml/` | Sitemaps, RSS/Atom, SVG, XSLT, XSD, SOAP and configuration |
+| `web/graphql/` | GraphQL SDL, queries, mutations, subscriptions, fragments, federation |
+
+---
+
+## Databases & Query Languages
+
+`databases/` covers graph and NoSQL engines plus time-series and vector search; the relational suite remains in `algorithms/10_sql/`.
+
+| Directory | Engine | Language |
+|:---|:---|:---|
+| `databases/graph/cypher/` | Neo4j | Cypher |
+| `databases/graph/gremlin/` | Apache TinkerPop | Gremlin |
+| `databases/graph/sparql/` | RDF stores | SPARQL 1.1 |
+| `databases/graph/datalog/` | Souffle / DDlog | Datalog |
+| `databases/document/mongodb/` | MongoDB | MQL / mongosh |
+| `databases/wide_column/cassandra/` | Apache Cassandra | CQL |
+| `databases/key_value/redis/` | Redis | RESP / Lua |
+| `databases/search/elasticsearch/` | Elasticsearch | Query DSL |
+| `databases/timeseries/` | InfluxDB / Prometheus | Flux / PromQL |
+| `databases/vector/` | PostgreSQL + pgvector | SQL |
+
+---
+
 ## Scripts
 
 Computational scripts across multiple domains:
@@ -162,6 +225,11 @@ make test-go            # Go algorithms
 make test-scripts       # Computational scripts
 make test-algorithms    # All polyglot algorithm suites
 make test-architectures # Design patterns and concurrency
+make test-asm           # x86-64 assembly (assemble + run)
+make test-llvm-ir       # Verify generated LLVM IR
+make test-wasm          # Validate WebAssembly text modules
+make test-web           # HTML/CSS/SCSS/JS/TS/JSON/GraphQL validation
+make test-cuda          # NVIDIA samples (requires nvcc; skipped when absent)
 
 # Clean build artifacts
 make clean
