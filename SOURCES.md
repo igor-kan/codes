@@ -90,6 +90,24 @@ None of the imported code originates from private or personal repositories; all 
 | **Fortran Standard Library** | `https://github.com/fortran-lang/stdlib` | Fortran-lang Community | MIT | `languages/24_fortran/stdlib/` |
 | **Lean 4 Mathlib** | `https://github.com/leanprover-community/mathlib4` | Lean Community | Apache-2.0 | `languages/25_lean4/mathlib4/` |
 | **Dart SDK Core & Packages** | `https://github.com/dart-lang/sdk` | Google LLC & The Dart Project Authors | BSD-3-Clause | `architectures/dart_systems/` |
+| **NVIDIA CUDA Samples** | `https://github.com/NVIDIA/cuda-samples` | NVIDIA Corporation | BSD-3-Clause | `algorithms/26_cuda/` |
+
+---
+
+## Originally Authored and Derived Material
+
+The following modules were written for this repository or generated locally
+from its own sources; they are not copied from external repositories.
+
+| Module | Nature | Reference |
+|:---|:---|:---|
+| `algorithms/27_assembly/` | Hand-written Linux syscall programs | *Intel 64 and IA-32 Architectures SDM*, *Arm Architecture Reference Manual*, *The RISC-V Instruction Set Manual* |
+| `algorithms/28_ptx/` | Hand-written PTX kernels | *Parallel Thread Execution ISA*, NVIDIA |
+| `algorithms/29_sass/` | Annotated SASS reference listings | *CUDA Binary Utilities* (`nvdisasm`/`cuobjdump`), NVIDIA |
+| `algorithms/30_llvm_ir/` | LLVM IR generated with `clang -O2 -emit-llvm` | LLVM Project |
+| `algorithms/31_wasm/` | Hand-written WebAssembly text | *WebAssembly Core Specification*, W3C |
+| `web/` | Hand-written HTML, CSS, Sass, Tailwind, JavaScript, TypeScript, React, Vue, Web Components, JSON, XML, GraphQL examples | WHATWG HTML, W3C CSS, Sass, Tailwind CSS, ECMAScript, TypeScript, React, Vue, JSON Schema, W3C XML, GraphQL specifications |
+| `databases/` | Hand-written queries and schemas | Cypher (Neo4j), Gremlin (Apache TinkerPop), SPARQL (W3C), Datalog, MongoDB MQL, Cassandra CQL, Redis, Elasticsearch Query DSL, Flux (InfluxData), PromQL (Prometheus), pgvector |
 
 ---
 
