@@ -1,0 +1,16 @@
+// Variables, default values and !global.
+$primary: #2563eb !default;
+$radius: 0.5rem;
+$font-stack: ("Inter", system-ui, -apple-system, sans-serif);
+
+$breakpoints: (
+  "sm": 36rem,
+  "md": 48rem,
+  "lg": 64rem,
+);
+
+.button {
+  font-family: $font-stack;
+  background: $primary;
+  border-radius: $radius;
+}
