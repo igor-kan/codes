@@ -1,0 +1,5 @@
+{"index":{"_index":"articles","_id":"1"}}
+{"title":"Distributed Systems","body":"Consensus and replication","tags":["systems"],"views":120}
+{"index":{"_index":"articles","_id":"2"}}
+{"title":"Databases","body":"Storage engines and indexes","tags":["db"],"views":80}
+{"delete":{"_index":"articles","_id":"3"}}
