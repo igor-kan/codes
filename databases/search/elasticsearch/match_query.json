@@ -1,0 +1,14 @@
+{
+  "query": {
+    "multi_match": {
+      "query": "distributed consensus",
+      "fields": ["title^3", "body"],
+      "type": "best_fields",
+      "fuzziness": "AUTO"
+    }
+  },
+  "highlight": { "fields": { "body": {} } },
+  "_source": ["title", "tags"],
+  "from": 0,
+  "size": 10
+}
