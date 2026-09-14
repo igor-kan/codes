@@ -1,0 +1,22 @@
+// Placeholders extend without duplicating selectors.
+%button-base {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.button-primary {
+  @extend %button-base;
+  background: #2563eb;
+  color: #fff;
+}
+
+.button-ghost {
+  @extend %button-base;
+  background: transparent;
+  border: 1px solid currentColor;
+}
