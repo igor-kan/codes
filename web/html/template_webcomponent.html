@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Template and Slot</title>
+</head>
+<body>
+  <template id="user-card">
+    <style>
+      :host { display: block; border: 1px solid #ccc; padding: 1rem; }
+    </style>
+    <h3><slot name="name">Anonymous</slot></h3>
+    <p><slot name="bio">No bio.</slot></p>
+  </template>
+
+  <user-card>
+    <span slot="name">Grace Hopper</span>
+    <span slot="bio">Computer scientist and US Navy rear admiral.</span>
+  </user-card>
+
+  <script>
+    customElements.define("user-card",
+      class extends HTMLElement {
+        constructor() {
+          super();
+          const tpl = document.getElementById("user-card");
+          this.attachShadow({ mode: "open" })
+              .appendChild(tpl.content.cloneNode(true));
+        }
+      });
+  </script>
+</body>
+</html>
