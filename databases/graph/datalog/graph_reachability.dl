@@ -1,0 +1,9 @@
+// Reachability from a seed node.
+.decl edge(src: symbol, dst: symbol)
+.decl reachable(node: symbol)
+.decl seed(node: symbol)
+
+reachable(x) :- seed(x).
+reachable(y) :- reachable(x), edge(x, y).
+
+.output reachable
