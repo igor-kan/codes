@@ -1,0 +1,26 @@
+;;; Manacher's algorithm for longest palindromic substring in Common Lisp
+(defun manacher (s)
+  (let* ((t (concatenate 'string "#" (map 'string (lambda (c) (format nil "~a#" c)) s)))
+         (n (length t))
+         (p (make-array n :initial-element 0))
+         (c 0)
+         (r 0))
+    (loop for i from 0 below n do
+      (when (< i r)
+        (setf (aref p i) (min (- r i) (aref p (- (* 2 c) i)))))
+      (loop while (and (< (1+ (+ i (aref p i))) n)
+                       (>= (1- (- i (aref p i))) 0)
+                       (char= (char t (1+ (+ i (aref p i))))
+                              (char t (1- (- i (aref p i))))))
+            do (incf (aref p i)))
+      (when (> (+ i (aref p i)) r)
+        (setf c i)
+        (setf r (+ i (aref p i)))))
+    (reduce #'max p)))
+
+(defun test-manacher ()
+  (assert (= (manacher "abba") 4))
+  (assert (= (manacher "racecar") 7))
+  (format t "[Common Lisp Manacher] Longest palindromic substring verified~%"))
+
+(test-manacher)
