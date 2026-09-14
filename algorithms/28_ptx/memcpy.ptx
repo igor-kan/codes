@@ -1,0 +1,40 @@
+//
+// memcpy.ptx -- 16-byte vectorized global copy
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 memcpy.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry memcpy_kernel(
+    .param .u64 dst,
+    .param .u64 src,
+    .param .u32 n
+)
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd2, [src];
+    ld.param.u32    %r1, [n];
+
+    mov.u32         %r2, %ctaid.x;
+    mov.u32         %r3, %ntid.x;
+    mov.u32         %r4, %tid.x;
+    mad.lo.u32      %r5, %r2, %r3, %r4;
+    setp.ge.u32     %p1, %r5, %r1;
+    @%p1 bra        $L_exit;
+
+    mul.wide.u32    %rd3, %r5, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.v4.u32    {%r6, %r7, %r8, %r9}, [%rd5];
+    st.global.v4.u32    [%rd4], {%r6, %r7, %r8, %r9};
+$L_exit:
+    ret;
+}
