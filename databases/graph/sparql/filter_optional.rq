@@ -1,0 +1,10 @@
+# FILTER and OPTIONAL clauses.
+PREFIX schema: <https://schema.org/>
+
+SELECT ?name ?birthDate
+WHERE {
+  ?person a schema:Person ;
+          schema:name ?name .
+  OPTIONAL { ?person schema:birthDate ?birthDate }
+  FILTER (LANG(?name) = "en")
+}
