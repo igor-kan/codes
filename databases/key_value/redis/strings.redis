@@ -1,0 +1,10 @@
+# String commands: SET with options, INCR, GETRANGE.
+SET user:1:name "Ada" EX 3600
+SET user:1:visits 0
+INCR user:1:visits
+INCRBY user:1:visits 5
+GET user:1:visits
+SETEX session:abc 900 "token-value"
+GETRANGE user:1:name 0 1
+SETNX lock:job 1
+APPEND user:1:name " Lovelace"
