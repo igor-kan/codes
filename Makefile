@@ -374,13 +374,15 @@ test-devops:
 	@for f in devops/scripts/*.sh; do bash -n "$$f" || exit 1; done
 	@echo "DevOps shell scripts validated."
 
-test-interview:
+test-interview: $(BUILD_DIR)
 	@echo ">>> Running interview-preparation self-checks..."
 	@for f in $$(find interview_prep -name '*.py' | sort); do timeout 60 $(PYTHON) $$f >/dev/null || { echo "FAIL $$f"; exit 1; }; done
 	@echo "Interview Python checks passed."
 	@if command -v g++ >/dev/null 2>&1; then \
-		g++ -std=c++20 interview_prep/cpp/stl_from_scratch/test_all.cpp -o $(BUILD_DIR)/interview_stl && $(BUILD_DIR)/interview_stl; \
-		g++ -std=c++20 -pthread interview_prep/concurrency/thread_pool.cpp -o $(BUILD_DIR)/interview_thread_pool && $(BUILD_DIR)/interview_thread_pool; \
+		g++ -std=c++20 interview_prep/cpp/stl_from_scratch/test_all.cpp -o $(BUILD_DIR)/interview_stl || exit 1; \
+		$(BUILD_DIR)/interview_stl || exit 1; \
+		g++ -std=c++20 -pthread interview_prep/concurrency/thread_pool.cpp -o $(BUILD_DIR)/interview_thread_pool || exit 1; \
+		$(BUILD_DIR)/interview_thread_pool || exit 1; \
 		echo "Interview C++ checks passed."; \
 	else echo "g++ not found; skipping C++ checks."; fi
 
