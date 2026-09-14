@@ -40,6 +40,7 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 | `algorithms/` | Polyglot algorithms across 25 languages plus CUDA, assembly, PTX, SASS, LLVM IR and WebAssembly | [algorithms/README.md](algorithms/README.md) |
 | `architectures/` | Design patterns, DDD, enterprise integration, cloud, system design, principles and templates | [architectures/README.md](architectures/README.md) |
 | `devops/` | CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring and operations scripts | [devops/README.md](devops/README.md) |
+| `interview_prep/` | Interview study vault: algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math | [interview_prep/README.md](interview_prep/README.md) |
 | `web/` | Web platform: HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, Web Components, JSON, XML, GraphQL | [web/README.md](web/README.md) |
 | `databases/` | Graph/NoSQL query languages: Cypher, Gremlin, SPARQL, Datalog, MongoDB, Cassandra, Redis, Elasticsearch, Flux, PromQL, pgvector | [databases/README.md](databases/README.md) |
 | `scripts/` | Computational scripts (math, physics, ML, finance) and utilities | `scripts/` |
@@ -221,6 +222,28 @@ configuration.
 
 ---
 
+## Interview Preparation
+
+The `interview_prep/` directory is a study vault built around a concurrent
+algorithms-plus-systems plan, with runnable examples and focused notes.
+
+| Directory | Track | Contents |
+|:---|:---|:---|
+| `interview_prep/algorithms/` | Algorithms (see also `algorithms/`) | LeetCode patterns: arrays, strings, linked lists, trees, graphs, DP, heap/trie/bit, techniques |
+| `interview_prep/cpp/` | C++ | STL components from scratch, *A Tour of C++*, *Effective C++* examples, 100 questions + answer programs |
+| `interview_prep/concurrency/` | Concurrency | threads, locks, condition variables, atomics, lock-free stacks/queues, futures, thread pools |
+| `interview_prep/python/` | Python | *Fluent Python*: data model, generators, decorators, descriptors, metaclasses, asyncio |
+| `interview_prep/networking/` | Networking | top-down Ch. 1-5: application, transport, network, link, sockets and simulations |
+| `interview_prep/operating_systems/` | Operating Systems | OSTEP: CPU/memory virtualization, concurrency, persistence |
+| `interview_prep/computer_architecture/` | Architecture | caches, branch prediction, memory hierarchy, pipelining |
+| `interview_prep/system_design/` | System Design | scalability, low-level/high-throughput, DDIA notes, worked designs |
+| `interview_prep/behavioral/` | Behavioral | STAR method, story banks, leadership and question bank |
+| `interview_prep/math_stats/` | Math & Stats | probability, statistics, linear algebra, Markov chains, Monte Carlo |
+
+Run the self-checks with `make test-interview`.
+
+---
+
 ## Scripts
 
 Computational scripts across multiple domains:
@@ -261,6 +284,7 @@ make test-wasm          # Validate WebAssembly text modules
 make test-web           # HTML/CSS/SCSS/JS/TS/JSON/GraphQL validation
 make test-cuda          # NVIDIA samples (requires nvcc; skipped when absent)
 make test-devops        # Validate DevOps YAML and shell scripts
+make test-interview     # Run interview-prep self-checks (Python + C++)
 
 # Clean build artifacts
 make clean
