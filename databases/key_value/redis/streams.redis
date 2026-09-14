@@ -1,0 +1,10 @@
+# Streams: append-only log with consumer groups.
+XADD orders * customer 1 total 19.99
+XADD orders * customer 2 total 5.00
+XLEN orders
+XRANGE orders - +
+XREAD COUNT 10 STREAMS orders 0
+
+XGROUP CREATE orders processors $ MKSTREAM
+XREADGROUP GROUP processors worker-1 COUNT 5 STREAMS orders >
+XACK orders processors 1700000000000-0
