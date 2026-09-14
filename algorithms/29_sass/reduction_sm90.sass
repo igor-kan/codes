@@ -1,0 +1,27 @@
+// reduction_sm90.sass -- shared-memory tree reduction (sm_90).
+
+        /*0000*/                   MOV R1, c[0x0][0x28] ;
+        /*0010*/                   S2R R0, SR_TID.X ;
+        /*0020*/                   S2R R3, SR_CTAID.X ;
+        /*0030*/                   IMAD R2, R3, c[0x0][0x0], R0 ;
+        /*0040*/                   IMAD.WIDE.U32 R4, R2, 0x4, c[0x0][0x160] ;
+        /*0050*/                   LDG.E R6, [R4.64] ;
+        /*0060*/                   STS [R0.64+0x0], R6 ;                // per-thread partial
+        /*0070*/                   BAR.SYNC 0x0 ;                       // __syncthreads()
+        /*0080*/                   SHR.U32 R7, c[0x0][0x0], 0x1 ;       // blockDim.x / 2
+        /*0090*/                   ISETP.EQ.AND P0, PT, R7, RZ, PT ;
+        /*00a0*/               @P0 BRA 0x150 ;
+        /*00b0*/                   ISETP.GE.AND P1, PT, R0, R7, PT ;
+        /*00c0*/               @P1 BRA 0x130 ;                          // inactive threads skip
+        /*00d0*/                   IADD3 R8, R0, R7, RZ ;
+        /*00e0*/                   LDS R9, [R8.64+0x0] ;
+        /*00f0*/                   LDS R10, [R0.64+0x0] ;
+        /*0100*/                   FADD R11, R10, R9 ;
+        /*0110*/                   STS [R0.64+0x0], R11 ;
+        /*0120*/                   BRA 0x90 ;
+        /*0130*/                   BAR.SYNC 0x0 ;
+        /*0140*/                   SHR.U32 R7, R7, 0x1 ;
+        /*0150*/                   ISETP.NE.AND P0, PT, R0, RZ, PT ;
+        /*0160*/               @P0 EXIT ;
+        /*0170*/                   STG.E [c[0x0][0x168].64], R11 ;
+        /*0180*/                   EXIT ;
