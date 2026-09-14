@@ -1,0 +1,38 @@
+//
+// memset.ptx -- fill a byte buffer with a constant
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 memset.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry memset_kernel(
+    .param .u64 dst,
+    .param .u32 value,
+    .param .u32 n
+)
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [dst];
+    ld.param.u32    %r1, [value];
+    ld.param.u32    %r2, [n];
+
+    mov.u32         %r3, %ctaid.x;
+    mov.u32         %r4, %ntid.x;
+    mov.u32         %r5, %tid.x;
+    mad.lo.u32      %r6, %r3, %r4, %r5;
+    setp.ge.u32     %p1, %r6, %r2;
+    @%p1 bra        $L_exit;
+
+    cvt.u64.u32     %rd2, %r6;
+    add.s64         %rd3, %rd1, %rd2;
+    st.global.u8    [%rd3], %r1;
+$L_exit:
+    ret;
+}
