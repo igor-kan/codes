@@ -1,0 +1,17 @@
+/* Responsive card row with flexbox. */
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: stretch;
+}
+.card {
+  flex: 1 1 18rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: #f8fafc;
+}
+.card__actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
