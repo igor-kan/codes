@@ -1,0 +1,12 @@
+# Built-in and custom directives.
+query Dashboard($withEmail: Boolean!, $skipMeta: Boolean!) {
+  me {
+    id
+    name
+    email @include(if: $withEmail)
+    meta @skip(if: $skipMeta) {
+      lastLogin
+    }
+    roles @deprecated(reason: "Use permissions instead")
+  }
+}
