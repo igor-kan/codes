@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-probes
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: api-probes }
+  template:
+    metadata:
+      labels: { app: api-probes }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/example/api:1.2.3
+          startupProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /live, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          lifecycle:
+            preStop:
+              exec: { command: ["sh", "-c", "sleep 5"] }
