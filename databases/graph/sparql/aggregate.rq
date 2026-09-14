@@ -1,0 +1,9 @@
+# Aggregation, COUNT and GROUP_CONCAT.
+PREFIX schema: <https://schema.org/>
+
+SELECT (COUNT(?person) AS ?total)
+       (GROUP_CONCAT(DISTINCT ?country; separator=", ") AS ?countries)
+WHERE {
+  ?person a schema:Person ;
+          schema:nationality ?country .
+}
