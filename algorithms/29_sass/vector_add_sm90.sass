@@ -1,0 +1,19 @@
+// vector_add_sm90.sass -- SASS for an elementwise float vector add (sm_90).
+//
+// Corresponds to 26_cuda/.../vectorAdd.cu and 28_ptx/vector_add.ptx.
+// Entry: vector_add(const float *a, const float *b, float *c, int n)
+
+        /*0000*/                   MOV R1, c[0x0][0x28] ;              // stack pointer
+        /*0010*/                   S2R R0, SR_CTAID.X ;                // blockIdx.x
+        /*0020*/                   S2R R3, SR_TID.X ;                  // threadIdx.x
+        /*0030*/                   IMAD R0, R0, c[0x0][0x0], R3 ;      // global id = blockDim.x*blockIdx.x + tid
+        /*0040*/                   ISETP.GE.AND P0, PT, R0, c[0x0][0x8], PT ;
+        /*0050*/               @P0 EXIT ;                              // if (id >= n) return
+        /*0060*/                   IMAD.WIDE.U32 R2, R0, 0x4, c[0x0][0x160] ; // &a[id]
+        /*0070*/                   IMAD.WIDE.U32 R4, R0, 0x4, c[0x0][0x168] ; // &b[id]
+        /*0080*/                   IMAD.WIDE.U32 R6, R0, 0x4, c[0x0][0x170] ; // &c[id]
+        /*0090*/                   LDG.E R8, [R2.64] ;                 // a[id]
+        /*00a0*/                   LDG.E R9, [R4.64] ;                 // b[id]
+        /*00b0*/                   FADD R10, R8, R9 ;                  // a[id] + b[id]
+        /*00c0*/                   STG.E [R6.64], R10 ;                // c[id] = sum
+        /*00d0*/                   EXIT ;
