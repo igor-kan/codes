@@ -1,0 +1,18 @@
+// loop_branch_sm90.sass -- grid-stride loop control flow with BSSY/BSYNC (sm_90).
+
+        /*0000*/                   MOV R1, c[0x0][0x28] ;
+        /*0010*/                   S2R R0, SR_CTAID.X ;
+        /*0020*/                   S2R R3, SR_TID.X ;
+        /*0030*/                   IMAD R4, R0, c[0x0][0x0], R3 ;      // thread id
+        /*0040*/                   IMAD R5, c[0x0][0x4], c[0x0][0x0], RZ ; // grid stride
+        /*0050*/                   BSSY B0, 0x100 ;                    // push convergence barrier
+        /*0060*/                   ISETP.GE.AND P0, PT, R4, c[0x0][0x8], PT ;
+        /*0070*/               @P0 BRA 0x0f0 ;
+        /*0080*/                   IMAD.WIDE.U32 R6, R4, 0x4, c[0x0][0x160] ;
+        /*0090*/                   LDG.E R8, [R6.64] ;
+        /*00a0*/                   FMUL R9, R8, R8 ;                   // square
+        /*00b0*/                   STG.E [R6.64], R9 ;
+        /*00c0*/                   IADD3 R4, R4, R5, RZ ;
+        /*00d0*/                   BRA 0x60 ;
+        /*00e0*/                   BSYNC B0 ;                          // reconverge
+        /*00f0*/                   EXIT ;
