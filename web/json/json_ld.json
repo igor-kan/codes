@@ -1,0 +1,15 @@
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "Understanding JSON-LD",
+  "datePublished": "2026-02-01",
+  "author": {
+    "@type": "Person",
+    "name": "Ada Lovelace"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Example Press"
+  },
+  "mainEntityOfPage": "https://example.com/posts/json-ld"
+}
