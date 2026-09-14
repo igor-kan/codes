@@ -1,0 +1,9 @@
+# MULTI/EXEC transactions and optimistic locking.
+WATCH balance:1
+MULTI
+DECRBY balance:1 100
+INCRBY balance:2 100
+EXEC
+
+# If the watched key changed, EXEC returns nil and the caller retries.
+DISCARD
