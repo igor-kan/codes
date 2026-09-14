@@ -1,0 +1,6 @@
+# Aggregation operators.
+sum(rate(http_requests_total[5m])) by (status)
+avg(node_load1) without (instance)
+max by (instance) (node_load15)
+count(count by (instance) (up == 1))
+topk(3, sum by (path) (rate(http_requests_total[5m])))
