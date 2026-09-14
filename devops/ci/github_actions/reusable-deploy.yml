@@ -1,0 +1,25 @@
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+    secrets:
+      deploy-token:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - run: |
+          echo "Deploying ${{ inputs.image }} to ${{ inputs.environment }}"
+          ./devops/scripts/deploy.sh "${{ inputs.image }}"
+        env:
+          DEPLOY_TOKEN: ${{ secrets.deploy-token }}
