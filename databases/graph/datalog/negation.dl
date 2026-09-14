@@ -1,0 +1,10 @@
+// Stratified negation and constraints.
+.decl node(n: symbol)
+.decl edge(a: symbol, b: symbol)
+.decl isolated(n: symbol)
+
+isolated(n) :- node(n), !connected(n).
+connected(n) :- edge(n, _).
+connected(n) :- edge(_, n).
+
+.output isolated
