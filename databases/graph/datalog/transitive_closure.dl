@@ -1,0 +1,8 @@
+// Transitive closure of an edge relation.
+.decl edge(a: symbol, b: symbol)
+.decl path(a: symbol, b: symbol)
+
+path(x, y) :- edge(x, y).
+path(x, y) :- edge(x, z), path(z, y).
+
+.output path
