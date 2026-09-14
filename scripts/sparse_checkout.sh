@@ -16,6 +16,7 @@ CORE_PATHS=(
   "architectures/rust_patterns"
   "architectures/typescript_patterns"
   "databases"
+  "devops"
   "scripts"
   "web"
 )
@@ -125,6 +126,7 @@ cmd_list() {
   echo "  algorithms/31_wasm        (WebAssembly text)"
   echo "  web                       (HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, JSON, XML, GraphQL)"
   echo "  databases                 (Cypher, Gremlin, SPARQL, MongoDB, Cassandra, Redis, Elasticsearch)"
+  echo "  devops                    (CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring)"
   echo "  architectures/dart_systems (Dart SDK Packages & Core Libraries)"
 }
 
