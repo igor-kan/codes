@@ -1,0 +1,17 @@
+// saxpy_sm90.sass -- SASS for y = a*x + y using FFMA (sm_90).
+
+        /*0000*/                   MOV R1, c[0x0][0x28] ;
+        /*0010*/                   S2R R0, SR_CTAID.X ;
+        /*0020*/                   S2R R3, SR_TID.X ;
+        /*0030*/                   IMAD R0, R0, c[0x0][0x0], R3 ;
+        /*0040*/                   ISETP.GE.AND P0, PT, R0, c[0x0][0x8], PT ;
+        /*0050*/               @P0 EXIT ;
+        /*0060*/                   IMAD.WIDE.U32 R2, R0, 0x4, c[0x0][0x160] ;  // &x[id]
+        /*0070*/                   IMAD.WIDE.U32 R6, R0, 0x4, c[0x0][0x168] ;  // &y[id]
+        /*0080*/                   LDG.E R4, [R2.64] ;                 // x
+        /*0090*/                   LDG.E R5, [R6.64] ;                 // y
+        /*00a0*/                   LDC.64 R8, c[0x0][0x170] ;          // scalar a
+        /*00b0*/                   MOV R9, RZ ;
+        /*00c0*/                   FFMA R10, R4, R9, R5 ;              // a*x + y
+        /*00d0*/                   STG.E [R6.64], R10 ;
+        /*00e0*/                   EXIT ;
