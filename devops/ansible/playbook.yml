@@ -1,0 +1,19 @@
+- name: Provision web servers
+  hosts: webservers
+  become: true
+  vars_files: [vars/main.yml]
+  roles:
+    - common
+    - nginx
+  tasks:
+    - name: Deploy application
+      ansible.builtin.copy:
+        src: files/app/
+        dest: "{{ app_dir }}/"
+        owner: "{{ app_user }}"
+      notify: Restart app
+  handlers:
+    - name: Restart app
+      ansible.builtin.service:
+        name: "{{ app_service }}"
+        state: restarted
