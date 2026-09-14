@@ -1,0 +1,18 @@
+{
+  "data": {
+    "users": [
+      { "id": "1", "name": "Ada", "active": true },
+      { "id": "2", "name": "Grace", "active": false }
+    ]
+  },
+  "meta": {
+    "page": 1,
+    "perPage": 20,
+    "total": 2,
+    "totalPages": 1
+  },
+  "links": {
+    "self": "/api/users?page=1",
+    "next": null
+  }
+}
