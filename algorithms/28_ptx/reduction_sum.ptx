@@ -1,0 +1,72 @@
+//
+// reduction_sum.ptx -- block-level reduction using shared memory
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 reduction_sum.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry reduce_sum(
+    .param .u64 in,
+    .param .u64 out,
+    .param .u32 n
+)
+{
+    .shared .align 4 .b8 smem[4096];
+    .reg .pred  %p<3>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<8>;
+    .reg .f32   %f<8>;
+
+    ld.param.u64    %rd1, [in];
+    ld.param.u64    %rd2, [out];
+    ld.param.u32    %r1, [n];
+
+    mov.u32         %r2, %tid.x;
+    mov.u32         %r3, %ntid.x;
+    mov.u32         %r4, %ctaid.x;
+    mad.lo.u32      %r5, %r4, %r3, %r2;     // global thread id
+    mov.f32         %f1, 0f00000000;
+
+$L_loop:
+    setp.ge.u32     %p1, %r5, %r1;
+    @%p1 bra        $L_reduce;
+    mul.wide.u32    %rd3, %r5, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.f32   %f2, [%rd4];
+    add.f32         %f1, %f1, %f2;
+    add.u32         %r5, %r5, %r3;
+    bra             $L_loop;
+
+$L_reduce:
+    mul.lo.u32      %r6, %r2, 4;
+    st.shared.f32   [smem+%r6], %f1;
+    bar.sync        0;
+    shr.u32         %r7, %r3, 1;
+$L_tree:
+    setp.eq.u32     %p2, %r7, 0;
+    @%p2 bra        $L_store;
+    setp.ge.u32     %p3, %r2, %r7;
+    @%p3 bra        $L_skip;
+    mad.lo.u32      %r8, %r2, 4, 0;
+    add.u32         %r9, %r2, %r7;
+    mul.lo.u32      %r10, %r9, 4;
+    ld.shared.f32   %f3, [smem+%r10];
+    ld.shared.f32   %f4, [smem+%r8];
+    add.f32         %f4, %f4, %f3;
+    st.shared.f32   [smem+%r8], %f4;
+$L_skip:
+    bar.sync        0;
+    shr.u32         %r7, %r7, 1;
+    bra             $L_tree;
+
+$L_store:
+    setp.ne.u32     %p1, %r2, 0;
+    @%p1 bra        $L_exit;
+    st.global.f32   [%rd2], %f4;
+$L_exit:
+    ret;
+}
