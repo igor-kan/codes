@@ -1,0 +1,13 @@
+// Entry point using the module system.
+@use "tokens" as t;
+@use "buttons";
+@use "sass:color";
+
+body {
+  background: color.adjust(t.$color-accent, $lightness: 46%);
+  padding: t.$space-4;
+}
+
+.button--danger {
+  background: color.adjust(t.$color-accent, $hue: -120deg, $lightness: -10%);
+}
