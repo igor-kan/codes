@@ -1,0 +1,15 @@
+{
+  "mappings": {
+    "properties": {
+      "title": { "type": "text", "analyzer": "english" },
+      "body": { "type": "text" },
+      "tags": { "type": "keyword" },
+      "publishedAt": { "type": "date" },
+      "views": { "type": "integer" },
+      "location": { "type": "geo_point" },
+      "author": {
+        "properties": { "name": { "type": "keyword" }, "id": { "type": "keyword" } }
+      }
+    }
+  }
+}
