@@ -1,0 +1,12 @@
+# CONSTRUCT builds an RDF graph from bindings.
+PREFIX schema: <https://schema.org/>
+PREFIX ex: <https://example.com/>
+
+CONSTRUCT {
+  ?person ex:displayName ?name .
+}
+WHERE {
+  ?person a schema:Person ;
+          schema:name ?name .
+}
+LIMIT 100
