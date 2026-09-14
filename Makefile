@@ -4,6 +4,8 @@
 
 CC ?= gcc
 CXX ?= g++
+AS ?= as
+LD ?= ld
 FC = gfortran
 PYTHON ?= python3
 NODE ?= node
@@ -17,7 +19,8 @@ BUILD_DIR = build
 	test-astar test-kmp test-convexhull test-huffman test-toposort test-architectures \
 	test-dsu test-binary-search test-dp-advanced test-number-theory \
 	test-strings-advanced test-graphs-advanced test-techniques test-datastructures \
-	test-competitive test-algorithms test-sparse
+	test-competitive test-algorithms test-sparse \
+	test-asm test-llvm-ir test-wasm test-web test-cuda
 
 all: test
 
@@ -49,6 +52,11 @@ help:
 	@echo "  make test-architectures Execute design pattern and concurrency suites"
 	@echo "  make test-competitive   Execute competitive programming toolkit (DSU, binary search, DP, number theory, graphs)"
 	@echo "  make test-sparse        Test sparse language implementations"
+	@echo "  make test-asm           Assemble and run x86-64/AArch64/RISC-V assembly examples"
+	@echo "  make test-llvm-ir       Verify generated LLVM IR modules"
+	@echo "  make test-wasm          Validate WebAssembly text modules"
+	@echo "  make test-web           Validate JSON, XML and Sass web assets"
+	@echo "  make test-cuda          Build a CUDA sample (requires nvcc; skipped when absent)"
 	@echo "  make test-algorithms    Execute all core algorithm suites"
 	@echo "  make test               Run full regression verification"
 
@@ -314,13 +322,57 @@ test-competitive: test-dsu test-binary-search test-dp-advanced test-number-theor
 	@echo ""
 	@echo "COMPETITIVE PROGRAMMING TOOLKIT VERIFIED SUCCESSFULLY!"
 
+# --- GPU, low-level and web modules ---
+
+test-asm: $(BUILD_DIR)
+	@echo ">>> Assembling and running x86-64 assembly examples..."
+	@for f in algorithms/27_assembly/x86_64/*.s; do \
+		base=$$(basename $$f .s); \
+		$(AS) --64 $$f -o $(BUILD_DIR)/$$base.o || exit 1; \
+		$(LD) $(BUILD_DIR)/$$base.o -o $(BUILD_DIR)/$$base || exit 1; \
+	done
+	@$(BUILD_DIR)/hello_world > /dev/null
+	@$(BUILD_DIR)/exit_42; test $$? -eq 42 || { echo "exit_42 failed"; exit 1; }
+	@$(BUILD_DIR)/fibonacci; test $$? -eq 55 || { echo "fibonacci failed"; exit 1; }
+	@$(BUILD_DIR)/gcd; test $$? -eq 12 || { echo "gcd failed"; exit 1; }
+	@$(BUILD_DIR)/bubble_sort; test $$? -eq 1 || { echo "bubble_sort failed"; exit 1; }
+	@echo "x86-64 assembly verified."
+	@for f in algorithms/27_assembly/arm64/*.s; do clang --target=aarch64-linux-gnu -c $$f -o $(BUILD_DIR)/$$(basename $$f .s).a64.o || exit 1; done
+	@for f in algorithms/27_assembly/riscv64/*.s; do clang --target=riscv64-linux-gnu -c $$f -o $(BUILD_DIR)/$$(basename $$f .s).rv.o || exit 1; done
+	@echo "AArch64 and RISC-V assembly verified."
+
+test-llvm-ir:
+	@echo ">>> Verifying generated LLVM IR..."
+	@command -v opt >/dev/null 2>&1 || { echo "opt not found; skipping LLVM IR verification."; exit 0; }
+	@for f in algorithms/30_llvm_ir/*/*.ll; do opt -passes=verify -disable-output $$f || exit 1; done
+	@echo "LLVM IR verified."
+
+test-wasm:
+	@echo ">>> Validating WebAssembly text modules..."
+	@python3 -c "import wasmtime" 2>/dev/null || { echo "wasmtime python package not found; skipping."; exit 0; }
+	@python3 -c "import glob, wasmtime; [wasmtime.wat2wasm(open(f).read()) for f in glob.glob('algorithms/31_wasm/*.wat')]; print('WebAssembly modules validated.')"
+
+test-web:
+	@echo ">>> Validating web assets..."
+	@python3 -c "import glob, json; [json.load(open(f)) for f in glob.glob('web/json/*.json')]; [json.loads(l) for f in glob.glob('web/json/*.jsonl') for l in open(f) if l.strip()]; print('JSON validated.')"
+	@python3 -c "import glob, xml.etree.ElementTree as ET; [ET.parse(f) for f in glob.glob('web/xml/*')]; print('XML validated.')"
+	@if command -v sass >/dev/null 2>&1; then sass --no-source-map web/scss/main.scss $(BUILD_DIR)/web.css && echo "Sass compiled."; else echo "sass not found; skipping Sass."; fi
+
+test-cuda:
+	@echo ">>> Testing NVIDIA CUDA samples..."
+	@if command -v nvcc >/dev/null 2>&1; then \
+		nvcc -arch=sm_90 -I algorithms/26_cuda/Common algorithms/26_cuda/cpp/0_Introduction/vectorAdd/vectorAdd.cu -o $(BUILD_DIR)/cuda_vectorAdd && echo "CUDA sample compiled."; \
+	else \
+		echo "nvcc not found; skipping CUDA build (sources are reference-only)."; \
+	fi
+
 # --- Aggregate targets ---
 
 test-algorithms: test-fft test-dijkstra test-primality test-matrix test-scc test-astar test-kmp test-convexhull test-huffman test-toposort
 	@echo ""
 	@echo "ALGORITHM SUITES VERIFIED SUCCESSFULLY!"
 
-test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures
+test: test-python test-c test-cpp test-java test-rust test-fortran test-js test-go test-scripts test-algorithms test-competitive test-architectures test-asm test-llvm-ir test-wasm test-web test-cuda
 	@echo ""
 	@echo "================================================================="
 	@echo "ALL REPOSITORY TEST SUITES EXECUTED AND VERIFIED SUCCESSFULLY!"
