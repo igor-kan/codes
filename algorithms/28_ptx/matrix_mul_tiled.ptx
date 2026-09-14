@@ -1,0 +1,88 @@
+//
+// matrix_mul_tiled.ptx -- tiled matrix multiply with shared memory
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 matrix_mul_tiled.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry matmul_tiled(
+    .param .u64 a,
+    .param .u64 b,
+    .param .u64 c,
+    .param .u32 n
+)
+{
+    .shared .align 4 .b8 As[1024];
+    .shared .align 4 .b8 Bs[1024];
+    .reg .pred  %p<2>;
+    .reg .b32   %r<20>;
+    .reg .b64   %rd<12>;
+    .reg .f32   %f<6>;
+
+    ld.param.u64    %rd1, [a];
+    ld.param.u64    %rd2, [b];
+    ld.param.u64    %rd3, [c];
+    ld.param.u32    %r1, [n];
+
+    mov.u32         %r2, %tid.x;
+    mov.u32         %r3, %tid.y;
+    mov.u32         %r4, %ntid.x;           // block width (16)
+    mad.lo.u32      %r5, %r3, %r4, %r2;     // linear tid
+    shr.u32         %r6, %r5, 4;            // row in tile
+    and.b32         %r7, %r5, 15;           // col in tile
+
+    mov.f32         %f1, 0f00000000;
+    mov.u32         %r8, 0;                 // k
+$L_outer:
+    setp.ge.u32     %p1, %r8, %r1;
+    @%p1 bra        $L_finish;
+
+    // load a[row][k] and b[k][col] into shared
+    mul.lo.u32      %r9, %r6, %r1;
+    add.u32         %r9, %r9, %r8;
+    mul.wide.u32    %rd4, %r9, 4;
+    add.s64         %rd5, %rd1, %rd4;
+    ld.global.f32   %f2, [%rd5];
+    mul.lo.u32      %r10, %r5, 4;
+    st.shared.f32   [As+%r10], %f2;
+
+    mul.lo.u32      %r11, %r8, %r1;
+    add.u32         %r11, %r11, %r7;
+    mul.wide.u32    %rd6, %r11, 4;
+    add.s64         %rd7, %rd2, %rd6;
+    ld.global.f32   %f3, [%rd7];
+    st.shared.f32   [Bs+%r10], %f3;
+    bar.sync        0;
+
+    mov.u32         %r12, 0;
+$L_inner:
+    setp.ge.u32     %p1, %r12, %r1;
+    @%p1 bra        $L_next;
+    mad.lo.u32      %r13, %r6, %r1, %r12;
+    mul.lo.u32      %r14, %r13, 4;
+    ld.shared.f32   %f4, [As+%r14];
+    mad.lo.u32      %r15, %r12, %r1, %r7;
+    mul.lo.u32      %r16, %r15, 4;
+    ld.shared.f32   %f5, [Bs+%r16];
+    fma.rn.f32      %f1, %f4, %f5, %f1;
+    add.u32         %r12, %r12, 1;
+    bra             $L_inner;
+$L_next:
+    bar.sync        0;
+    add.u32         %r8, %r8, 1;
+    bra             $L_outer;
+
+$L_finish:
+    mul.lo.u32      %r17, %r3, %r4;
+    add.u32         %r17, %r17, %r2;
+    // each thread owns a full row/column here for brevity
+    mul.lo.u32      %r18, %r17, 4;
+    mul.wide.u32    %rd8, %r17, 4;
+    add.s64         %rd9, %rd3, %rd8;
+    st.global.f32   [%rd9], %f1;
+    ret;
+}
