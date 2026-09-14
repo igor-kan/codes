@@ -1,0 +1,10 @@
+# Expiration, TTL inspection and eviction.
+SET cache:home "html" EX 60
+TTL cache:home
+PTTL cache:home
+PERSIST cache:home
+EXPIRE cache:home 120
+EXPIRETIME cache:home
+
+SET cache:temp "value" PX 500
+TTL cache:temp
