@@ -1,0 +1,11 @@
+[
+  { "op": "test", "path": "/version", "value": 1 },
+  { "op": "replace", "path": "/version", "value": 2 },
+  { "op": "add", "path": "/tags/-", "value": "new" },
+  { "op": "remove", "path": "/deprecated" },
+  {
+    "op": "move",
+    "from": "/title",
+    "path": "/name"
+  }
+]
