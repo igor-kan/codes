@@ -1,0 +1,20 @@
+/* Auto-fitting responsive grid with a named template. */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+}
+.page {
+  display: grid;
+  grid-template-areas:
+    "header header"
+    "sidebar main"
+    "footer footer";
+  grid-template-columns: minmax(12rem, 15rem) 1fr;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+}
+.page > header { grid-area: header; }
+.page > aside  { grid-area: sidebar; }
+.page > main   { grid-area: main; }
+.page > footer { grid-area: footer; }
