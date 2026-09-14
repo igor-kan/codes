@@ -45,7 +45,11 @@ cmd_minimal() {
 
 cmd_status() {
   echo "==> Current sparse checkout directories:"
-  git sparse-checkout list
+  if git sparse-checkout list 2>/dev/null; then
+    :
+  else
+    echo "  (sparse-checkout is not currently active - full repository is checked out locally)"
+  fi
   echo ""
   echo "==> Local disk usage (excluding .git/):"
   du -sh --exclude=".git" . 2>/dev/null || du -sh .
