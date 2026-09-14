@@ -1,0 +1,37 @@
+//
+// bar_sync.ptx -- barrier synchronization and block-level cooperation
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 bar_sync.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry bar_kernel(
+    .param .u64 out
+)
+{
+    .shared .align 4 .b8 smem[1024];
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<4>;
+
+    ld.param.u64    %rd1, [out];
+    mov.u32         %r1, %tid.x;
+    mul.lo.u32      %r2, %r1, 4;
+
+    st.shared.u32   [smem+%r2], %r1;
+    bar.sync        0;
+    add.u32         %r3, %r1, 1;
+    and.b32         %r3, %r3, 31;
+    mul.lo.u32      %r4, %r3, 4;
+    ld.shared.u32   %r5, [smem+%r4];
+    add.u32         %r5, %r5, %r1;
+    bar.sync        0;
+
+    add.s64         %rd2, %rd1, %r2;
+    st.global.u32   [%rd2], %r5;
+    ret;
+}
