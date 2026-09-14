@@ -1,0 +1,40 @@
+//
+// vector_types.ptx -- vector load/store with .v2 and .v4
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 vector_types.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry vector_types(
+    .param .u64 in,
+    .param .u64 out,
+    .param .u32 n
+)
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<6>;
+    .reg .f32   %f<8>;
+
+    ld.param.u64    %rd1, [in];
+    ld.param.u64    %rd2, [out];
+    ld.param.u32    %r1, [n];
+    mov.u32         %r2, %tid.x;
+    setp.ge.u32     %p1, %r2, %r1;
+    @%p1 bra        $L_exit;
+
+    mul.wide.u32    %rd3, %r2, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+
+    ld.global.v4.f32    {%f1, %f2, %f3, %f4}, [%rd4];
+    add.f32         %f5, %f1, %f2;
+    add.f32         %f6, %f3, %f4;
+    st.global.v2.f32    [%rd5], {%f5, %f6};
+$L_exit:
+    ret;
+}
