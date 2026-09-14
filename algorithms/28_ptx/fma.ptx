@@ -1,0 +1,46 @@
+//
+// fma.ptx -- fused multiply-add on float2 vectors
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 fma.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry fma_kernel(
+    .param .u64 a,
+    .param .u64 b,
+    .param .u64 c,
+    .param .u32 n
+)
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<10>;
+    .reg .f32   %f<8>;
+
+    ld.param.u64    %rd1, [a];
+    ld.param.u64    %rd2, [b];
+    ld.param.u64    %rd3, [c];
+    ld.param.u32    %r1, [n];
+
+    mov.u32         %r2, %ctaid.x;
+    mov.u32         %r3, %ntid.x;
+    mov.u32         %r4, %tid.x;
+    mad.lo.u32      %r5, %r2, %r3, %r4;
+
+    mul.wide.u32    %rd4, %r5, 8;           // two floats per iteration
+    add.s64         %rd5, %rd1, %rd4;
+    add.s64         %rd6, %rd2, %rd4;
+    add.s64         %rd7, %rd3, %rd4;
+
+    ld.global.v2.f32    {%f1, %f2}, [%rd5];
+    ld.global.v2.f32    {%f3, %f4}, [%rd6];
+    fma.rn.f32      %f5, %f1, %f3, %f0;
+    fma.rn.f32      %f6, %f2, %f4, %f0;
+    st.global.v2.f32    [%rd7], {%f5, %f6};
+
+    ret;
+}
