@@ -1,0 +1,17 @@
+// @each, @for and @while.
+$sizes: (sm: 0.5rem, md: 1rem, lg: 2rem);
+
+@each $name, $space in $sizes {
+  .p-#{$name} { padding: $space; }
+  .m-#{$name} { margin: $space; }
+}
+
+@for $i from 1 through 4 {
+  .col-#{$i} { width: percentage($i / 4); }
+}
+
+$i: 1;
+@while $i <= 3 {
+  .z-#{$i} { z-index: $i; }
+  $i: $i + 1;
+}
