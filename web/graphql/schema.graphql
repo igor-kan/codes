@@ -1,0 +1,29 @@
+# Object types, fields and nullability.
+type Query {
+  user(id: ID!): User
+  users(first: Int = 20, after: String): UserConnection!
+  search(term: String!): [SearchResult!]!
+}
+
+type User implements Node {
+  id: ID!
+  name: String!
+  email: String!
+  posts: [Post!]!
+  createdAt: DateTime!
+}
+
+interface Node {
+  id: ID!
+}
+
+type Post implements Node {
+  id: ID!
+  title: String!
+  body: String!
+  author: User!
+}
+
+union SearchResult = User | Post
+
+scalar DateTime
