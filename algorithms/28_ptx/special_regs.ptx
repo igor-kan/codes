@@ -1,0 +1,34 @@
+//
+// special_regs.ptx -- thread, block and grid special registers
+//
+// Target: PTX ISA 8.3, sm_90
+// Assemble (requires the CUDA toolkit): ptxas -arch=sm_90 special_regs.ptx
+// Reference: PTX ISA documentation, https://docs.nvidia.com/cuda/parallel-thread-execution/
+//
+.version 8.3
+.target sm_90
+.address_size 64
+
+.visible .entry special_regs(
+    .param .u64 out
+)
+{
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<4>;
+
+    ld.param.u64    %rd1, [out];
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %tid.y;
+    mov.u32         %r3, %tid.z;
+    mov.u32         %r4, %ntid.x;
+    mov.u32         %r5, %ctaid.x;
+    mov.u32         %r6, %nctaid.x;
+    mov.u32         %r7, %laneid;
+    mov.u32         %r8, %warpid;
+    mov.u32         %r9, %nwarpid;
+
+    st.global.v4.u32    [%rd1], {%r1, %r2, %r3, %r4};
+    add.s64         %rd2, %rd1, 16;
+    st.global.v4.u32    [%rd2], {%r5, %r6, %r7, %r8};
+    ret;
+}
