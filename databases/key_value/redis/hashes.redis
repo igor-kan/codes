@@ -1,0 +1,8 @@
+# Hashes group field/value pairs under one key.
+HSET user:1 name "Ada" email "ada@example.com" role "admin"
+HGET user:1 name
+HMGET user:1 name email
+HGETALL user:1
+HINCRBY user:1 logins 1
+HDEL user:1 role
+HEXISTS user:1 email
