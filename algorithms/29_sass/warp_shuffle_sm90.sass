@@ -1,0 +1,16 @@
+// warp_shuffle_sm90.sass -- warp scan via SHFL.DOWN (sm_90).
+
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   LOP3.LUT R1, R0, 0x1f, RZ, 0xc0, !PT ; // lane id
+        /*0020*/                   MOV R2, 0x1 ;
+        /*0030*/                   SHFL.DOWN PT, R3, R2, 0x1, 0x1f ;     // +1 lane
+        /*0040*/                   IADD3 R2, R2, R3, RZ ;
+        /*0050*/                   SHFL.DOWN PT, R3, R2, 0x2, 0x1f ;
+        /*0060*/                   IADD3 R2, R2, R3, RZ ;
+        /*0070*/                   SHFL.DOWN PT, R3, R2, 0x4, 0x1f ;
+        /*0080*/                   IADD3 R2, R2, R3, RZ ;
+        /*0090*/                   SHFL.DOWN PT, R3, R2, 0x8, 0x1f ;
+        /*00a0*/                   IADD3 R2, R2, R3, RZ ;
+        /*00b0*/                   SHFL.DOWN PT, R3, R2, 0x10, 0x1f ;
+        /*00c0*/                   IADD3 R2, R2, R3, RZ ;
+        /*00d0*/                   EXIT ;
