@@ -1,0 +1,7 @@
+// atomic_sm90.sass -- global atomic add with ATOMG (sm_90).
+
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   MOV R2, 0x1 ;
+        /*0020*/                   ATOMG.E.ADD.STRONG.GPU R3, [c[0x0][0x160].64], R2 ;
+        /*0030*/                   MEMBAR.GL ;                        // __threadfence()
+        /*0040*/                   EXIT ;
