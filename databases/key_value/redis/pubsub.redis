@@ -1,0 +1,8 @@
+# Publish/subscribe channels and patterns.
+SUBSCRIBE news:sports news:weather
+PSUBSCRIBE news:*
+PUBLISH news:sports "Team A wins"
+PUBLISH news:weather "Sunny tomorrow"
+
+PUBSUB CHANNELS news:*
+PUBSUB NUMSUB news:sports
