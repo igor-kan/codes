@@ -1,0 +1,10 @@
+// predication_sm90.sass -- predicate generation and guarded execution (sm_90).
+
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   ISETP.LT.AND P0, PT, R0, c[0x0][0x8], PT ; // P0 = tid < n
+        /*0020*/                   ISETP.GE.U32.AND P1, PT, R0, RZ, PT ;
+        /*0030*/                   P2R R2, PR, RZ, 0x3 ;               // pack predicates -> register
+        /*0040*/               @P0 IMAD R3, R0, 0x2, RZ ;
+        /*0050*/              @!P0 MOV R3, RZ ;
+        /*0060*/                   STG.E [c[0x0][0x160].64], R3 ;
+        /*0070*/                   EXIT ;
