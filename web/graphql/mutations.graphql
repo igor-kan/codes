@@ -1,0 +1,26 @@
+# Mutations create, update and delete data.
+mutation CreatePost($input: CreatePostInput!) {
+  createPost(input: $input) {
+    post {
+      id
+      title
+    }
+    errors {
+      field
+      message
+    }
+  }
+}
+
+mutation UpdateUser($id: ID!, $patch: UserPatch!) {
+  updateUser(id: $id, patch: $patch) {
+    id
+    name
+  }
+}
+
+mutation DeletePost($id: ID!) {
+  deletePost(id: $id) {
+    deletedId
+  }
+}
