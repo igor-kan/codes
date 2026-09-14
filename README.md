@@ -38,7 +38,8 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 | Top-Level Directory | Description | See |
 |:---|:---|:---|
 | `algorithms/` | Polyglot algorithms across 25 languages plus CUDA, assembly, PTX, SASS, LLVM IR and WebAssembly | [algorithms/README.md](algorithms/README.md) |
-| `architectures/` | Design patterns, concurrency primitives, distributed patterns | [architectures/README.md](architectures/README.md) |
+| `architectures/` | Design patterns, DDD, enterprise integration, cloud, system design, principles and templates | [architectures/README.md](architectures/README.md) |
+| `devops/` | CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring and operations scripts | [devops/README.md](devops/README.md) |
 | `web/` | Web platform: HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, Web Components, JSON, XML, GraphQL | [web/README.md](web/README.md) |
 | `databases/` | Graph/NoSQL query languages: Cypher, Gremlin, SPARQL, Datalog, MongoDB, Cassandra, Redis, Elasticsearch, Flux, PromQL, pgvector | [databases/README.md](databases/README.md) |
 | `scripts/` | Computational scripts (math, physics, ML, finance) and utilities | `scripts/` |
@@ -133,6 +134,14 @@ Design patterns across the Gang of Four (GoF), concurrency primitives, and distr
 | `architectures/concurrency_patterns/` | Actor models, thread pools, worker pools |
 | `architectures/distributed_patterns/` | Consistent hashing, circuit breaker |
 | `architectures/typescript_patterns/` | Middleware pipeline, repository pattern |
+| `architectures/enterprise_patterns/` | Message router, splitter, aggregator, outbox, saga, dead letter channel |
+| `architectures/ddd_patterns/` | Entity, value object, aggregate, repository, domain event, specification |
+| `architectures/cloud_patterns/` | Circuit breaker, bulkhead, retry/backoff, cache-aside, sidecar, strangler fig |
+| `architectures/system_design/` | Rate limiter, load balancer, LRU cache, WAL, sharding, CDN, CAP, Bloom guard |
+| `architectures/principles/` | SOLID, DRY/KISS/YAGNI, separation of concerns, Law of Demeter, twelve-factor |
+| `architectures/clean_architecture/` | Hexagonal, onion, layered, dependency inversion, ports and adapters |
+| `architectures/templates/` | ADR, RFC, design doc, runbook, C4 (Mermaid) |
+| `architectures/api_design/` | REST guidelines, versioning, pagination, error handling, GraphQL vs REST |
 
 ---
 
@@ -191,6 +200,27 @@ The `web/` directory collects markup, styling, scripting, component and data-for
 
 ---
 
+## DevOps & Platform Engineering
+
+The `devops/` directory holds runnable pipeline, infrastructure and operational
+configuration.
+
+| Directory | Tooling |
+|:---|:---|
+| `devops/ci/github_actions/` | CI, matrix builds, CD with OIDC, release please, CodeQL, Docker publish, reusable workflows |
+| `devops/ci/gitlab/` | staged pipelines, manual deploy, per-MR review apps |
+| `devops/ci/jenkins/` | declarative pipeline, multibranch, shared library |
+| `devops/docker/` | Node/Python/Go images, multi-stage and distroless builds, Compose |
+| `devops/kubernetes/` | Deployment, Service, ConfigMap, Secret, Ingress, HPA, StatefulSet, DaemonSet, Job/CronJob, RBAC, NetworkPolicy, PDB, probes |
+| `devops/terraform/` | provider/backend, variables, outputs, VPC, EC2, S3 + ALB |
+| `devops/ansible/` | playbook, inventory, groups and roles |
+| `devops/helm/` | chart metadata, values and templated workloads |
+| `devops/monitoring/` | Prometheus, alert rules, Loki, Grafana, OpenTelemetry, blackbox |
+| `devops/scripts/` | deploy, backup, healthcheck, rolling restart, log rotation |
+| `devops/make/` | application, Python and self-documenting task runners |
+
+---
+
 ## Scripts
 
 Computational scripts across multiple domains:
@@ -230,6 +260,7 @@ make test-llvm-ir       # Verify generated LLVM IR
 make test-wasm          # Validate WebAssembly text modules
 make test-web           # HTML/CSS/SCSS/JS/TS/JSON/GraphQL validation
 make test-cuda          # NVIDIA samples (requires nvcc; skipped when absent)
+make test-devops        # Validate DevOps YAML and shell scripts
 
 # Clean build artifacts
 make clean
