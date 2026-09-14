@@ -1,0 +1,23 @@
+review:
+  stage: deploy
+  image: bitnami/kubectl:1.30
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    url: https://$CI_COMMIT_REF_SLUG.review.example.com
+    on_stop: stop_review
+  script:
+    - kubectl apply -k k8s/overlays/review
+
+stop_review:
+  stage: deploy
+  when: manual
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+      when: manual
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    action: stop
+  script:
+    - kubectl delete -k k8s/overlays/review
