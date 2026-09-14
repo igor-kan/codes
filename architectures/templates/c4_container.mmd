@@ -1,0 +1,19 @@
+%% C4 Level 2: Container Diagram (Mermaid)
+flowchart TB
+    spa["Web SPA\n[TypeScript, React]"]
+    mobile["Mobile App\n[iOS/Android]"]
+    api["API Application\n[Go, REST/gRPC]"]
+    worker["Worker\n[Go, background jobs]"]
+    db[("Primary DB\n[PostgreSQL]")]
+    cache[("Cache\n[Redis]")]
+    queue[["Message Bus\n[Kafka]"]]
+    search[("Search\n[OpenSearch]")]
+
+    spa --> api
+    mobile --> api
+    api --> db
+    api --> cache
+    api --> search
+    api --> queue
+    worker --> queue
+    worker --> db
