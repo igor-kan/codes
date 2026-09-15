@@ -136,41 +136,67 @@ _Auto-generated coverage: ✓ = implementation present._
 | K-Means | ✓ |  | ✓ |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | Linear Regression | ✓ |  |  |  |  |  |  |  |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |  |  |  |
 
+## Additional Algorithm Coverage
+
+A second wave of algorithms was added across the major languages (and a new
+`geometry/` category). The table lists where each is implemented.
+
+| Algorithm | Languages |
+|:---|:---|
+| Max heap | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go, PHP, Julia, Ruby, Kotlin, Lua, Swift |
+| Circular buffer | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Boyer-Moore search | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go, PHP, Julia, Ruby, Kotlin, Lua, Swift |
+| Catalan numbers | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go, PHP, Julia, Ruby, Kotlin, Lua, Swift |
+| Egg dropping | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Matrix exponentiation | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Gaussian elimination | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Point in polygon | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Closest pair of points | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Base64 codec | Python, C, C++, Java, C#, JavaScript, TypeScript, Rust, Go |
+| Treap | Python, C++ |
+| Splay tree | Python |
+| Aho-Corasick | Python, C++ |
+| Suffix array | Python |
+
+Related suites: foundational gaps across all 25 languages are tracked by the
+coverage matrix above; the new `geometry/` category holds the computational
+geometry implementations.
+
 ## Language Directory Navigation
 
 | # | Directory | Language | Files |
 |---|-----------|----------|-------|
-| 1 | `01_python/` | Python | 77 |
-| 2 | `02_c/` | C | 52 |
-| 3 | `03_cpp/` | C++ | 57 |
-| 4 | `04_java/` | Java | 51 |
-| 5 | `05_csharp/` | C# | 34 |
-| 6 | `06_javascript/` | JavaScript | 33 |
-| 7 | `07_typescript/` | TypeScript | 26 |
+| 1 | `01_python/` | Python | 172 |
+| 2 | `02_c/` | C | 66 |
+| 3 | `03_cpp/` | C++ | 77 |
+| 4 | `04_java/` | Java | 63 |
+| 5 | `05_csharp/` | C# | 44 |
+| 6 | `06_javascript/` | JavaScript | 45 |
+| 7 | `07_typescript/` | TypeScript | 36 |
 | 8 | `08_r/` | R | 32 |
-| 9 | `09_rust/` | Rust | 49 |
+| 9 | `09_rust/` | Rust | 62 |
 | 10 | `10_sql/` | SQL | 6 |
-| 11 | `11_golang/` | Go | 47 |
-| 12 | `12_php/` | PHP | 18 |
-| 13 | `13_swift/` | Swift | 16 |
-| 14 | `14_julia/` | Julia | 18 |
-| 15 | `15_ruby/` | Ruby | 18 |
-| 16 | `16_kotlin/` | Kotlin | 16 |
+| 11 | `11_golang/` | Go | 60 |
+| 12 | `12_php/` | PHP | 21 |
+| 13 | `13_swift/` | Swift | 19 |
+| 14 | `14_julia/` | Julia | 21 |
+| 15 | `15_ruby/` | Ruby | 21 |
+| 16 | `16_kotlin/` | Kotlin | 19 |
 | 17 | `17_matlab/` | MATLAB | 6 |
 | 18 | `18_ocaml/` | OCaml | 15 |
-| 19 | `19_lua/` | Lua | 17 |
+| 19 | `19_lua/` | Lua | 20 |
 | 20 | `20_lisp/` | Common Lisp | 16 |
 | 21 | `21_scala/` | Scala | 16 |
 | 22 | `22_haskell/` | Haskell | 16 |
 | 23 | `23_elixir/` | Elixir | 15 |
 | 24 | `24_fortran/` | Fortran | 7 |
 | 25 | `25_lean4/` | Lean 4 | 5 |
-| 26 | `26_cuda/` | CUDA | 669 |
-| 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 40 |
-| 28 | `28_ptx/` | PTX | 21 |
-| 29 | `29_sass/` | SASS | 10 |
-| 30 | `30_llvm_ir/` | LLVM IR | 48 |
-| 31 | `31_wasm/` | WebAssembly (WAT) | 19 |
+| 26 | `26_cuda/` | CUDA | 668 |
+| 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 39 |
+| 28 | `28_ptx/` | PTX | 20 |
+| 29 | `29_sass/` | SASS | 9 |
+| 30 | `30_llvm_ir/` | LLVM IR | 47 |
+| 31 | `31_wasm/` | WebAssembly (WAT) | 18 |
 
 ## Testing
 
