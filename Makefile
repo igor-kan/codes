@@ -20,7 +20,7 @@ BUILD_DIR = build
 	test-dsu test-binary-search test-dp-advanced test-number-theory \
 	test-strings-advanced test-graphs-advanced test-techniques test-datastructures \
 	test-competitive test-algorithms test-sparse \
-	test-asm test-llvm-ir test-wasm test-web test-cuda test-devops test-interview test-formal-physics
+	test-asm test-llvm-ir test-wasm test-web test-cuda test-devops test-interview test-formal-physics test-formal-statistics
 
 all: test
 
@@ -60,6 +60,7 @@ help:
 	@echo "  make test-devops        Validate DevOps YAML and shell scripts"
 	@echo "  make test-interview     Run interview-prep self-checks (Python + C++)"
 	@echo "  make test-formal-physics Verify the Lean 4 / Mathlib formal physics library"
+	@echo "  make test-formal-statistics Verify the Lean 4 / Mathlib formal statistics library"
 	@echo "  make test-algorithms    Execute all core algorithm suites"
 	@echo "  make test               Run full regression verification"
 
@@ -399,6 +400,12 @@ test-formal-physics:
 	@if command -v lake >/dev/null 2>&1 && [ -d formal_physics/.lake/packages/mathlib ]; then \
 		cd formal_physics && lake build; \
 	else echo "lake/Mathlib not available locally; run formal_physics/scripts/verify.sh."; fi
+
+test-formal-statistics:
+	@echo ">>> Verifying formal statistics (Lean 4 / Mathlib)..."
+	@if command -v lake >/dev/null 2>&1 && [ -d formal_statistics/.lake/packages/mathlib ]; then \
+		cd formal_statistics && lake build; \
+	else echo "lake/Mathlib not available locally; run formal_statistics/scripts/verify.sh."; fi
 
 # --- Aggregate targets ---
 
