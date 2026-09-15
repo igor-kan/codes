@@ -43,8 +43,17 @@ interview_prep/
 ├── computer_architecture/ caches, branch prediction, memory hierarchy, pipelining
 ├── system_design/         fundamentals, low-level, DDIA notes, worked designs
 ├── behavioral/            STAR method, story banks, question bank
-└── math_stats/            probability, statistics, linear algebra, Monte Carlo
+├── math_stats/            probability, statistics, linear algebra, Monte Carlo
+└── deep_dives/            numbered deep dives (C++20, STL, smart pointers,
+                           reimplementation, networking 15-19, OS 20-31)
 ```
+
+## Deep dives
+
+`deep_dives/` contains focused, numbered treatments of the C++20 Big Four, STL
+internals, smart pointers, reimplementing the standard library, and the full
+networking and operating-systems syllabi. See
+[`deep_dives/README.md`](deep_dives/README.md) for the topic index.
 
 ## How to use
 
