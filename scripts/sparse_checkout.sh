@@ -38,6 +38,7 @@ CORE_PATHS=(
   "databases"
   "devops"
   "formal_physics"
+  "formal_statistics"
   "interview_prep"
   "scripts"
   "web"
@@ -150,6 +151,7 @@ cmd_list() {
   echo "  databases                 (Cypher, Gremlin, SPARQL, MongoDB, Cassandra, Redis, Elasticsearch)"
   echo "  devops                    (CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring)"
   echo "  formal_physics            (Lean 4 + Mathlib formalization of Taylor's Classical Mechanics)"
+  echo "  formal_statistics         (Lean 4 + Mathlib formalization of Kutner's regression analysis)"
   echo "  interview_prep            (Algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math)"
   echo "  architectures/dart_systems (Dart SDK Packages & Core Libraries)"
 }
