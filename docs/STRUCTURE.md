@@ -7,7 +7,7 @@ organised, and how large it is. File counts are tracked files in Git.
 
 | Directory | Files | What it contains |
 |:---|---:|:---|
-| `algorithms/` | 1,798 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
+| `algorithms/` | 1,874 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
 | `architectures/` | 44,397 | Design patterns, architecture families, principles and templates. Most files are the vendored `dart_systems/` tree. |
 | `interview_prep/` | 465 | A textbook-driven study vault (algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math) plus numbered `deep_dives/`. |
 | `web/` | 122 | Web platform examples: HTML, CSS, Sass, Tailwind, Web Components, JavaScript, TypeScript, React, Vue, JSON, XML, GraphQL. |
@@ -31,15 +31,15 @@ Each subdirectory is a language or a low-level tier, organised by category
 
 | Directory | Language | Files |
 |:---|:---|---:|
-| `01_python/` | Python | 201 |
+| `01_python/` | Python | 214 |
 | `02_c/` | C | 76 |
-| `03_cpp/` | C++ | 91 |
+| `03_cpp/` | C++ | 104 |
 | `04_java/` | Java | 71 |
 | `05_csharp/` | C# | 44 |
-| `06_javascript/` | JavaScript | 53 |
-| `07_typescript/` | TypeScript | 44 |
+| `06_javascript/` | JavaScript | 66 |
+| `07_typescript/` | TypeScript | 57 |
 | `08_r/` | R | 32 |
-| `09_rust/` | Rust | 72 |
+| `09_rust/` | Rust | 82 |
 | `10_sql/` | SQL | 6 |
 | `11_golang/` | Go | 70 |
 | `12_php/` | PHP | 21 |
@@ -49,12 +49,12 @@ Each subdirectory is a language or a low-level tier, organised by category
 | `16_kotlin/` | Kotlin | 19 |
 | `17_matlab/` | MATLAB / Octave | 6 |
 | `18_ocaml/` | OCaml | 15 |
-| `19_lua/` | Lua | 26 |
+| `19_lua/` | Lua | 32 |
 | `20_lisp/` | Common Lisp | 16 |
 | `21_scala/` | Scala | 16 |
 | `22_haskell/` | Haskell | 16 |
 | `23_elixir/` | Elixir | 15 |
-| `24_fortran/` | Fortran | 15 |
+| `24_fortran/` | Fortran | 23 |
 | `25_lean4/` | Lean 4 | 5 |
 | `26_cuda/` | CUDA | 669 |
 | `27_assembly/` | x86-64 / AArch64 / RISC-V | 40 |
