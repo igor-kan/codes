@@ -7,7 +7,7 @@ organised, and how large it is. File counts are tracked files in Git.
 
 | Directory | Files | What it contains |
 |:---|---:|:---|
-| `algorithms/` | 1,589 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
+| `algorithms/` | 1,784 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
 | `architectures/` | 44,397 | Design patterns, architecture families, principles and templates. Most files are the vendored `dart_systems/` tree. |
 | `interview_prep/` | 465 | A textbook-driven study vault (algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math) plus numbered `deep_dives/`. |
 | `web/` | 122 | Web platform examples: HTML, CSS, Sass, Tailwind, Web Components, JavaScript, TypeScript, React, Vue, JSON, XML, GraphQL. |
@@ -31,17 +31,17 @@ Each subdirectory is a language or a low-level tier, organised by category
 
 | Directory | Language | Files |
 |:---|:---|---:|
-| `01_python/` | Python | 172 |
-| `02_c/` | C | 66 |
-| `03_cpp/` | C++ | 77 |
-| `04_java/` | Java | 63 |
+| `01_python/` | Python | 201 |
+| `02_c/` | C | 76 |
+| `03_cpp/` | C++ | 91 |
+| `04_java/` | Java | 71 |
 | `05_csharp/` | C# | 44 |
-| `06_javascript/` | JavaScript | 45 |
-| `07_typescript/` | TypeScript | 36 |
+| `06_javascript/` | JavaScript | 53 |
+| `07_typescript/` | TypeScript | 44 |
 | `08_r/` | R | 32 |
-| `09_rust/` | Rust | 62 |
+| `09_rust/` | Rust | 72 |
 | `10_sql/` | SQL | 6 |
-| `11_golang/` | Go | 60 |
+| `11_golang/` | Go | 70 |
 | `12_php/` | PHP | 21 |
 | `13_swift/` | Swift | 19 |
 | `14_julia/` | Julia | 21 |
@@ -56,12 +56,12 @@ Each subdirectory is a language or a low-level tier, organised by category
 | `23_elixir/` | Elixir | 15 |
 | `24_fortran/` | Fortran | 7 |
 | `25_lean4/` | Lean 4 | 5 |
-| `26_cuda/` | CUDA | 668 |
-| `27_assembly/` | x86-64 / AArch64 / RISC-V | 39 |
-| `28_ptx/` | PTX | 20 |
-| `29_sass/` | SASS | 9 |
-| `30_llvm_ir/` | LLVM IR | 47 |
-| `31_wasm/` | WebAssembly (WAT) | 18 |
+| `26_cuda/` | CUDA | 669 |
+| `27_assembly/` | x86-64 / AArch64 / RISC-V | 40 |
+| `28_ptx/` | PTX | 21 |
+| `29_sass/` | SASS | 10 |
+| `30_llvm_ir/` | LLVM IR | 48 |
+| `31_wasm/` | WebAssembly (WAT) | 19 |
 
 The coverage matrix (which algorithm exists in which language) is maintained in
 [`algorithms/README.md`](../algorithms/README.md).
