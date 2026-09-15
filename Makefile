@@ -383,6 +383,10 @@ test-interview: $(BUILD_DIR)
 		$(BUILD_DIR)/interview_stl || exit 1; \
 		g++ -std=c++20 -pthread interview_prep/concurrency/thread_pool.cpp -o $(BUILD_DIR)/interview_thread_pool || exit 1; \
 		$(BUILD_DIR)/interview_thread_pool || exit 1; \
+		g++ -std=c++20 -fcoroutines interview_prep/deep_dives/01_cpp20_big_four/coroutine_generator.cpp -o $(BUILD_DIR)/dd_coro || exit 1; \
+		$(BUILD_DIR)/dd_coro || exit 1; \
+		g++ -std=c++20 interview_prep/deep_dives/14_reinventing_the_wheel/test_suite.cpp -o $(BUILD_DIR)/dd_wheel || exit 1; \
+		$(BUILD_DIR)/dd_wheel || exit 1; \
 		echo "Interview C++ checks passed."; \
 	else echo "g++ not found; skipping C++ checks."; fi
 
