@@ -31,37 +31,37 @@ Each subdirectory is a language or a low-level tier, organised by category
 
 | Directory | Language | Files |
 |:---|:---|---:|
-| `01_python/` | Python | 171 |
-| `02_c/` | C | 56 |
-| `03_cpp/` | C++ | 67 |
-| `04_java/` | Java | 53 |
-| `05_csharp/` | C# | 34 |
-| `06_javascript/` | JavaScript | 35 |
-| `07_typescript/` | TypeScript | 26 |
+| `01_python/` | Python | 172 |
+| `02_c/` | C | 66 |
+| `03_cpp/` | C++ | 77 |
+| `04_java/` | Java | 63 |
+| `05_csharp/` | C# | 44 |
+| `06_javascript/` | JavaScript | 45 |
+| `07_typescript/` | TypeScript | 36 |
 | `08_r/` | R | 32 |
-| `09_rust/` | Rust | 52 |
+| `09_rust/` | Rust | 62 |
 | `10_sql/` | SQL | 6 |
-| `11_golang/` | Go | 50 |
-| `12_php/` | PHP | 18 |
-| `13_swift/` | Swift | 16 |
-| `14_julia/` | Julia | 18 |
-| `15_ruby/` | Ruby | 18 |
-| `16_kotlin/` | Kotlin | 16 |
+| `11_golang/` | Go | 60 |
+| `12_php/` | PHP | 21 |
+| `13_swift/` | Swift | 19 |
+| `14_julia/` | Julia | 21 |
+| `15_ruby/` | Ruby | 21 |
+| `16_kotlin/` | Kotlin | 19 |
 | `17_matlab/` | MATLAB / Octave | 6 |
 | `18_ocaml/` | OCaml | 15 |
-| `19_lua/` | Lua | 17 |
+| `19_lua/` | Lua | 20 |
 | `20_lisp/` | Common Lisp | 16 |
 | `21_scala/` | Scala | 16 |
 | `22_haskell/` | Haskell | 16 |
 | `23_elixir/` | Elixir | 15 |
 | `24_fortran/` | Fortran | 7 |
 | `25_lean4/` | Lean 4 | 5 |
-| `26_cuda/` | CUDA | 669 |
-| `27_assembly/` | x86-64 / AArch64 / RISC-V | 40 |
-| `28_ptx/` | PTX | 21 |
-| `29_sass/` | SASS | 10 |
-| `30_llvm_ir/` | LLVM IR | 48 |
-| `31_wasm/` | WebAssembly (WAT) | 19 |
+| `26_cuda/` | CUDA | 668 |
+| `27_assembly/` | x86-64 / AArch64 / RISC-V | 39 |
+| `28_ptx/` | PTX | 20 |
+| `29_sass/` | SASS | 9 |
+| `30_llvm_ir/` | LLVM IR | 47 |
+| `31_wasm/` | WebAssembly (WAT) | 18 |
 
 The coverage matrix (which algorithm exists in which language) is maintained in
 [`algorithms/README.md`](../algorithms/README.md).
