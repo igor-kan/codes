@@ -194,6 +194,27 @@ Press/Teukolsky et al. (*Numerical Recipes*).
 | Linear congruential generator | NR 7.1 | Python |
 | Box-Muller transform | NR 7.2 | Python |
 
+### Advanced Numerical Recipes and CLRS Coverage
+
+A fourth wave adds matrix eigendecomposition, interpolation, quadrature,
+optimisation, approximation and combinatorial methods.
+
+| Algorithm | Source | Languages |
+|:---|:---|:---|
+| Horner's method | NR 5.3 | Python, C++, JavaScript, TypeScript, Rust, Fortran, Lua |
+| Jacobi eigenvalue algorithm | NR 11.1 | Python, C++, JavaScript, TypeScript, Rust, Fortran |
+| Power method | NR 11.1 | Python, C++, JavaScript, TypeScript, Rust, Fortran, Lua |
+| QR algorithm | NR 11.3 | Python, C++, JavaScript, TypeScript, Rust, Fortran |
+| Cubic spline | NR 3.3 | Python, C++, JavaScript, TypeScript, Rust, Fortran |
+| Gauss-Legendre quadrature | NR 4.5 | Python, C++, JavaScript, TypeScript, Rust, Fortran |
+| Simpson's 3/8 rule | NR 4.1 | Python, C++, JavaScript, TypeScript, Rust, Fortran, Lua |
+| Boole's rule | NR 4.1 | Python, C++, JavaScript, TypeScript, Rust, Fortran, Lua |
+| Nelder-Mead | NR 10.4 | Python, C++, JavaScript, TypeScript |
+| Pade approximation | NR 5.12 | Python, C++, JavaScript, TypeScript |
+| Levenberg-Marquardt | NR 15.5 | Python, C++, JavaScript, TypeScript |
+| Set cover | CLRS 35.3 | Python, C++, JavaScript, TypeScript, Rust, Lua |
+| Brent cycle detection | Brent 1980 | Python, C++, JavaScript, TypeScript, Rust, Lua |
+
 Related suites: foundational gaps across all 25 languages are tracked by the
 coverage matrix above; the new `geometry/` category holds the computational
 geometry implementations.
@@ -202,15 +223,15 @@ geometry implementations.
 
 | # | Directory | Language | Files |
 |---|-----------|----------|-------|
-| 1 | `01_python/` | Python | 201 |
+| 1 | `01_python/` | Python | 214 |
 | 2 | `02_c/` | C | 76 |
-| 3 | `03_cpp/` | C++ | 91 |
+| 3 | `03_cpp/` | C++ | 104 |
 | 4 | `04_java/` | Java | 71 |
 | 5 | `05_csharp/` | C# | 44 |
-| 6 | `06_javascript/` | JavaScript | 53 |
-| 7 | `07_typescript/` | TypeScript | 44 |
+| 6 | `06_javascript/` | JavaScript | 66 |
+| 7 | `07_typescript/` | TypeScript | 57 |
 | 8 | `08_r/` | R | 32 |
-| 9 | `09_rust/` | Rust | 72 |
+| 9 | `09_rust/` | Rust | 82 |
 | 10 | `10_sql/` | SQL | 6 |
 | 11 | `11_golang/` | Go | 70 |
 | 12 | `12_php/` | PHP | 21 |
@@ -220,12 +241,12 @@ geometry implementations.
 | 16 | `16_kotlin/` | Kotlin | 19 |
 | 17 | `17_matlab/` | MATLAB | 6 |
 | 18 | `18_ocaml/` | OCaml | 15 |
-| 19 | `19_lua/` | Lua | 26 |
+| 19 | `19_lua/` | Lua | 32 |
 | 20 | `20_lisp/` | Common Lisp | 16 |
 | 21 | `21_scala/` | Scala | 16 |
 | 22 | `22_haskell/` | Haskell | 16 |
 | 23 | `23_elixir/` | Elixir | 15 |
-| 24 | `24_fortran/` | Fortran | 15 |
+| 24 | `24_fortran/` | Fortran | 23 |
 | 25 | `25_lean4/` | Lean 4 | 5 |
 | 26 | `26_cuda/` | CUDA | 669 |
 | 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 40 |
