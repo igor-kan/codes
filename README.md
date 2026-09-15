@@ -239,6 +239,7 @@ algorithms-plus-systems plan, with runnable examples and focused notes.
 | `interview_prep/system_design/` | System Design | scalability, low-level/high-throughput, DDIA notes, worked designs |
 | `interview_prep/behavioral/` | Behavioral | STAR method, story banks, leadership and question bank |
 | `interview_prep/math_stats/` | Math & Stats | probability, statistics, linear algebra, Markov chains, Monte Carlo |
+| `interview_prep/deep_dives/` | Deep dives | numbered C++20, STL, smart-pointer, reimplementation, networking (15-19) and OS (20-31) topics |
 
 Run the self-checks with `make test-interview`.
 
