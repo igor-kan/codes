@@ -1,0 +1,7 @@
+import FormalStatistics.Data
+import FormalStatistics.NormalEquations
+import FormalStatistics.LeastSquares
+import FormalStatistics.GoodnessOfFit
+import FormalStatistics.Correlation
+import FormalStatistics.ErrorModel
+import FormalStatistics.Inference
