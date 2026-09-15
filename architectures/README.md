@@ -155,11 +155,24 @@ architectures/
 ├── distributed_patterns/ Consistent hashing, circuit breaker
 ├── typescript_patterns/  Middleware pipeline, repository pattern
 ├── enterprise_patterns/  Messaging integration patterns (router, saga, outbox, …)
+├── integration_patterns/ EIP: channels, pipes/filters, translators, wire tap
 ├── ddd_patterns/         Entities, value objects, aggregates, repositories, events
+├── data_patterns/        Unit of work, data mapper, active record, identity map
 ├── cloud_patterns/       Resilience and cloud-native patterns
+├── resilience_patterns/  Timeout, hedge, fail-fast, fallback, load shedding
+├── microservices_patterns/ API gateway, BFF, discovery, mesh, CQRS, sagas
+├── distributed_patterns/ Leader election, gossip, CRDTs, 2PC, quorum, Raft
 ├── system_design/        Rate limiting, load balancing, caching, CAP, sharding
+├── functional_patterns/  Monads, option/either, currying, pipelines
 ├── principles/           Engineering principles and heuristics
 ├── clean_architecture/   Hexagonal, onion, layered, dependency inversion
+├── architecture_styles/  Monolith, modular monolith, microservices, serverless
+├── security_patterns/    Zero trust, OAuth/OIDC, RBAC/ABAC, threat modeling
+├── testing_patterns/     Test pyramid, doubles, property/contract/mutation
+├── deployment_patterns/  Blue/green, canary, rolling, feature toggles
+├── event_driven_patterns/ Event notification, state transfer, streams
+├── observability_patterns/ Logging, metrics, tracing, health, correlation
+├── ui_patterns/          MVC, MVP, MVVM, Flux, Redux, VIPER
 ├── templates/            ADR, RFC, design doc, runbook and C4 diagrams
 └── api_design/           REST/GraphQL guidelines, versioning, pagination, errors
 ```
@@ -175,3 +188,31 @@ make test-architectures
 # Python patterns (includes linting, typechecking, and pytest)
 cd architectures/python_patterns && bash lint.sh
 ```
+
+---
+
+## Additional Pattern Families
+
+Beyond the original GoF, concurrency and distributed sets, the library now
+includes enterprise integration, domain, data, cloud, resilience, microservices,
+security, testing, deployment, event-driven, observability, UI and architecture
+style families. Each family has an `index.md` mapping patterns to files.
+
+Notable additions:
+
+- **Integration:** pipes and filters, message translator, wire tap, publish/subscribe, competing consumers.
+- **Data:** unit of work, data mapper, active record, identity map, lazy load, DAO.
+- **Resilience:** timeout, hedge, fail-fast, fallback, load shedding, backpressure, throttling.
+- **Microservices:** API gateway, BFF, service discovery/mesh, database per service, CQRS, event sourcing, saga orchestration, API composition.
+- **Distributed:** leader election, gossip, vector clocks, CRDTs, two-phase commit, quorum, fencing tokens, Raft.
+- **Functional:** monad, option/either, immutable value, currying, pipeline, memoization.
+- **Security:** defense in depth, least privilege, zero trust, OAuth2/OIDC, JWT, RBAC/ABAC, threat modeling.
+- **Testing:** test pyramid, test doubles, property-based, contract, golden master, mutation.
+- **Deployment:** blue/green, canary, rolling update, feature toggles, shadow deployment, A/B testing.
+- **Event-driven:** event notification, event-carried state transfer, event sourcing, event streams.
+- **Observability:** structured logging, metrics, tracing, health checks, correlation IDs.
+- **UI:** MVC, MVP, MVVM, Flux, Redux, VIPER.
+- **Architecture styles:** monolith, modular monolith, microservices, serverless, event-driven, SOA, space-based, mesh.
+
+Worked system-design case studies live in
+`../interview_prep/system_design/designs/`.
