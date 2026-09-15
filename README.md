@@ -1,5 +1,19 @@
 # codes
 
+[![Validate](https://github.com/igor-kan/codes/actions/workflows/validate.yml/badge.svg)](https://github.com/igor-kan/codes/actions/workflows/validate.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/igor-kan/codes)](https://github.com/igor-kan/codes/releases)
+[![Last commit](https://img.shields.io/github/last-commit/igor-kan/codes)](https://github.com/igor-kan/codes/commits/main)
+[![Commit activity](https://img.shields.io/github/commit-activity/y/igor-kan/codes)](https://github.com/igor-kan/codes/commits/main)
+[![Repo size](https://img.shields.io/github/repo-size/igor-kan/codes)](https://github.com/igor-kan/codes)
+[![Languages](https://img.shields.io/github/languages/count/igor-kan/codes)](https://github.com/igor-kan/codes)
+[![Top language](https://img.shields.io/github/languages/top/igor-kan/codes)](https://github.com/igor-kan/codes)
+[![Issues](https://img.shields.io/github/issues/igor-kan/codes)](https://github.com/igor-kan/codes/issues)
+[![Pull requests](https://img.shields.io/github/issues-pr/igor-kan/codes)](https://github.com/igor-kan/codes/pulls)
+[![Stars](https://img.shields.io/github/stars/igor-kan/codes?style=social)](https://github.com/igor-kan/codes/stargazers)
+[![Forks](https://img.shields.io/github/forks/igor-kan/codes?style=social)](https://github.com/igor-kan/codes/network/members)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 Comprehensive polyglot code repository, foundational algorithms, system kernels, compilers, and architectural patterns.
 
 ---
