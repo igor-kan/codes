@@ -158,6 +158,42 @@ A second wave of algorithms was added across the major languages (and a new
 | Aho-Corasick | Python, C++ |
 | Suffix array | Python |
 
+### CLRS (Cormen) and *Numerical Recipes* Coverage
+
+A third wave adds selection, greedy, dynamic-programming, randomized, graph and
+numerical methods from Cormen et al. (*Introduction to Algorithms*) and
+Press/Teukolsky et al. (*Numerical Recipes*).
+
+| Algorithm | Source | Languages |
+|:---|:---|:---|
+| Quickselect | CLRS 9.2 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
+| Median of medians | CLRS 9.3 | Python |
+| Activity selection | CLRS 16.1 | Python, C, C++, Java, JavaScript, Rust, Go |
+| Fractional knapsack | CLRS 16.2 | Python, C++, Go |
+| Rod cutting | CLRS 15.1 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
+| Counting inversions | CLRS 2.4 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
+| DAG shortest paths | CLRS 24.2 | Python, C++, Go |
+| Transitive closure | CLRS 25.2 | Python |
+| Stable marriage | Gale-Shapley | Python, C, C++, Java, JavaScript, Rust, Go |
+| Reservoir sampling | CLRS 5.3 | Python, C++, Rust |
+| Randomized quickselect | CLRS 7.3 | Python |
+| LU decomposition | NR 2.3 | Python, C, C++, Java, JavaScript, Rust, Go |
+| Cholesky decomposition | NR 2.9 | Python |
+| Newton-Raphson | NR 9.4 | Python, C, C++, Java, JavaScript, Rust, Go |
+| Secant method | NR 9.4 | Python |
+| Lagrange interpolation | NR 3.1 | Python, C++, TypeScript |
+| Newton divided differences | NR 3.2 | Python, TypeScript |
+| Trapezoidal integration | NR 4.1 | Python |
+| Simpson integration | NR 4.1 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
+| Romberg integration | NR 4.3 | Python |
+| Runge-Kutta 4 | NR 17.1 | Python, C++, TypeScript, Rust |
+| Golden-section search | NR 10.1 | Python, C, C++, TypeScript, Rust, Go |
+| Conjugate gradient | NR 2.7 | Python |
+| Gauss-Seidel | NR 19.5 | Python |
+| Successive over-relaxation | NR 19.5 | Python |
+| Linear congruential generator | NR 7.1 | Python |
+| Box-Muller transform | NR 7.2 | Python |
+
 Related suites: foundational gaps across all 25 languages are tracked by the
 coverage matrix above; the new `geometry/` category holds the computational
 geometry implementations.
@@ -166,17 +202,17 @@ geometry implementations.
 
 | # | Directory | Language | Files |
 |---|-----------|----------|-------|
-| 1 | `01_python/` | Python | 172 |
-| 2 | `02_c/` | C | 66 |
-| 3 | `03_cpp/` | C++ | 77 |
-| 4 | `04_java/` | Java | 63 |
+| 1 | `01_python/` | Python | 201 |
+| 2 | `02_c/` | C | 76 |
+| 3 | `03_cpp/` | C++ | 91 |
+| 4 | `04_java/` | Java | 71 |
 | 5 | `05_csharp/` | C# | 44 |
-| 6 | `06_javascript/` | JavaScript | 45 |
-| 7 | `07_typescript/` | TypeScript | 36 |
+| 6 | `06_javascript/` | JavaScript | 53 |
+| 7 | `07_typescript/` | TypeScript | 44 |
 | 8 | `08_r/` | R | 32 |
-| 9 | `09_rust/` | Rust | 62 |
+| 9 | `09_rust/` | Rust | 72 |
 | 10 | `10_sql/` | SQL | 6 |
-| 11 | `11_golang/` | Go | 60 |
+| 11 | `11_golang/` | Go | 70 |
 | 12 | `12_php/` | PHP | 21 |
 | 13 | `13_swift/` | Swift | 19 |
 | 14 | `14_julia/` | Julia | 21 |
@@ -191,12 +227,12 @@ geometry implementations.
 | 23 | `23_elixir/` | Elixir | 15 |
 | 24 | `24_fortran/` | Fortran | 7 |
 | 25 | `25_lean4/` | Lean 4 | 5 |
-| 26 | `26_cuda/` | CUDA | 668 |
-| 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 39 |
-| 28 | `28_ptx/` | PTX | 20 |
-| 29 | `29_sass/` | SASS | 9 |
-| 30 | `30_llvm_ir/` | LLVM IR | 47 |
-| 31 | `31_wasm/` | WebAssembly (WAT) | 18 |
+| 26 | `26_cuda/` | CUDA | 669 |
+| 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 40 |
+| 28 | `28_ptx/` | PTX | 21 |
+| 29 | `29_sass/` | SASS | 10 |
+| 30 | `30_llvm_ir/` | LLVM IR | 48 |
+| 31 | `31_wasm/` | WebAssembly (WAT) | 19 |
 
 ## Testing
 
