@@ -26,6 +26,16 @@ Each large module carries its own README with a focused index:
 | Formal physics (Lean 4) | [`formal_physics/README.md`](../formal_physics/README.md) |
 | Formal statistics (Lean 4) | [`formal_statistics/README.md`](../formal_statistics/README.md) |
 
+## Project health
+
+| File | Purpose |
+|:---|:---|
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | How to contribute and the ground rules |
+| [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Community expectations |
+| [`../SECURITY.md`](../SECURITY.md) | How to report a vulnerability |
+| [`../CHANGELOG.md`](../CHANGELOG.md) | Release notes and notable changes |
+| [`../.github/workflows/validate.yml`](../.github/workflows/validate.yml) | CI that validates syntax and configuration |
+
 ## Three ways to read this repository
 
 1. **Browsing / learning** — start with [`STRUCTURE.md`](STRUCTURE.md) to see what
