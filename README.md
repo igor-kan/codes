@@ -4,6 +4,20 @@ Comprehensive polyglot code repository, foundational algorithms, system kernels,
 
 ---
 
+## Documentation
+
+| Guide | What it covers |
+|:---|:---|
+| [`docs/STRUCTURE.md`](docs/STRUCTURE.md) | A map of the repository: what every directory contains and how large it is |
+| [`docs/USAGE.md`](docs/USAGE.md) | How to run, build, validate and study each part (with commands per module) |
+| [`docs/README.md`](docs/README.md) | Documentation index and links to every module README |
+| [`SOURCES.md`](SOURCES.md) | Upstream projects, licenses and attribution |
+
+**New here?** Read [`docs/STRUCTURE.md`](docs/STRUCTURE.md) for the map, then
+[`docs/USAGE.md`](docs/USAGE.md) for the exact commands.
+
+---
+
 ## Local Storage Optimization & Sparse-Checkout
 
 This repository contains over **3.0 GB** of curated codebases and 400,000+ files safely preserved on GitHub. To keep your local machine footprint minimal (< 50 MB), the repository utilizes Git's native **Sparse-Checkout** mechanism.
@@ -46,6 +60,7 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 | `web/` | Web platform: HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, Web Components, JSON, XML, GraphQL | [web/README.md](web/README.md) |
 | `databases/` | Graph/NoSQL query languages: Cypher, Gremlin, SPARQL, Datalog, MongoDB, Cassandra, Redis, Elasticsearch, Flux, PromQL, pgvector | [databases/README.md](databases/README.md) |
 | `scripts/` | Computational scripts (math, physics, ML, finance) and utilities | `scripts/` |
+| `docs/` | Repository documentation: structure map and usage guide | [docs/README.md](docs/README.md) |
 | `languages/` | Upstream source code from major open-source projects (sparse checkout) | `languages/` |
 
 ---
@@ -323,10 +338,17 @@ make test-web           # HTML/CSS/SCSS/JS/TS/JSON/GraphQL validation
 make test-cuda          # NVIDIA samples (requires nvcc; skipped when absent)
 make test-devops        # Validate DevOps YAML and shell scripts
 make test-interview     # Run interview-prep self-checks (Python + C++)
+make test-formal-physics     # Lean 4 / Mathlib formal physics (needs a local Mathlib)
+make test-formal-statistics  # Lean 4 / Mathlib formal statistics (needs a local Mathlib)
 
 # Clean build artifacts
 make clean
 ```
+
+See [`docs/USAGE.md`](docs/USAGE.md) for per-module commands. Targets whose
+toolchains are unavailable are **skipped** rather than failed (for example CUDA
+without `nvcc`, or the Lean modules without a local Mathlib — use
+`formal_physics/scripts/verify.sh` to fetch it once).
 
 ---
 
