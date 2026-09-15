@@ -229,6 +229,9 @@ test-architectures: $(BUILD_DIR)
 	$(GO) run architectures/concurrency_patterns/actor_system.go
 	$(RUSTC) -O architectures/concurrency_patterns/worker_pool.rs -o $(BUILD_DIR)/wp_rust_test
 	./$(BUILD_DIR)/wp_rust_test
+	@echo ">>> Testing additional design-pattern families (Python)..."
+	@for f in $$(find architectures/data_patterns architectures/integration_patterns architectures/resilience_patterns architectures/microservices_patterns architectures/distributed_patterns architectures/functional_patterns -name '*.py' | sort); do $(PYTHON) $$f >/dev/null || { echo "FAIL $$f"; exit 1; }; done
+	@echo "Design-pattern families verified."
 
 # --- Sparse / less common languages ---
 
