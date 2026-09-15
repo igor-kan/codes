@@ -7,7 +7,7 @@ organised, and how large it is. File counts are tracked files in Git.
 
 | Directory | Files | What it contains |
 |:---|---:|:---|
-| `algorithms/` | 1,784 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
+| `algorithms/` | 1,798 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
 | `architectures/` | 44,397 | Design patterns, architecture families, principles and templates. Most files are the vendored `dart_systems/` tree. |
 | `interview_prep/` | 465 | A textbook-driven study vault (algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math) plus numbered `deep_dives/`. |
 | `web/` | 122 | Web platform examples: HTML, CSS, Sass, Tailwind, Web Components, JavaScript, TypeScript, React, Vue, JSON, XML, GraphQL. |
@@ -49,12 +49,12 @@ Each subdirectory is a language or a low-level tier, organised by category
 | `16_kotlin/` | Kotlin | 19 |
 | `17_matlab/` | MATLAB / Octave | 6 |
 | `18_ocaml/` | OCaml | 15 |
-| `19_lua/` | Lua | 20 |
+| `19_lua/` | Lua | 26 |
 | `20_lisp/` | Common Lisp | 16 |
 | `21_scala/` | Scala | 16 |
 | `22_haskell/` | Haskell | 16 |
 | `23_elixir/` | Elixir | 15 |
-| `24_fortran/` | Fortran | 7 |
+| `24_fortran/` | Fortran | 15 |
 | `25_lean4/` | Lean 4 | 5 |
 | `26_cuda/` | CUDA | 669 |
 | `27_assembly/` | x86-64 / AArch64 / RISC-V | 40 |
