@@ -143,6 +143,19 @@ Design patterns across the Gang of Four (GoF), concurrency primitives, and distr
 | `architectures/clean_architecture/` | Hexagonal, onion, layered, dependency inversion, ports and adapters |
 | `architectures/templates/` | ADR, RFC, design doc, runbook, C4 (Mermaid) |
 | `architectures/api_design/` | REST guidelines, versioning, pagination, error handling, GraphQL vs REST |
+| `architectures/integration_patterns/` | EIP: channels, pipes & filters, translator, wire tap, publish/subscribe, competing consumers |
+| `architectures/data_patterns/` | Unit of work, data mapper, active record, identity map, lazy load, DAO |
+| `architectures/resilience_patterns/` | Timeout, hedge, fail-fast, fallback, load shedding, backpressure, throttling, chaos |
+| `architectures/microservices_patterns/` | API gateway, BFF, discovery, mesh, database per service, CQRS, event sourcing, sagas |
+| `architectures/distributed_patterns/` | Leader election, gossip, vector clocks, CRDTs, 2PC, quorum, fencing tokens, Raft |
+| `architectures/functional_patterns/` | Monad, option/either, immutable value, currying, pipeline, memoization |
+| `architectures/security_patterns/` | Defense in depth, least privilege, zero trust, OAuth2/OIDC, JWT, RBAC/ABAC, threat modeling |
+| `architectures/testing_patterns/` | Test pyramid, doubles, property-based, contract, golden master, mutation |
+| `architectures/deployment_patterns/` | Blue/green, canary, rolling update, feature toggles, shadow, A/B testing |
+| `architectures/event_driven_patterns/` | Event notification, state transfer, event sourcing, event streams |
+| `architectures/observability_patterns/` | Logging, metrics, tracing, health checks, correlation IDs |
+| `architectures/ui_patterns/` | MVC, MVP, MVVM, Flux, Redux, VIPER |
+| `architectures/architecture_styles/` | Monolith, modular monolith, microservices, serverless, event-driven, SOA, space-based, mesh |
 
 ---
 
