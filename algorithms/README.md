@@ -166,28 +166,28 @@ Press/Teukolsky et al. (*Numerical Recipes*).
 
 | Algorithm | Source | Languages |
 |:---|:---|:---|
-| Quickselect | CLRS 9.2 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
+| Quickselect | CLRS 9.2 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go, Lua |
 | Median of medians | CLRS 9.3 | Python |
-| Activity selection | CLRS 16.1 | Python, C, C++, Java, JavaScript, Rust, Go |
+| Activity selection | CLRS 16.1 | Python, C, C++, Java, JavaScript, Rust, Go, Lua |
 | Fractional knapsack | CLRS 16.2 | Python, C++, Go |
-| Rod cutting | CLRS 15.1 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
-| Counting inversions | CLRS 2.4 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
+| Rod cutting | CLRS 15.1 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go, Lua |
+| Counting inversions | CLRS 2.4 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go, Lua |
 | DAG shortest paths | CLRS 24.2 | Python, C++, Go |
 | Transitive closure | CLRS 25.2 | Python |
 | Stable marriage | Gale-Shapley | Python, C, C++, Java, JavaScript, Rust, Go |
 | Reservoir sampling | CLRS 5.3 | Python, C++, Rust |
 | Randomized quickselect | CLRS 7.3 | Python |
-| LU decomposition | NR 2.3 | Python, C, C++, Java, JavaScript, Rust, Go |
+| LU decomposition | NR 2.3 | Python, C, C++, Java, JavaScript, Rust, Go, Fortran |
 | Cholesky decomposition | NR 2.9 | Python |
-| Newton-Raphson | NR 9.4 | Python, C, C++, Java, JavaScript, Rust, Go |
+| Newton-Raphson | NR 9.4 | Python, C, C++, Java, JavaScript, Rust, Go, Fortran, Lua |
 | Secant method | NR 9.4 | Python |
-| Lagrange interpolation | NR 3.1 | Python, C++, TypeScript |
+| Lagrange interpolation | NR 3.1 | Python, C++, TypeScript, Fortran |
 | Newton divided differences | NR 3.2 | Python, TypeScript |
-| Trapezoidal integration | NR 4.1 | Python |
-| Simpson integration | NR 4.1 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go |
-| Romberg integration | NR 4.3 | Python |
-| Runge-Kutta 4 | NR 17.1 | Python, C++, TypeScript, Rust |
-| Golden-section search | NR 10.1 | Python, C, C++, TypeScript, Rust, Go |
+| Trapezoidal integration | NR 4.1 | Python, Fortran |
+| Simpson integration | NR 4.1 | Python, C, C++, Java, JavaScript, TypeScript, Rust, Go, Fortran, Lua |
+| Romberg integration | NR 4.3 | Python, Fortran |
+| Runge-Kutta 4 | NR 17.1 | Python, C++, TypeScript, Rust, Fortran |
+| Golden-section search | NR 10.1 | Python, C, C++, TypeScript, Rust, Go, Fortran |
 | Conjugate gradient | NR 2.7 | Python |
 | Gauss-Seidel | NR 19.5 | Python |
 | Successive over-relaxation | NR 19.5 | Python |
@@ -220,12 +220,12 @@ geometry implementations.
 | 16 | `16_kotlin/` | Kotlin | 19 |
 | 17 | `17_matlab/` | MATLAB | 6 |
 | 18 | `18_ocaml/` | OCaml | 15 |
-| 19 | `19_lua/` | Lua | 20 |
+| 19 | `19_lua/` | Lua | 26 |
 | 20 | `20_lisp/` | Common Lisp | 16 |
 | 21 | `21_scala/` | Scala | 16 |
 | 22 | `22_haskell/` | Haskell | 16 |
 | 23 | `23_elixir/` | Elixir | 15 |
-| 24 | `24_fortran/` | Fortran | 7 |
+| 24 | `24_fortran/` | Fortran | 15 |
 | 25 | `25_lean4/` | Lean 4 | 5 |
 | 26 | `26_cuda/` | CUDA | 669 |
 | 27 | `27_assembly/` | Assembly (x86-64/AArch64/RISC-V) | 40 |
