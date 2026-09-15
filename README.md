@@ -42,6 +42,7 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 | `devops/` | CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring and operations scripts | [devops/README.md](devops/README.md) |
 | `interview_prep/` | Interview study vault: algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math | [interview_prep/README.md](interview_prep/README.md) |
 | `formal_physics/` | Lean 4 + Mathlib formalization of Taylor's *Classical Mechanics* (Ch. 6, 7, 13) | [formal_physics/README.md](formal_physics/README.md) |
+| `formal_statistics/` | Lean 4 + Mathlib formalization of Kutner's regression analysis (Ch. 1, 2) | [formal_statistics/README.md](formal_statistics/README.md) |
 | `web/` | Web platform: HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, Web Components, JSON, XML, GraphQL | [web/README.md](web/README.md) |
 | `databases/` | Graph/NoSQL query languages: Cypher, Gremlin, SPARQL, Datalog, MongoDB, Cassandra, Redis, Elasticsearch, Flux, PromQL, pgvector | [databases/README.md](databases/README.md) |
 | `scripts/` | Computational scripts (math, physics, ML, finance) and utilities | `scripts/` |
