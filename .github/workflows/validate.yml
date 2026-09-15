@@ -1,0 +1,123 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Syntax & configuration checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (core dirs only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            algorithms
+            architectures
+            databases
+            devops
+            docs
+            formal_physics
+            formal_statistics
+            interview_prep
+            scripts
+            web
+          sparse-checkout-cone-mode: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install validators
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Python syntax (self-checking modules)
+        run: python3 -m compileall -q algorithms/01_python interview_prep scripts
+
+      - name: JSON / JSONL
+        run: |
+          python3 - <<'PY'
+          import glob, json
+          for f in glob.glob('web/json/*.json'):
+              json.load(open(f, encoding='utf-8'))
+          for f in glob.glob('web/json/*.jsonl'):
+              for line in open(f, encoding='utf-8'):
+                  if line.strip():
+                      json.loads(line)
+          for f in glob.glob('databases/search/elasticsearch/*.json'):
+              json.load(open(f, encoding='utf-8'))
+          print('JSON OK')
+          PY
+
+      - name: YAML (DevOps configuration)
+        run: |
+          python3 - <<'PY'
+          import glob, yaml
+          files = [f for f in glob.glob('devops/**/*.yml', recursive=True)
+                   if '/helm/templates/' not in f]
+          for f in files:
+              list(yaml.safe_load_all(open(f, encoding='utf-8')))
+          print(f'YAML OK ({len(files)} files)')
+          PY
+
+      - name: Shell syntax
+        run: |
+          for f in $(find devops/scripts scripts -name '*.sh'); do
+            bash -n "$f"
+          done
+          echo "Shell OK"
+
+      - name: Lean toolchains pinned
+        run: |
+          test -f formal_physics/lean-toolchain
+          test -f formal_statistics/lean-toolchain
+          echo "Lean toolchains present"
+
+  docs-links:
+    name: Internal markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            algorithms
+            architectures
+            databases
+            devops
+            docs
+            formal_physics
+            formal_statistics
+            interview_prep
+            scripts
+            web
+          sparse-checkout-cone-mode: true
+      - name: Check relative links in root and docs
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          files = ['README.md', 'SOURCES.md', 'docs/README.md', 'docs/STRUCTURE.md', 'docs/USAGE.md']
+          pat = re.compile(r'\[[^\]]+\]\(([^)]+)\)')
+          bad = []
+          for f in files:
+              if not os.path.exists(f):
+                  continue
+              base = os.path.dirname(f)
+              for target in pat.findall(open(f, encoding='utf-8').read()):
+                  if target.startswith(('http://', 'https://', '#', 'mailto:')):
+                      continue
+                  path = target.split('#')[0]
+                  if path and not os.path.exists(os.path.join(base, path)):
+                      bad.append((f, target))
+          for f, t in bad:
+              print(f'BROKEN {f} -> {t}')
+          if bad:
+              sys.exit(1)
+          print('Markdown links OK')
+          PY
