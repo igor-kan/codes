@@ -1,0 +1,14 @@
+name = "formal_statistics"
+version = "0.1.0"
+defaultTargets = ["FormalStatistics"]
+
+# Kutner, Nachtsheim & Neter, "Applied Linear Statistical Models" —
+# Ch. 1 (simple linear regression) and Ch. 2 (inference and correlation),
+# formalized on top of Mathlib.
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+version = "v4.16.0"
+
+[[lean_lib]]
+name = "FormalStatistics"
