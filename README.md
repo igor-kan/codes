@@ -41,6 +41,7 @@ Use the helper utility `scripts/sparse_checkout.sh`:
 | `architectures/` | Design patterns, DDD, enterprise integration, cloud, system design, principles and templates | [architectures/README.md](architectures/README.md) |
 | `devops/` | CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring and operations scripts | [devops/README.md](devops/README.md) |
 | `interview_prep/` | Interview study vault: algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math | [interview_prep/README.md](interview_prep/README.md) |
+| `formal_physics/` | Lean 4 + Mathlib formalization of Taylor's *Classical Mechanics* (Ch. 6, 7, 13) | [formal_physics/README.md](formal_physics/README.md) |
 | `web/` | Web platform: HTML, CSS, Sass, Tailwind, JS/TS, React, Vue, Web Components, JSON, XML, GraphQL | [web/README.md](web/README.md) |
 | `databases/` | Graph/NoSQL query languages: Cypher, Gremlin, SPARQL, Datalog, MongoDB, Cassandra, Redis, Elasticsearch, Flux, PromQL, pgvector | [databases/README.md](databases/README.md) |
 | `scripts/` | Computational scripts (math, physics, ML, finance) and utilities | `scripts/` |
@@ -255,6 +256,28 @@ algorithms-plus-systems plan, with runnable examples and focused notes.
 | `interview_prep/deep_dives/` | Deep dives | numbered C++20, STL, smart-pointer, reimplementation, networking (15-19) and OS (20-31) topics |
 
 Run the self-checks with `make test-interview`.
+
+---
+
+## Formal Physics (Lean 4 + Mathlib)
+
+The `formal_physics/` directory contains a machine-checked formalization of
+John R. Taylor's *Classical Mechanics*:
+
+- **Chapter 6 (Calculus of Variations):** functionals, the first variation as a
+  Fréchet derivative, stationarity, the Euler–Lagrange equation, the Beltrami
+  identity, the brachistochrone and the cycloid, the second variation with
+  Legendre's condition and conjugate points.
+- **Chapter 7 (Lagrange's Equations):** configuration space, the generalized
+  momentum, Newton ⇔ Euler–Lagrange, curvilinear coordinates, rheonomic
+  `T₂ + T₁ + T₀`, Hamilton's principle, holonomic constraints, Noether's theorem.
+- **Chapter 13 (Hamiltonian Mechanics):** phase space, Hamilton's equations,
+  energy conservation, the Legendre transform, the Poisson bracket, the
+  symplectic operator and Liouville's theorem.
+
+Every theorem is checked by the Lean kernel against Mathlib (v4.16.0); there are
+no `sorry`s. Build with `formal_physics/scripts/verify.sh` or
+`make test-formal-physics`.
 
 ---
 
