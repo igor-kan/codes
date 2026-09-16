@@ -10,6 +10,7 @@ organised, and how large it is. File counts are tracked files in Git.
 | `algorithms/` | 1,874 | Standalone algorithm implementations in **25 languages** plus 6 low-level/GPU tiers. See [the language table](#algorithms). |
 | `architectures/` | 44,397 | Design patterns, architecture families, principles and templates. Most files are the vendored `dart_systems/` tree. |
 | `interview_prep/` | 465 | A textbook-driven study vault (algorithms, C++, concurrency, Python, networking, OS, architecture, system design, behavioral, math) plus numbered `deep_dives/`. |
+| `competitive_programming/` | 241 | Original Codeforces and LeetCode solutions organised by platform and language, each with an inline self-test. |
 | `web/` | 122 | Web platform examples: HTML, CSS, Sass, Tailwind, Web Components, JavaScript, TypeScript, React, Vue, JSON, XML, GraphQL. |
 | `databases/` | 73 | Query and schema examples for graph and NoSQL engines, time-series and vector search. |
 | `devops/` | 67 | CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring and operations scripts. |
