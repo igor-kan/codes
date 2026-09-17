@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §13.5 — The Poisson Bracket
+# The Poisson Bracket
 
 For one degree of freedom the Poisson bracket of two observables is
 
