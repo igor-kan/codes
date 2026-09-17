@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner §2.9, §2.11 — The Correlation Coefficient
+# The Correlation Coefficient
 
 The sample correlation coefficient is `r = Sxy/√(Sxx·Syy)`.  We prove
 Cauchy–Schwarz `Sxy² ≤ Sxx·Syy`, hence `|r| ≤ 1`, and that `r²` equals the
