@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor Ch. 13 — The Symplectic Form
+# The Symplectic Form
 
 The Hamiltonian vector field is produced by contracting the differential of the
 Hamiltonian with the symplectic form.  In one degree of freedom this form is the
