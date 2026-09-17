@@ -5,7 +5,7 @@ Authors: Igor Kan
 
 # Reusable calculus lemmas for the physics formalization
 
-Small, self-contained facts about `HasDerivAt` used throughout the Taylor
+Small, self-contained facts about `HasDerivAt` used throughout the
 formalization.  Keeping them in one place means every later file proves physics,
 not derivative bookkeeping.
 -/
