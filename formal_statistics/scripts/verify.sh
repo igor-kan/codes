@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Verify the Formal Statistics Lean 4 library (Kutner Ch. 1-2).
+# Verify the Formal Statistics Lean 4 library (Linear Regression & OLS).
 #
 # Requires: elan/lake and network access on the first run (to fetch Mathlib).
 # ==============================================================================
