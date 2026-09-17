@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §7.2 — Kinetic Energy in Curvilinear Coordinates
+# Kinetic Energy in Curvilinear Coordinates
 
 The chain rule gives the velocity in polar, cylindrical and spherical
 coordinates; the kinetic energy is a quadratic form with the metric
