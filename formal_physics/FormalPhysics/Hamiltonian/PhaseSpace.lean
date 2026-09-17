@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor Ch. 13 — Phase Space and Hamilton's Equations
+# Phase Space and Hamilton's Equations
 
 A Hamiltonian is a scalar on phase space; Hamilton's equations are first-order
 ODEs for the pair `(q, p)`.  We formalize phase space, the partial derivatives
