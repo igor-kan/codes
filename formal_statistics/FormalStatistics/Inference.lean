@@ -3,11 +3,11 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner Ch. 2 — Inference, ANOVA and the F = t² Identity
+# Inference, ANOVA and the F = t² Identity
 
-This file defines the inference quantities of Chapter 2 — the error mean square
+This file defines the standard inference quantities — the error mean square
 `MSE`, the standard error of the slope, the `t` statistic, the ANOVA mean square
-`MSR` and the `F` statistic — and proves the textbook identity `F = t²`.
+`MSR` and the `F` statistic — and proves the canonical identity `F = t²`.
 -/
 import FormalStatistics.GoodnessOfFit
 
