@@ -1,6 +1,6 @@
-"""Euler Angles Kinematics in Z-X-Z Proper Convention.
+"""Euler Angles and Rigid Body Kinematics.
 
-Implements direction cosine matrix R(phi, theta, psi) and angular velocity transformation (Landau §35, Taylor §10.3).
+Implements direction cosine matrix R(phi, theta, psi) and angular velocity transformation (Landau §35, Goldstein §4.4).
 """
 
 from typing import Sequence
