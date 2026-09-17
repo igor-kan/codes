@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §7.4 — Cyclic Coordinates and Noether's Theorem
+# Cyclic Coordinates and Noether's Theorem
 
 If the Lagrangian does not depend on a coordinate `x` (the coordinate is
 *cyclic*), then the Euler–Lagrange equation becomes the statement that the
