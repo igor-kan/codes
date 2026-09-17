@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner Ch. 1 — Data and Sums of Squares
+# Data and Sums of Squares
 
 For the simple linear regression model with one predictor, the sample mean and
 the corrected sums of squares `Sxx`, `Sxy`, `Syy` are the sufficient statistics
