@@ -1,6 +1,6 @@
 """Euler Dynamical Equations for Rigid Body Rotation and the Tennis Racket Theorem.
 
-Implements Landau & Lifshitz §36 and Taylor §10.8:
+Implements Landau & Lifshitz §36 and Goldstein §5.6:
 I_1 dot{omega}_1 - (I_2 - I_3) omega_2 omega_3 = N_1.
 Demonstrates the intermediate axis instability (Dzhanibekov effect).
 """
