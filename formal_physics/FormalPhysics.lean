@@ -3,19 +3,18 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Formal Physics — Taylor's *Classical Mechanics*
+# Formal Physics — Analytical Classical Mechanics
 
-A Lean 4 / Mathlib formalization of selected chapters of John R. Taylor's
-*Classical Mechanics*:
+A Lean 4 / Mathlib formalization of foundational analytical mechanics:
 
-* **Chapter 6** — the calculus of variations: functionals, first and second
-  variation, the Euler–Lagrange equation, the Beltrami identity, the
-  brachistochrone and the cycloid.
-* **Chapter 7** — Lagrange's equations: configuration space, generalized
-  momentum, the Newton ⇔ Euler–Lagrange equivalence, curvilinear coordinates,
-  rheonomic kinetic energy, Hamilton's principle, constraints and Noether's
-  theorem.
-* **Chapter 13** — Hamiltonian mechanics: phase space, Hamilton's equations,
+* **Calculus of Variations** — functionals, first and second variation,
+  the Euler–Lagrange equation, the Beltrami identity, the brachistochrone
+  and the cycloid.
+* **Lagrangian Mechanics** — configuration space, generalized momentum,
+  Newton ⇔ Euler–Lagrange equivalence, curvilinear coordinates,
+  rheonomic kinetic energy, Hamilton's principle, constraints and
+  Noether's theorem.
+* **Hamiltonian Mechanics** — phase space, Hamilton's equations,
   the Legendre transform, the Poisson bracket, the symplectic form and
   Liouville's theorem.
 -/
