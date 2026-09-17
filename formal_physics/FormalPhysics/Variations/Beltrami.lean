@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §6.3 — The Beltrami Identity
+# The Beltrami Identity
 
 When the integrand `f(y, y')` has no explicit dependence on the independent
 variable, the Euler–Lagrange equation has the first integral
@@ -11,7 +11,7 @@ variable, the Euler–Lagrange equation has the first integral
   `f - y' ∂f/∂y' = const,`
 
 the **Beltrami identity**.  We isolate this identity algebraically and verify it
-for the two textbook integrands: the arc length of a plane curve and the
+for two canonical integrands: the arc length of a plane curve and the
 brachistochrone time functional.
 -/
 import Mathlib
