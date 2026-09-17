@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §7.3, §7.10 — Holonomic Constraints and Lagrange Multipliers
+# Holonomic Constraints and Lagrange Multipliers
 
 A holonomic constraint is a configuration condition `g(q) = 0`, a level set in
 configuration space.  Retaining redundant coordinates reintroduces constraint
