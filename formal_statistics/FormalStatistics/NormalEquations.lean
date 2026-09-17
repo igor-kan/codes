@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner §1.6 — Least-Squares Estimators and the Normal Equations
+# Least-Squares Estimators and the Normal Equations
 
 The least-squares estimates are `b₁ = Sxy/Sxx` and `b₀ = ȳ - b₁ x̄`.  This file
 proves that the corresponding residuals satisfy the two **normal equations**
