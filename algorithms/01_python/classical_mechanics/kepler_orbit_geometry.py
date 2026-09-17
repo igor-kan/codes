@@ -1,6 +1,6 @@
 """Keplerian Two-Body Orbit Geometry, Kepler's Transcendental Equation, and Anomaly Solvers.
 
-Implements Arnold §8 and Taylor §8:
+Implements Arnold §8 and Goldstein §3.7:
 Solves M = E - e sin(E) and converts between orbital elements (a, e) and Cartesian state vectors.
 """
 
