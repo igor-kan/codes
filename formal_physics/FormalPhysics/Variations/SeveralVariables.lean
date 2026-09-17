@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §6.4 — Functionals of Several Variables
+# Functionals of Several Variables
 
 When the functional depends on `n` independent functions, variation gives one
 Euler–Lagrange equation per function.  We formalize the family of equations and
@@ -24,7 +24,7 @@ def IsELFamily {n : ℕ} (L : LagrangianFamily n) (γ : Fin n → ℝ → ℝ) :
   ∀ i, IsEL (L i) (γ i)
 
 /-- The system predicate is, definitionally, the conjunction of the individual
-Euler–Lagrange equations — the content of Taylor §6.4. -/
+Euler–Lagrange equations. -/
 theorem isELFamily_iff {n : ℕ} (L : LagrangianFamily n) (γ : Fin n → ℝ → ℝ) :
     IsELFamily L γ ↔ ∀ i, IsEL (L i) (γ i) := Iff.rfl
 
