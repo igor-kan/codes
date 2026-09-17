@@ -1,13 +1,12 @@
-# Formal Statistics — Kutner's *Applied Linear Statistical Models* in Lean 4
+# Formal Statistics — Linear Regression Models in Lean 4
 
-A machine-checked formalization of **Chapter 1** (linear regression with one
-predictor variable) and **Chapter 2** (inferences in regression and correlation
-analysis) of Kutner, Nachtsheim & Neter, *Applied Linear Statistical Models*,
-built on [Mathlib](https://github.com/leanprover-community/mathlib4).
+A machine-checked formalization of linear regression with one
+predictor variable, inferences in regression, and correlation
+analysis, built on [Mathlib](https://github.com/leanprover-community/mathlib4).
 
 ## What is formalized
 
-| Kutner | Result | Lean name |
+| Topic | Result | Lean name |
 |:---|:---|:---|
 | §1.6 | least-squares estimates `b₁ = Sxy/Sxx`, `b₀ = ȳ - b₁x̄` | `b1`, `b0` |
 | §1.6 | the two normal equations `Σeᵢ = 0`, `Σxᵢeᵢ = 0` | `residual_sum`, `residual_orthogonal` |
@@ -63,7 +62,7 @@ lake build
 `scripts/verify.sh` wraps this and checks for `sorry`.
 
 ## Attribution
-
-Text: Kutner, Nachtsheim & Neter, *Applied Linear Statistical Models*.
+ 
+Topic: Linear Statistical Models and Ordinary Least Squares.
 Library: [Mathlib4](https://github.com/leanprover-community/mathlib4) (Apache-2.0),
 Lean 4 (Apache-2.0). Licensed under Apache-2.0; see `LICENSE`.
