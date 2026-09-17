@@ -1,6 +1,6 @@
 """Euler-Lagrange Equations and Cyclic Coordinates in Configuration Space.
 
-Implements variational mechanics: d/dt(dL/d dot{q}^i) - dL/dq^i = 0 (Landau Vol 1 Ch. 1, Taylor Ch. 6).
+Implements variational mechanics: d/dt(dL/d dot{q}^i) - dL/dq^i = 0 (Landau Vol 1 Ch. 1, Goldstein Ch. 1-2).
 """
 
 from typing import Callable, Sequence, List
