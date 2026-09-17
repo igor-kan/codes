@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `formal_statistics/` — Lean 4 + Mathlib formalization of Kutner's regression
-  analysis (Ch. 1–2): least squares, the master decomposition, `SSTO = SSR + SSE`,
+- `formal_statistics/` — Lean 4 + Mathlib formalization of linear regression
+  analysis: least squares, the master decomposition, `SSTO = SSR + SSE`,
   `R²`, Cauchy–Schwarz and `|r| ≤ 1`, `F = t²`.
-- `formal_physics/` — Lean 4 + Mathlib formalization of Taylor's *Classical
-  Mechanics* (Ch. 6, 7, 13).
+- `formal_physics/` — Lean 4 + Mathlib formalization of analytical classical
+  mechanics (calculus of variations, Lagrangian and Hamiltonian dynamics).
 - `interview_prep/deep_dives/` — numbered deep dives (C++20, STL, smart
   pointers, reimplementation, networking 15–19, OS 20–31).
 - `docs/` — documentation hub (`STRUCTURE.md`, `USAGE.md`).
