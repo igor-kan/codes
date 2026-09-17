@@ -14,8 +14,8 @@ organised, and how large it is. File counts are tracked files in Git.
 | `web/` | 122 | Web platform examples: HTML, CSS, Sass, Tailwind, Web Components, JavaScript, TypeScript, React, Vue, JSON, XML, GraphQL. |
 | `databases/` | 73 | Query and schema examples for graph and NoSQL engines, time-series and vector search. |
 | `devops/` | 67 | CI/CD, Docker, Kubernetes, Terraform, Ansible, Helm, monitoring and operations scripts. |
-| `formal_physics/` | 24 | Lean 4 + Mathlib formalization of Taylor's *Classical Mechanics* (Ch. 6, 7, 13). |
-| `formal_statistics/` | 13 | Lean 4 + Mathlib formalization of Kutner's regression analysis (Ch. 1, 2). |
+| `formal_physics/` | 24 | Lean 4 + Mathlib formalization of analytical classical mechanics (variations, Lagrangian, Hamiltonian). |
+| `formal_statistics/` | 13 | Lean 4 + Mathlib formalization of linear statistical models and regression analysis. |
 | `scripts/` | 20 | Polyglot computational scripts (math, physics, ML, finance, numerics) and repository utilities. |
 | `docs/` | this guide | Repository documentation (`STRUCTURE.md`, `USAGE.md`, index). |
 | `languages/` | 355,922 | **Remote-only** upstream source code from major open-source projects. Kept out of the local checkout by sparse-checkout. See [`USAGE.md`](USAGE.md#sparse-checkout--languages). |
