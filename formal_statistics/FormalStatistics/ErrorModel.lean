@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner §1.3, §2.1 — The Additive Error Model
+# The Additive Error Model
 
 The simple linear regression model writes the response as
 `Yᵢ = β₀ + β₁ xᵢ + εᵢ`.  Substituting the model into the least-squares formulas
