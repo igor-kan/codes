@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §7.7 — The Double Pendulum
+# The Double Pendulum
 
 The double pendulum is the canonical coupled system whose Lagrangian is
 `L = T - U` with a cross term `θ̇₁θ̇₂ cos(θ₁ - θ₂)`.  We record the kinetic
