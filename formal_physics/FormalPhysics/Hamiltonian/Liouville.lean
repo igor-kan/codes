@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §13.6–13.7 — Liouville's Theorem
+# Liouville's Theorem
 
 A Hamiltonian flow is incompressible in phase space: it preserves volume.  For a
 linear (small-oscillation) flow the statement becomes `det M = 1`, where `M` is
