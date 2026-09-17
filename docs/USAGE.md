@@ -171,7 +171,7 @@ g++ -std=c++20 -pthread interview_prep/concurrency/thread_pool.cpp -o /tmp/tp &&
 make test-interview     # every Python self-check + the C++ suites
 ```
 
-Use it as a **study vault**: each track maps to a textbook or course
+Use it as a **study vault**: each track maps to a core foundational topic
 (`deep_dives/` is numbered to match a topic list). See
 [`interview_prep/README.md`](../interview_prep/README.md) for the roadmap.
 
