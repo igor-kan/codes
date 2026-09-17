@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §13.1–13.2 — The Legendre Transform
+# The Legendre Transform
 
 The Legendre transform trades velocity for momentum: `p = ∂L/∂v`, and the
 Hamiltonian is `H = p v - L`.  In one dimension with `L = ½ m v²`, the transform
