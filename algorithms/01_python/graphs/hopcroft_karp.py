@@ -1,52 +1,59 @@
-"""Hopcroft-Karp maximum bipartite matching."""
+"""
+Hopcroft-Karp Algorithm in Python.
+Maximum cardinality bipartite matching in O(E sqrt(V)).
+"""
+
 from collections import deque
 
-INF = float("inf")
+class HopcroftKarp:
+    def __init__(self, nu, nv, adj):
+        self.nu = nu
+        self.nv = nv
+        self.adj = adj
+        self.pair_u = [0] * (nu + 1)
+        self.pair_v = [0] * (nv + 1)
+        self.dist = [0] * (nu + 1)
 
+    def max_matching(self):
+        matching = 0
+        while self._bfs():
+            for u in range(1, self.nu + 1):
+                if self.pair_u[u] == 0 and self._dfs(u):
+                    matching += 1
+        return matching
 
-def hopcroft_karp(adjacency: list[list[int]], left_size: int, right_size: int) -> int:
-    pair_u = [-1] * left_size
-    pair_v = [-1] * right_size
-    dist = [0] * left_size
-
-    def bfs() -> bool:
-        queue = deque()
-        for u in range(left_size):
-            if pair_u[u] == -1:
-                dist[u] = 0
-                queue.append(u)
+    def _bfs(self):
+        q = deque()
+        for u in range(1, self.nu + 1):
+            if self.pair_u[u] == 0:
+                self.dist[u] = 0
+                q.append(u)
             else:
-                dist[u] = INF
-        found = False
-        while queue:
-            u = queue.popleft()
-            for v in adjacency[u]:
-                w = pair_v[v]
-                if w == -1:
-                    found = True
-                elif dist[w] == INF:
-                    dist[w] = dist[u] + 1
-                    queue.append(w)
-        return found
+                self.dist[u] = float('inf')
+        self.dist[0] = float('inf')
 
-    def dfs(u: int) -> bool:
-        for v in adjacency[u]:
-            w = pair_v[v]
-            if w == -1 or (dist[w] == dist[u] + 1 and dfs(w)):
-                pair_u[u], pair_v[v] = v, u
-                return True
-        dist[u] = INF
-        return False
+        while q:
+            u = q.popleft()
+            if self.dist[u] < self.dist[0]:
+                for v in self.adj[u]:
+                    if self.dist[self.pair_v[v]] == float('inf'):
+                        self.dist[self.pair_v[v]] = self.dist[u] + 1
+                        q.append(self.pair_v[v])
+        return self.dist[0] != float('inf')
 
-    matching = 0
-    while bfs():
-        for u in range(left_size):
-            if pair_u[u] == -1 and dfs(u):
-                matching += 1
-    return matching
-
+    def _dfs(self, u):
+        if u != 0:
+            for v in self.adj[u]:
+                if self.dist[self.pair_v[v]] == self.dist[u] + 1 and self._dfs(self.pair_v[v]):
+                    self.pair_v[v] = u
+                    self.pair_u[u] = v
+                    return True
+            self.dist[u] = float('inf')
+            return False
+        return True
 
 if __name__ == "__main__":
-    adjacency = [[0, 1], [0], [1, 2], [2]]
-    assert hopcroft_karp(adjacency, 4, 3) == 3
-    print("hopcroft-karp ok")
+    adj = [[], [2, 3], [1], [2], [2, 4]]
+    hk = HopcroftKarp(4, 4, adj)
+    assert hk.max_matching() == 4
+    print("Python Hopcroft-Karp verified.")
