@@ -1,7 +1,7 @@
-# Formal Physics — Taylor's *Classical Mechanics* in Lean 4
+# Formal Physics — Classical Mechanics in Lean 4
 
-A machine-checked formalization of selected chapters of John R. Taylor's
-*Classical Mechanics*, built on top of [Mathlib](https://github.com/leanprover-community/mathlib4).
+A machine-checked formalization of analytical classical mechanics,
+built on top of [Mathlib](https://github.com/leanprover-community/mathlib4).
 
 * **Chapter 6 — Calculus of Variations.** Functionals as functions on curve
   spaces, the first variation as a Fréchet derivative, stationarity of the
