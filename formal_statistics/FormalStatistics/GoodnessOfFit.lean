@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner §2.7, §2.9 — Sums of Squares and R²
+# Sums of Squares and R² Decomposition
 
 The total variation of the response splits into the part explained by the
 regression and the unexplained error:
