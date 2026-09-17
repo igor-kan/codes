@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Kutner §1.6 — The Least-Squares Criterion
+# The Least-Squares Criterion
 
 The least-squares criterion is `Q(β₀, β₁) = Σ (yᵢ - β₀ - β₁ xᵢ)²`.  We prove
 the **master decomposition**
