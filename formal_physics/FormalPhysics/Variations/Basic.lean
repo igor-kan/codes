@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor Chapter 6 — Functionals and the First Variation
+# Calculus of Variations — Functionals and the First Variation
 
 A functional is a real-valued function on a space of curves, `S : (ℝ → E) → ℝ`.
 The first variation of `S` at a curve `γ` in the direction of a variation `η` is
