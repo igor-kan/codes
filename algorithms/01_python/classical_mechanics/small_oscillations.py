@@ -1,6 +1,6 @@
 """Theory of Small Oscillations and Normal Modes in Coupled Systems.
 
-Implements Taylor Ch. 11 and Landau & Lifshitz Ch. 5:
+Implements Landau & Lifshitz Ch. 5 and Goldstein Ch. 6:
 Solves generalized eigenvalue problem (K - omega^2 M) a = 0 and constructs uncoupled normal coordinates.
 """
 
