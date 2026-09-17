@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §6.3 — The Brachistochrone and the Cycloid
+# The Brachistochrone and the Cycloid
 
 The brachistochrone is the curve of fastest descent; its solution is a cycloid.
 We formalize the parametric cycloid, its derivatives, and the Beltrami first
