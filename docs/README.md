@@ -42,6 +42,6 @@ Each large module carries its own README with a focused index:
    exists, then open the module README that matches your interest.
 2. **Running the code** — go to [`USAGE.md`](USAGE.md) for the exact commands to
    compile, run, or validate any module.
-3. **Studying a specific book/course** — the `interview_prep/`, `formal_physics/`
-   and `formal_statistics/` modules map directly onto textbooks and their
-   chapters.
+3. **Studying a specific topic** — the `interview_prep/`, `formal_physics/`
+   and `formal_statistics/` modules provide deep theoretical foundations,
+   formalized proofs, and system design patterns.
