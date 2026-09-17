@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §6.2–6.3 and §7.1 — The Euler–Lagrange Operator
+# The Euler–Lagrange Operator
 
 For a scalar Lagrangian `L(t, x, v)` we define the generalized momentum
 `p = ∂L/∂v`, the generalized force `∂L/∂x`, and the Euler–Lagrange predicate
