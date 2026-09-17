@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor Ch. 7 — Configuration Space and Generalised Momentum
+# Configuration Space and Generalised Momentum
 
 The configuration space of a free particle in `n` dimensions is the Euclidean
 space `EuclideanSpace ℝ (Fin n)`.  A Lagrangian is a scalar on `Q × TQ`, and the
