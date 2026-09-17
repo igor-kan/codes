@@ -2,8 +2,8 @@ name = "formal_physics"
 version = "0.1.0"
 defaultTargets = ["FormalPhysics"]
 
-# Taylor, Classical Mechanics — Ch. 6 (Calculus of Variations),
-# Ch. 7 (Lagrange's Equations), Ch. 13 (Hamiltonian Mechanics),
+# Analytical Classical Mechanics — Calculus of Variations,
+# Lagrangian Dynamics, and Hamiltonian Mechanics,
 # formalized on top of Mathlib.
 [[require]]
 name = "mathlib"
