@@ -3,7 +3,7 @@ Copyright (c) 2026 Igor Kan. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Igor Kan
 
-# Taylor §6.3 — Second Variation, Legendre's Condition, Conjugate Points
+# Second Variation, Legendre's Condition, Conjugate Points
 
 The character of a stationary path (minimum, maximum, saddle) is decided by the
 second variation.  Legendre's condition is `∂²f/∂y'² > 0`; for the harmonic
