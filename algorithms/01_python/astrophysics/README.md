@@ -16,7 +16,7 @@ A comprehensive Python suite of algorithms covering stellar interior structure, 
 10. **[`synchrotron_radiation.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/synchrotron_radiation.py)**: Ultra-relativistic synchrotron emission power and critical frequency $\nu_c$.
 11. **[`gravitational_wave_inspiral_waveform.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/gravitational_wave_inspiral_waveform.py)**: Binary chirp mass $\mathcal{M}$, frequency evolution $\dot{f}_{\text{GW}}$, and leading quadrupole strain $h(t)$.
 12. **[`pulsar_spindown_dipole.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/pulsar_spindown_dipole.py)**: Magnetic dipole radiation torque, characteristic age $\tau = P / (2\dot{P})$, and surface field $B_p$.
-13. **[`sedov_taylor_blast_wave.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/sedov_taylor_blast_wave.py)**: Self-similar supernova blast wave expansion radius $R(t) \propto (E t^2 / \rho_0)^{1/5}$ and shock velocity.
+13. **[`sedov_blast_wave.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/sedov_blast_wave.py)**: Self-similar supernova blast wave expansion radius $R(t) \propto (E t^2 / \rho_0)^{1/5}$ and shock velocity.
 14. **[`cosmological_distance_ladder.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/cosmological_distance_ladder.py)**: Comoving, luminosity, and angular diameter distances in flat $\Lambda$CDM cosmology.
 15. **[`dark_matter_nfw_profile.py`](file:///home/igorkan/repos/codes/algorithms/01_python/astrophysics/dark_matter_nfw_profile.py)**: Navarro-Frenk-White (NFW) dark matter halo density profile, enclosed mass $M(r)$, and circular velocity $v_c(r)$.
 
