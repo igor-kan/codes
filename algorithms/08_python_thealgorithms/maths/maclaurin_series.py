@@ -1,5 +1,5 @@
 """
-https://en.wikipedia.org/wiki/Taylor_series#Trigonometric_functions
+https://en.wikipedia.org/wiki/Power_series#Trigonometric_functions
 """
 
 from math import factorial, pi
