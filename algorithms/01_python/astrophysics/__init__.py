@@ -15,7 +15,7 @@ from .accretion_disk_shakura_sunyaev import ShakuraSunyaevDisk
 from .synchrotron_radiation import SynchrotronRadiation
 from .gravitational_wave_inspiral_waveform import GravitationalWaveInspiral
 from .pulsar_spindown_dipole import PulsarSpindown
-from .sedov_taylor_blast_wave import SedovTaylorBlastWave
+from .sedov_blast_wave import SedovBlastWave
 from .cosmological_distance_ladder import CosmologicalDistances
 from .dark_matter_nfw_profile import NFWProfile
 
@@ -32,7 +32,7 @@ __all__ = [
     "SynchrotronRadiation",
     "GravitationalWaveInspiral",
     "PulsarSpindown",
-    "SedovTaylorBlastWave",
+    "SedovBlastWave",
     "CosmologicalDistances",
     "NFWProfile",
 ]
