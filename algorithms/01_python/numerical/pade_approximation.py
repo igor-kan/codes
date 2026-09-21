@@ -1,4 +1,4 @@
-"""Pade approximation from a Taylor series (Numerical Recipes 5.12)."""
+"""Pade approximation from a power series (Numerical Recipes 5.12)."""
 def pade_coefficients(series, numerator_degree, denominator_degree):
     matrix = [[series[numerator_degree + i - j] for j in range(1, denominator_degree + 1)]
               for i in range(1, denominator_degree + 1)]
