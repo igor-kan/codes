@@ -1,4 +1,4 @@
-// Pade approximation from a Taylor series (Numerical Recipes 5.12).
+// Pade approximation from a power series (Numerical Recipes 5.12).
 #include <algorithm>
 #include <cassert>
 #include <cmath>
