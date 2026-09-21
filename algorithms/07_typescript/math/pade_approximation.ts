@@ -1,4 +1,4 @@
-// Pade approximation from a Taylor series.
+// Pade approximation from a power series.
 function solve(matrix: number[][], rhs: number[]): number[] {
   const n = rhs.length;
   const a = matrix.map((row, i) => [...row, rhs[i]]);
