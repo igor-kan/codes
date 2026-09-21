@@ -24,7 +24,7 @@ class LaneEmdenSolver:
             (xi_array, theta_array, xi_surface, dtheta_dxi_surface)
         """
         xi = 1e-5
-        # Taylor expansion near center: theta = 1 - xi^2/6 + (n/120)*xi^4
+        # Power series expansion near center: theta = 1 - xi^2/6 + (n/120)*xi^4
         theta = 1.0 - (xi**2) / 6.0
         dtheta = -xi / 3.0
 
