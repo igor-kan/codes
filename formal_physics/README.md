@@ -3,25 +3,26 @@
 A machine-checked formalization of analytical classical mechanics,
 built on top of [Mathlib](https://github.com/leanprover-community/mathlib4).
 
-* **Chapter 6 — Calculus of Variations.** Functionals as functions on curve
+The library is organized into three areas:
+
+* **Calculus of Variations.** Functionals as functions on curve
   spaces, the first variation as a Fréchet derivative, stationarity of the
   action, the Euler–Lagrange equation, the Beltrami identity, the shortest path,
   the brachistochrone and the cycloid, the second variation with Legendre's
   condition and conjugate points, and functionals of several variables.
-* **Chapter 7 — Lagrange's Equations.** Configuration space, kinetic energy as a
+* **Lagrangian Mechanics.** Configuration space, kinetic energy as a
   Riemannian metric, the generalized momentum as a gradient, the
   Newton ⇔ Euler–Lagrange equivalence, curvilinear velocities, the rheonomic
   `T = T₂ + T₁ + T₀` decomposition, Hamilton's principle, holonomic constraints
   with Lagrange multipliers, and Noether's theorem for cyclic coordinates.
-* **Chapter 13 — Hamiltonian Mechanics.** Phase space, Hamilton's equations,
+* **Hamiltonian Mechanics.** Phase space, Hamilton's equations,
   conservation of energy, the Legendre transform, the Poisson bracket and its
   algebraic axioms, the symplectic operator, and Liouville's theorem.
 
 ## What "formalizing physics" buys
 
-Following the blog post
-[Formal Verification / Axiomatic Physics in Lean 4](https://igorkan.github.io/quarto-writing/posts/physics/formal-verification-axiomatic-physics-lean-4.html),
-the point is that every silent assumption becomes a *type* or a *hypothesis*:
+The point of the encoding is that every silent assumption becomes a *type* or a
+*hypothesis*:
 
 | Physics phrase | Lean / Mathlib encoding |
 |:---|:---|
@@ -43,13 +44,13 @@ formal_physics/
 ├── lean-toolchain                        -- leanprover/lean4:v4.16.0
 ├── FormalPhysics/
 │   ├── Calculus.lean                     -- reusable HasDerivAt lemmas
-│   ├── Variations/                       -- Chapter 6
+│   ├── Variations/                       -- calculus of variations
 │   │   ├── Basic.lean                    -- functionals, first variation, stationarity
 │   │   ├── Beltrami.lean                 -- Beltrami identity, shortest path, brachistochrone
 │   │   ├── Brachistochrone.lean          -- cycloid, y(1+y'²)=2a
 │   │   ├── SecondVariation.lean          -- Legendre condition, conjugate points
 │   │   └── SeveralVariables.lean         -- systems of Euler–Lagrange equations
-│   ├── Lagrangian/                       -- Chapter 7
+│   ├── Lagrangian/                       -- Lagrangian mechanics
 │   │   ├── EulerLagrange.lean            -- momentum, force, Newton ⇔ E–L, harmonic oscillator
 │   │   ├── Configuration.lean            -- configuration space, gradient momentum
 │   │   ├── Coordinates.lean              -- polar/cylindrical/spherical T, rheonomic T₂+T₁+T₀
@@ -57,7 +58,7 @@ formal_physics/
 │   │   ├── Constraints.lean              -- holonomic constraints, Lagrange multipliers
 │   │   ├── DoublePendulum.lean           -- double-pendulum Lagrangian
 │   │   └── Noether.lean                  -- cyclic coordinate ⇒ conserved momentum
-│   └── Hamiltonian/                      -- Chapter 13
+│   └── Hamiltonian/                      -- Hamiltonian mechanics
 │       ├── PhaseSpace.lean               -- Hamilton's equations, energy conservation
 │       ├── Legendre.lean                 -- Legendre transform of ½ m v²
 │       ├── Poisson.lean                  -- Poisson bracket axioms
@@ -93,8 +94,7 @@ path = "/path/to/mathlib4"
 All files compile with Lean 4.16.0 and Mathlib v4.16.0. The deep analytic
 theorem linking stationarity of the action to the Euler–Lagrange equation (the
 fundamental lemma of the calculus of variations) is exposed as an explicit
-hypothesis in `HamiltonPrinciple.lean`, matching the blog's treatment; the
-remaining results are unconditional.
+hypothesis in `HamiltonPrinciple.lean`; the remaining results are unconditional.
 
 ## License
 

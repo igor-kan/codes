@@ -294,14 +294,14 @@ Run the self-checks with `make test-interview`.
 The `formal_physics/` directory contains a machine-checked formalization of
 analytical classical mechanics:
 
-- **Chapter 6 (Calculus of Variations):** functionals, the first variation as a
+- **Calculus of Variations:** functionals, the first variation as a
   Fréchet derivative, stationarity, the Euler–Lagrange equation, the Beltrami
   identity, the brachistochrone and the cycloid, the second variation with
   Legendre's condition and conjugate points.
-- **Chapter 7 (Lagrange's Equations):** configuration space, the generalized
+- **Lagrangian Mechanics:** configuration space, the generalized
   momentum, Newton ⇔ Euler–Lagrange, curvilinear coordinates, rheonomic
   `T₂ + T₁ + T₀`, Hamilton's principle, holonomic constraints, Noether's theorem.
-- **Chapter 13 (Hamiltonian Mechanics):** phase space, Hamilton's equations,
+- **Hamiltonian Mechanics:** phase space, Hamilton's equations,
   energy conservation, the Legendre transform, the Poisson bracket, the
   symplectic operator and Liouville's theorem.
 
