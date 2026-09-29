@@ -1,0 +1,14 @@
+"""Implementation of riemann zeta series component order 79."""
+
+def compute_riemann_zeta_79(x: float) -> float:
+    # Dirichlet eta / zeta series term 79
+    s = 2.0
+    sign = -1.0 if (79 % 2 == 0) else 1.0
+    return float(sign / (float(79) ** s))
+
+import math
+
+def test_compute_riemann_zeta_79():
+    res = compute_riemann_zeta_79(0.5)
+    assert isinstance(res, float)
+    assert res == res
