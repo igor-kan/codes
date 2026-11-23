@@ -1,0 +1,17 @@
+#include "interface.hpp"
+#include <chrono>
+#include <iostream>
+
+int main() {
+    using namespace codes_prim_dense_mst_d58;
+    std::vector<std::vector<long long>> bm = {{0, 3, 7}, {3, 0, 2}, {7, 2, 0}};
+    auto t0 = std::chrono::steady_clock::now();
+    volatile std::int64_t sink = 0;
+    for (int iter = 0; iter < 500; ++iter) {
+        sink += prim_dense_mst(bm);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+    std::cout << "prim_dense_mst_d58 us=" << us << " sink=" << sink << "\n";
+    return 0;
+}
